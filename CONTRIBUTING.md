@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to Neyra 2.0.
+Thanks for contributing to Neyra.
 
 ## Development setup
 
