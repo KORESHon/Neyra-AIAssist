@@ -50,6 +50,18 @@ class ReflectionEngine:
             json.dumps(self._journal, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        agent = getattr(self, "agent", None)
+        bus = getattr(agent, "event_bus", None) if agent is not None else None
+        if bus is not None:
+            from core.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
+
+            bus.publish(
+                CoreEvent(
+                    MEMORY_JOURNAL_UPDATED,
+                    "core.reflection",
+                    {"path": str(self.journal_path), "entries": len(self._journal)},
+                )
+            )
 
     def _get_logs_for_date(self, date: datetime) -> str:
         """Читает строки из chat.log за указанную дату."""

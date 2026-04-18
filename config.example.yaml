@@ -33,9 +33,25 @@ assistant:
 # ---------------------------
 # Model backend selector / Выбор модельного backend
 # ---------------------------
-# EN: Runtime backend key. Current project expects "openrouter".
-# RU: Ключ backend рантайма. В текущем проекте ожидается "openrouter".
+# EN: LLM provider id (OpenAI-compatible). Same as llm.provider if the latter is omitted.
+# RU: Идентификатор LLM-провайдера (OpenAI-compatible). Совпадает с llm.provider, если он не задан.
+# EN: Supported: openrouter, openai, ollama, lmstudio, vllm, groq, mistral, together, fireworks,
+#     anthropic, gemini (last two require llm.base_url to an OpenAI-compatible gateway).
+# RU: Поддерживаются перечисленные значения; anthropic/gemini — только с llm.base_url на шлюз.
 BACKEND: openrouter
+
+# EN: Optional `llm:` overrides (model, base_url, api_key, sampling, timeouts, capabilities, …).
+# RU: Опциональный блок `llm:` — переопределения поверх `openrouter:`.
+# EN: Generic secret: LLM_API_KEY in .env → llm.api_key if empty in yaml.
+# RU: Общий секрет: LLM_API_KEY в .env подставится в llm.api_key, если в yaml пусто.
+#
+# llm:
+#   provider: groq
+#   model: llama-3.3-70b-versatile
+#   capabilities:
+#     supports_stream: true
+#     supports_vision: true
+#     supports_tool_calls: false
 
 # ---------------------------
 # OpenRouter settings / Настройки OpenRouter
@@ -247,6 +263,10 @@ external_api:
 # ---------------------------
 # Memory subsystem / Подсистема памяти
 # ---------------------------
+# EN: Event bus lives on NeyraAgent (chat.turn_completed, memory.*, notify.discord_*). Subscribe in code.
+# RU: Шина событий на NeyraAgent (см. core/event_bus.py). RAG-метаданные дополняются полем user_id.
+# EN: Unified user_id = uuid5(platform:id); cross-platform linking is future work.
+# RU: Единый user_id = uuid5(platform:id); связывание разных платформ — отдельная задача.
 memory:
   # EN: ChromaDB storage directory for vector memory.
   # RU: Папка ChromaDB для векторной памяти.

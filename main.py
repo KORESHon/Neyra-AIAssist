@@ -156,22 +156,24 @@ async def run_console():
     console.print(BANNER, style="bold cyan")
     console.print("Проверяю связь с LLM backend...", style="yellow")
 
-    # Проверяем доступность нужного бэкенда
+    # Проверяем доступность OpenAI-compatible endpoint (/v1/models)
     import httpx, time as _time
-    backend = str(config.get("BACKEND", "openrouter")).lower()
-    backend_name = "OpenRouter"
-    check_url = config.get("openrouter", {}).get("base_url", "https://openrouter.ai/api/v1")
-    check_endpoint = f"{check_url}/models"
-    start_tip = "Проверь интернет и OPENROUTER_API_KEY в .env"
 
-    console.print(f"Проверяю связь с {backend_name} ({check_url})...", style="yellow")
+    from core.llm_profile import resolve_openai_compatible_connection
+
+    conn = resolve_openai_compatible_connection(config)
+    backend_name = conn.provider.upper()
+    check_url = conn.base_url.rstrip("/")
+    check_endpoint = f"{check_url}/models"
+    start_tip = f"Проверь доступ к {check_url} и API-ключ для провайдера «{conn.provider}» (.env / config)."
+
+    console.print(f"Проверяю связь с LLM ({backend_name}, {check_url})...", style="yellow")
     for attempt in range(5):
         try:
             headers = {}
-            if backend == "openrouter":
-                api_key = (config.get("openrouter", {}) or {}).get("api_key", "")
-                if api_key:
-                    headers["Authorization"] = f"Bearer {api_key}"
+            ak = (conn.api_key or "").strip()
+            if ak and ak != "ollama":
+                headers["Authorization"] = f"Bearer {ak}"
             r = httpx.get(check_endpoint, timeout=10, headers=headers)
             console.print(f"  {backend_name} ✓", style="green")
             models = [m.get("id", "") for m in r.json().get("data", []) if isinstance(m, dict)]
@@ -210,7 +212,7 @@ async def run_console():
     banner_updated = (
         f"\n╔════════════════════════════════════════════════════╗\n"
         f"║        CYBER-CORE  //  Ассистент «Нейра»          ║\n"
-        f"║  Backend: {BACKEND.upper():<9}  Model: {stats['model'][:16]:<16}║\n"
+        f"║  LLM: {str(stats.get('llm_provider', BACKEND)).upper():<12}  Model: {stats['model'][:16]:<16}║\n"
         f"╚════════════════════════════════════════════════════╝\n"
     )
     console.print(banner_updated, style="bold cyan")
