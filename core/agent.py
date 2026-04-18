@@ -29,6 +29,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from core.event_bus import (
+    CHAT_TURN_COMPLETED,
+    CHAT_TURN_FAILED,
+    MEMORY_LONG_TERM_WRITE,
+    MEMORY_SHORT_TERM_UPDATE,
+    CoreEvent,
+    EventBus,
+)
+from core.identity import UnifiedIdentityMapper
+
 logger = logging.getLogger("neyra.agent")
 EMPTY_REPLY_PLACEHOLDER = "Затупила на секунду. Повтори коротко, пожалуйста."
 
@@ -43,6 +53,9 @@ class NeyraAgent:
         # Ключ: discord channel_id → текст заметки после последнего VL-хода (пока процесс жив)
         self._last_vision_note_by_channel: dict[str, str] = {}
 
+        self.event_bus = EventBus()
+        self.identity = UnifiedIdentityMapper()
+
         self._setup_llm()
         self._setup_memory()
         self._setup_tools()
@@ -52,31 +65,39 @@ class NeyraAgent:
     # ─── Инициализация ─────────────────────────────────────────────────────
 
     def _setup_llm(self):
-        """Подключается к облачному бэкенду OpenRouter."""
-        self.backend = self.config.get("BACKEND", "openrouter").lower()
+        """OpenAI-compatible LLM (OpenRouter, Ollama, Groq, …) — см. core.llm_profile."""
+        from core.llm_profile import resolve_openai_compatible_connection
 
-        if self.backend == "openrouter":
-            self._setup_openrouter()
-        else:
-            logger.error(f"Неизвестный бэкенд: {self.backend}. Падаем.")
-            raise ValueError(f"Unknown backend: {self.backend}")
+        self._llm_connection = resolve_openai_compatible_connection(self.config)
+        self.backend = self._llm_connection.provider
+        self._setup_openai_compatible_llm()
 
-    def _setup_openrouter(self):
-        """OpenRouter — облачный OpenAI-совместимый API с доступом к Qwen 72B."""
+    def _setup_openai_compatible_llm(self):
+        """Единый путь: ChatOpenAI к base_url с api_key из профиля провайдера."""
         from langchain_openai import ChatOpenAI
 
-        cfg = self.config.get("openrouter", {})
-        primary_model = str(cfg.get("model") or cfg.get("primary_model") or "qwen/qwen-2.5-72b-instruct").strip()
+        from core.llm_profile import merge_llm_tuning_options, resolved_primary_model
+
+        conn = self._llm_connection
+        cfg = merge_llm_tuning_options(self.config)
+        primary_model = resolved_primary_model(self.config, conn.provider)
         self.context_window = cfg.get("context_window", 16384)
-        base_url = cfg.get("base_url", "https://openrouter.ai/api/v1")
-        api_key = cfg.get("api_key", "")
+        base_url = conn.base_url
+        api_key = conn.api_key
         self.reply_max_tokens = int(cfg.get("reply_max_tokens", cfg.get("max_tokens", 320)))
         self.vision_max_tokens = int(cfg.get("vision_max_tokens", cfg.get("max_tokens", 900)))
         self.reflection_max_tokens = int(cfg.get("reflection_max_tokens", cfg.get("max_tokens", 700)))
         self.reflection_temperature = float(cfg.get("reflection_temperature", cfg.get("temperature", 0.75)))
 
-        if not api_key:
-            logger.error("API ключ OpenRouter не найден — задай OPENROUTER_API_KEY в .env")
+        if not api_key or api_key == "ollama":
+            if conn.provider == "ollama":
+                pass
+            else:
+                logger.error(
+                    "API ключ LLM не найден — задай в конфиге llm.api_key / openrouter.api_key "
+                    "или переменную окружения для провайдера %s",
+                    conn.provider,
+                )
 
         primary_timeout = float(cfg.get("timeout_seconds", cfg.get("primary_timeout_seconds", 120.0)))
         primary_retries = int(cfg.get("max_retries", cfg.get("primary_max_retries", 1)))
@@ -87,6 +108,7 @@ class NeyraAgent:
         if "include_reasoning" in cfg:
             extra_body["include_reasoning"] = bool(cfg.get("include_reasoning"))
 
+        hdr_primary = dict(conn.default_headers)
         self.llm_primary = ChatOpenAI(
             base_url=base_url,
             api_key=api_key,
@@ -100,10 +122,7 @@ class NeyraAgent:
             timeout=primary_timeout,
             max_retries=primary_retries,
             model_kwargs={"extra_body": extra_body} if extra_body else {},
-            default_headers={
-                "HTTP-Referer": "https://aiassist.local",
-                "X-Title": "Neyra AI"
-            }
+            default_headers=hdr_primary,
         )
         # Жестко режем попытки модели выводить think-теги в основном ответе.
         # Это снижает задержки и убирает кейсы "пустой ответ после очистки".
@@ -150,6 +169,8 @@ class NeyraAgent:
                 self.async_reflection_cfg.get("max_retries", primary_retries),
             )
         )
+        hdr_reflection = dict(conn.default_headers)
+        hdr_reflection["X-Title"] = "Neyra Reflection"
         self.llm_reflection = ChatOpenAI(
             base_url=base_url,
             api_key=api_key,
@@ -159,15 +180,13 @@ class NeyraAgent:
             streaming=False,
             timeout=reflection_timeout,
             max_retries=reflection_retries,
-            default_headers={
-                "HTTP-Referer": "https://aiassist.local",
-                "X-Title": "Neyra Reflection",
-            },
+            default_headers=hdr_reflection,
         )
         self.llm_reflection_model = reflection_model
         self.llm_think = None
         logger.info(
-            "Бэкенд: OpenRouter | модель: %s | timeout=%ss retries=%s | max_ctx: %s",
+            "Бэкенд LLM: %s | модель: %s | timeout=%ss retries=%s | max_ctx: %s",
+            conn.provider,
             primary_model,
             primary_timeout,
             primary_retries,
@@ -189,6 +208,8 @@ class NeyraAgent:
         if self.async_reflection_enabled:
             think_model = str(self.async_reflection_cfg.get("model") or "").strip()
             if think_model:
+                hdr_think = dict(conn.default_headers)
+                hdr_think["X-Title"] = "Neyra Async Reflection"
                 self.llm_think = ChatOpenAI(
                     base_url=base_url,
                     api_key=api_key,
@@ -198,10 +219,7 @@ class NeyraAgent:
                     streaming=False,
                     timeout=float(self.async_reflection_cfg.get("timeout_seconds", 60)),
                     max_retries=int(self.async_reflection_cfg.get("max_retries", 1)),
-                    default_headers={
-                        "HTTP-Referer": "https://aiassist.local",
-                        "X-Title": "Neyra Async Reflection",
-                    },
+                    default_headers=hdr_think,
                 )
                 logger.info("Async reflection включен | think_model=%s", think_model)
             else:
@@ -209,6 +227,7 @@ class NeyraAgent:
 
         # Без bind_tools: Qwen через OpenRouter нормально не делает tool-calls; инструменты — триггеры в коде
         self.llm_with_tools = self.llm
+        self.llm_capabilities = dict(conn.capabilities)
 
         vis = self.config.get("vision") or {}
         self.llm_vision = None
@@ -217,11 +236,13 @@ class NeyraAgent:
                 # Для vision используем ту же основную модель.
                 self.llm_vision = self.llm_primary
                 logger.info(
-                    "Зрение: unified — та же модель что и текст (%s). Должна быть VL на OpenRouter.",
+                    "Зрение: unified — та же модель что и текст (%s). Должна быть VL-capable модель.",
                     primary_model,
                 )
             elif str(vis.get("model") or "").strip():
                 vmodel = str(vis["model"]).strip()
+                hdr_vision = dict(conn.default_headers)
+                hdr_vision["X-Title"] = "Neyra AI Vision"
                 self.llm_vision = ChatOpenAI(
                     base_url=base_url,
                     api_key=api_key,
@@ -230,12 +251,9 @@ class NeyraAgent:
                     max_tokens=self.vision_max_tokens,
                     streaming=True,
                     timeout=180,
-                    default_headers={
-                        "HTTP-Referer": "https://aiassist.local",
-                        "X-Title": "Neyra AI Vision",
-                    },
+                    default_headers=hdr_vision,
                 )
-                logger.info("Зрение: отдельная VL-модель OpenRouter — %s", vmodel)
+                logger.info("Зрение: отдельная VL-модель (%s) — %s", conn.provider, vmodel)
             else:
                 logger.warning(
                     "vision.enabled, но нет vision.model и use_main_model_for_vision=false — VL выключен."
@@ -414,10 +432,12 @@ class NeyraAgent:
         base = self.config["assistant"]["system_prompt"]
 
         # Короткая нейтральная системная ремарка о среде.
-        if self.backend == "openrouter":
-            hw_note = "\n[СИСТЕМНАЯ ИНФОРМАЦИЯ: Работаешь через облачный LLM API.]"
+        from core.llm_profile import is_local_openai_compatible_provider
+
+        if is_local_openai_compatible_provider(self.backend):
+            hw_note = "\n[СИСТЕМНАЯ ИНФОРМАЦИЯ: Работаешь через локальный/self-host OpenAI-compatible LLM endpoint.]"
         else:
-            hw_note = "\n[СИСТЕМНАЯ ИНФОРМАЦИЯ: Работаешь через альтернативный LLM backend.]"
+            hw_note = "\n[СИСТЕМНАЯ ИНФОРМАЦИЯ: Работаешь через облачный LLM API (OpenAI-compatible).]"
 
         from datetime import datetime
         now = datetime.now()
@@ -568,7 +588,7 @@ class NeyraAgent:
         if vision_images and not self.llm_vision:
             logger.warning(
                 "Изображения в сообщении, но llm_vision нет: vision.enabled, vision.model или use_main_model_for_vision "
-                "(VL для openrouter.model)."
+                "(или основная модель без VL)."
             )
         if use_vl:
             text = (user_message or "").strip() or "Что на изображении? Коротко по-русски."
@@ -1367,6 +1387,82 @@ class NeyraAgent:
         
         return ""
 
+    def _resolve_internal_user_id(
+        self, discord_user_id: Optional[str], username: Optional[str]
+    ) -> str:
+        rid = self.identity.resolve_from_discord(discord_user_id)
+        if rid:
+            return rid
+        return self.identity.resolve_console(username)
+
+    def _publish_memory_and_chat_events(
+        self,
+        *,
+        internal_user_id: str,
+        channel_id: Optional[str],
+        username: Optional[str],
+        user_message: str,
+        clean_text: str,
+        sounds: list,
+        metadata: dict,
+    ) -> None:
+        self.event_bus.publish(
+            CoreEvent(
+                MEMORY_SHORT_TERM_UPDATE,
+                "core.agent",
+                {
+                    "user_id": internal_user_id,
+                    "channel_id": channel_id,
+                    "short_memory_messages": len(self.short_memory),
+                },
+            )
+        )
+        self.event_bus.publish(
+            CoreEvent(
+                MEMORY_LONG_TERM_WRITE,
+                "core.agent",
+                {
+                    "user_id": internal_user_id,
+                    "username": metadata.get("username"),
+                    "discord_id": metadata.get("discord_id"),
+                    "rag_enabled": self.long_memory.rag_enabled,
+                },
+            )
+        )
+        self.event_bus.publish(
+            CoreEvent(
+                CHAT_TURN_COMPLETED,
+                "core.agent",
+                {
+                    "user_id": internal_user_id,
+                    "channel_id": channel_id,
+                    "username": username,
+                    "user_chars": len(user_message or ""),
+                    "assistant_chars": len(clean_text or ""),
+                    "sounds": list(sounds) if sounds else [],
+                },
+            )
+        )
+
+    def _publish_chat_turn_failed(
+        self,
+        *,
+        internal_user_id: str,
+        channel_id: Optional[str],
+        error: str,
+    ) -> None:
+        self.event_bus.publish(
+            CoreEvent(
+                CHAT_TURN_FAILED,
+                "core.agent",
+                {
+                    "user_id": internal_user_id,
+                    "channel_id": channel_id,
+                    "error": error[:2000],
+                },
+            )
+        )
+
     async def chat(
         self,
         user_message: str,
@@ -1387,6 +1483,8 @@ class NeyraAgent:
         }
         """
         from langchain_core.messages import HumanMessage, SystemMessage
+
+        internal_uid = self._resolve_internal_user_id(discord_user_id, username)
 
         # 1. Ищем воспоминания в RAG
         memories = self.long_memory.search(user_message)
@@ -1462,6 +1560,11 @@ class NeyraAgent:
             raw_response = response.content if hasattr(response, "content") else str(response)
         except Exception as e:
             logger.error(f"Ошибка вызова LLM: {e}")
+            self._publish_chat_turn_failed(
+                internal_user_id=internal_uid,
+                channel_id=channel_id,
+                error=str(e),
+            )
             return {
                 "text": f"[SOUND: bruh] Что-то сломалось на моей стороне: {e}",
                 "sounds": ["bruh"],
@@ -1499,7 +1602,11 @@ class NeyraAgent:
         self.short_memory.add("assistant", clean_text)
 
         # 9. Сохраняем в RAG и логах (не ждём — fire and forget)
-        metadata = {"username": username or "unknown", "discord_id": discord_user_id or ""}
+        metadata = {
+            "username": username or "unknown",
+            "discord_id": discord_user_id or "",
+            "user_id": internal_uid,
+        }
         self.long_memory.save(user_message, clean_text, metadata)
 
         # 10. Логи
@@ -1518,6 +1625,16 @@ class NeyraAgent:
                 source="memory_update",
                 meta={"username": username or "unknown"},
             )
+
+        self._publish_memory_and_chat_events(
+            internal_user_id=internal_uid,
+            channel_id=channel_id,
+            username=username,
+            user_message=user_message,
+            clean_text=clean_text,
+            sounds=sounds,
+            metadata=metadata,
+        )
 
         logger.debug(f"Ответ сгенерирован | sounds={sounds} | len={len(clean_text)}")
         if self.micro_planning_enabled:
@@ -1556,6 +1673,8 @@ class NeyraAgent:
                     sounds = chunk["sounds"]
         """
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+        internal_uid = self._resolve_internal_user_id(discord_user_id, username)
 
         # 1. Контекст (RAG + досье)
         memories = self.long_memory.search(user_message)
@@ -1721,10 +1840,20 @@ class NeyraAgent:
                     )
                 except Exception as e2:
                     logger.error(f"Ошибка повторного запроса (даже с урезанным контекстом): {e2}")
+                    self._publish_chat_turn_failed(
+                        internal_user_id=internal_uid,
+                        channel_id=channel_id,
+                        error=str(e2),
+                    )
                     yield {"type": "error", "text": str(e2)}
                     return
             else:
                 logger.error(f"Ошибка стриминга LLM: {e}")
+                self._publish_chat_turn_failed(
+                    internal_user_id=internal_uid,
+                    channel_id=channel_id,
+                    error=err_str,
+                )
                 yield {"type": "error", "text": err_str}
                 return
 
@@ -1758,7 +1887,11 @@ class NeyraAgent:
         self.short_memory.add("user", f"[от: {display_name}] {user_message}")
         self.short_memory.add("assistant", clean_text)
 
-        metadata = {"username": username or "unknown", "discord_id": discord_user_id or ""}
+        metadata = {
+            "username": username or "unknown",
+            "discord_id": discord_user_id or "",
+            "user_id": internal_uid,
+        }
         self.long_memory.save(user_message, clean_text, metadata)
         self._log_thought(thoughts, user_message)
         self._log_chat(user_message, clean_text, metadata)
@@ -1785,6 +1918,16 @@ class NeyraAgent:
                 meta={"username": username or "unknown"},
             )
 
+        self._publish_memory_and_chat_events(
+            internal_user_id=internal_uid,
+            channel_id=channel_id,
+            username=username,
+            user_message=user_message,
+            clean_text=clean_text,
+            sounds=sounds,
+            metadata=metadata,
+        )
+
         logger.debug(f"Стрим завершён | sounds={sounds} | len={len(clean_text)}")
 
         # 6. Финальный пакет с метаданными
@@ -1810,9 +1953,11 @@ class NeyraAgent:
         """Возвращает статистику агента."""
         return {
             "mode": self.mode,
+            "llm_provider": self.backend,
             "model": self.llm_model,
             "short_memory_size": len(self.short_memory),
             "long_memory_records": self.long_memory.count(),
             "friends_db_records": len(self.friends_db._cache),
             "tools_count": len(self.tools),
+            "event_bus": self.event_bus.handler_counts(),
         }

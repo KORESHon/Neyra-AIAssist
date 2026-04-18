@@ -22,6 +22,8 @@ import discord
 from discord import app_commands
 from discord.app_commands import Choice
 
+from core.event_bus import NOTIFY_DISCORD_MESSAGE_SENT, CoreEvent
+
 if TYPE_CHECKING:
     from core.agent import NeyraAgent
     from core.reflection import ReflectionEngine
@@ -343,8 +345,26 @@ class NeyraDiscordTextBot(discord.Client):
                 final_text = done_data.get("text", full_raw).strip() or "*(пустой ответ)*"
                 parts = _split_message(final_text)
                 await response_msg.edit(content=parts[0])
+                sent_ids: list[int] = [response_msg.id]
                 for part in parts[1:]:
-                    await text_channel.send(part)
+                    sent = await text_channel.send(part)
+                    sent_ids.append(sent.id)
+                internal_uid = (
+                    self.agent.identity.resolve_from_discord(discord_user_id)
+                    or self.agent.identity.resolve_console(username)
+                )
+                self.agent.event_bus.publish(
+                    CoreEvent(
+                        NOTIFY_DISCORD_MESSAGE_SENT,
+                        "interfaces.discord",
+                        {
+                            "user_id": internal_uid,
+                            "channel_id": channel_id_str,
+                            "message_ids": sent_ids,
+                            "parts": len(parts),
+                        },
+                    )
+                )
             except Exception as e:
                 logger.exception("Ошибка в _run_chat_stream: %s", e)
                 try:
