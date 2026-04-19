@@ -7,10 +7,12 @@ LLM суммирует диалоги за день → journal.json.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+import re
 
 logger = logging.getLogger("neyra.reflection")
 
@@ -28,9 +30,14 @@ class ReflectionEngine:
         self.reflect_json_path = Path(mem_cfg.get("reflection_json_path", "./memory/reflection_last.json"))
         self.chat_log_path = Path(config["logging"]["chat_log"])
         self.reflection_time = mem_cfg.get("reflection_time", "04:00")
+        self.small_reflection_enabled = bool(mem_cfg.get("small_reflection_enabled", True))
+        self.small_reflection_hours = max(1, int(mem_cfg.get("small_reflection_hours", 4)))
+        self.small_reflection_min_lines = int(mem_cfg.get("small_reflection_min_lines", 8))
+        self.small_reflection_max_chars = int(mem_cfg.get("small_reflection_max_chars", 1400))
         self.diary_hourly_enabled = bool(mem_cfg.get("diary_hourly_enabled", True))
         self.diary_hourly_min_lines = int(mem_cfg.get("diary_hourly_min_lines", 6))
         self._last_hourly_key: str = ""
+        self._last_small_key: str = ""
 
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -101,8 +108,29 @@ class ReflectionEngine:
             logger.error(f"Ошибка чтения hourly chat.log: {e}")
         return "\n".join(lines)
 
+    def _get_logs_for_last_hours(self, hours: int) -> str:
+        """Читает строки chat.log за последние N часов."""
+        if not self.chat_log_path.exists():
+            return ""
+        cutoff = datetime.now() - timedelta(hours=max(1, int(hours)))
+        lines: list[str] = []
+        try:
+            for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
+                if not line.startswith("[") or "]" not in line:
+                    continue
+                ts_str = line[1 : line.find("]")]
+                try:
+                    ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+                if ts >= cutoff:
+                    lines.append(line)
+        except Exception as e:
+            logger.error("Ошибка чтения chat.log за %s часов: %s", hours, e)
+        return "\n".join(lines)
+
     async def reflect(self, date: datetime = None, force: bool = False) -> str:
-        """Ночная рефлексия: дневник за 24ч -> JSON (friends_updates/global_lore/behavior_rules)."""
+        """Ночная рефлексия: дневник за 24ч -> JSON (people_updates/global_lore/behavior_rules)."""
         if date is None:
             date = datetime.now()
 
@@ -122,6 +150,7 @@ class ReflectionEngine:
         result = await self._analyze_diary_json(diary_lines, date_str)
         if not result:
             return ""
+        self._apply_reflection_result(result)
 
         try:
             self.reflect_json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,8 +171,179 @@ class ReflectionEngine:
             })
             self._save_journal()
             logger.info("Рефлексия за %s сохранена", date_str)
+            await self._auto_sync_external_backup()
 
         return summary
+
+    async def _auto_sync_external_backup(self) -> None:
+        """Автосинхронизация бэкапа после большой рефлексии (если включено в конфиге)."""
+        cfg = self.config.get("external_storage") or {}
+        if not bool(cfg.get("enabled", False)):
+            return
+        sync_after = bool(cfg.get("sync_after_big_reflection", True))
+        if not sync_after:
+            return
+        try:
+            from core.backup_manager import BackupManager
+
+            mgr = BackupManager(self.config)
+            res = await asyncio.to_thread(mgr.run_backup, "post_big_reflection")
+            logger.info("External storage auto-sync done: %s", res.get("external_ref") or res.get("archive"))
+        except Exception as e:
+            logger.warning("External storage auto-sync failed: %s", e)
+
+    @staticmethod
+    def _normalize_fact_text(text: str) -> str:
+        t = (text or "").strip().lower()
+        t = re.sub(r"\s+", " ", t)
+        return t
+
+    @staticmethod
+    def _is_high_signal_fact(text: str) -> bool:
+        """Фильтр «важность/мусор» для записи фактов в долговременную память."""
+        t = (text or "").strip()
+        if len(t) < 12:
+            return False
+        low = t.lower()
+        # Явный мусор/мета.
+        trash_markers = (
+            "не знаю",
+            "без изменений",
+            "ничего нового",
+            "просто поболтали",
+            "шутка",
+            "мем без факта",
+        )
+        if any(m in low for m in trash_markers):
+            return False
+        # Наличие признаков значимого факта.
+        important_markers = (
+            "работ",
+            "учеб",
+            "переех",
+            "отношен",
+            "боле",
+            "конфликт",
+            "помир",
+            "проект",
+            "план",
+            "договор",
+            "деньги",
+            "покуп",
+            "продал",
+            "сменил",
+            "цель",
+            "проблем",
+        )
+        if any(m in low for m in important_markers):
+            return True
+        # Если маркеров нет, но фраза достаточно содержательная — оставляем.
+        return len(t) >= 30
+
+    def _apply_reflection_result(self, result: dict) -> None:
+        """Большая рефлексия: запись устойчивых фактов в PeopleDB + дневник."""
+        if not self.agent:
+            return
+        people_db = getattr(self.agent, "people_db", None)
+        diary = getattr(self.agent, "diary", None)
+        if people_db is None:
+            return
+
+        updates = list(result.get("people_updates") or [])
+        existing_norm: dict[str, set[str]] = {}
+        for pid, person in getattr(people_db, "_cache", {}).items():
+            norms: set[str] = set()
+            for row in list(person.get("dynamic_facts") or []):
+                norms.add(self._normalize_fact_text(str(row.get("fact") or "")))
+            existing_norm[pid] = norms
+
+        added: list[str] = []
+        for item in updates:
+            if not isinstance(item, dict):
+                continue
+            hint = str(item.get("person_hint") or "").strip()
+            fact = str(item.get("fact") or "").strip()
+            if not hint or not fact or not self._is_high_signal_fact(fact):
+                continue
+            person = people_db.find(hint)
+            if not person:
+                continue
+            pid = str(person.get("id") or "").strip()
+            if not pid:
+                continue
+            norm = self._normalize_fact_text(fact)
+            if not norm:
+                continue
+            if norm in existing_norm.setdefault(pid, set()):
+                continue
+            ok = people_db.update_fact(pid, fact)
+            if ok:
+                existing_norm[pid].add(norm)
+                added.append(f"{pid}: {fact}")
+
+        if diary is not None:
+            lore = [str(x).strip() for x in list(result.get("global_lore") or []) if str(x).strip()]
+            rules = [str(x).strip() for x in list(result.get("behavior_rules") or []) if str(x).strip()]
+            if added:
+                diary.add_entry(
+                    text="Большая рефлексия: закрепила факты в PeopleDB:\n- " + "\n- ".join(added[:8]),
+                    source="nightly_reflection_apply",
+                    meta={"facts_added": len(added)},
+                )
+            if lore:
+                diary.add_entry(
+                    text="Большая рефлексия: глобальные наблюдения:\n- " + "\n- ".join(lore[:6]),
+                    source="nightly_reflection_apply",
+                    meta={"global_lore_count": len(lore)},
+                )
+            if rules:
+                diary.add_entry(
+                    text="Большая рефлексия: правила поведения:\n- " + "\n- ".join(rules[:4]),
+                    source="nightly_reflection_apply",
+                    meta={"behavior_rules_count": len(rules)},
+                )
+
+    async def small_reflection(self) -> str:
+        """Малая рефлексия (каждые N часов): сжатие активного контекста в дневник."""
+        if not self.agent or not hasattr(self.agent, "diary"):
+            return ""
+        now = datetime.now()
+        block_start = (now.hour // self.small_reflection_hours) * self.small_reflection_hours
+        key = now.strftime("%Y-%m-%d") + f" {block_start:02d}"
+        if self._last_small_key == key:
+            return ""
+        logs = self._get_logs_for_last_hours(self.small_reflection_hours)
+        if len([x for x in logs.splitlines() if x.strip()]) < self.small_reflection_min_lines:
+            return ""
+        prompt = (
+            f"Сожми контекст последних {self.small_reflection_hours} часов в 2-4 коротких предложения. "
+            "Только практичные наблюдения для памяти: кто, что изменилось, какие темы/риски. "
+            "Без markdown и списков.\n\n"
+            f"Логи:\n{logs[:5000]}"
+        )
+        try:
+            from langchain_core.messages import HumanMessage
+
+            llm_reflect = getattr(self.agent, "llm_reflection", self.agent.llm)
+            response = await llm_reflect.ainvoke([HumanMessage(content=prompt)])
+            note = str(response.content).strip()
+            if not note:
+                return ""
+            if len(note) > self.small_reflection_max_chars:
+                note = note[: self.small_reflection_max_chars - 1] + "…"
+            ok = self.agent.diary.add_entry(
+                text=note,
+                source="small_reflection",
+                meta={"hours": self.small_reflection_hours, "key": key},
+            )
+            if ok:
+                self._last_small_key = key
+                logger.info("Добавлена малая рефлексия за блок %s", key)
+                return note
+            return ""
+        except Exception as e:
+            logger.error("Ошибка small_reflection: %s", e)
+            return ""
 
     def _get_diary_last_24h(self) -> str:
         """Читает записи из neyra_diary.jsonl за последние 24 часа."""
@@ -199,7 +399,7 @@ class ReflectionEngine:
         """LLM-анализ дневника за 24ч в строгий JSON."""
         if self.agent is None:
             return {
-                "friends_updates": [],
+                "people_updates": [],
                 "global_lore": [],
                 "behavior_rules": [],
             }
@@ -208,7 +408,7 @@ class ReflectionEngine:
             "Ты аналитический модуль памяти Нейры. Верни ответ СТРОГО в JSON без пояснений и markdown.\n"
             "Формат:\n"
             "{\n"
-            '  "friends_updates": [{"person_hint":"...", "fact":"..."}],\n'
+            '  "people_updates": [{"person_hint":"...", "fact":"..."}],\n'
             '  "global_lore": ["..."],\n'
             '  "behavior_rules": ["..."]\n'
             "}\n"
@@ -228,20 +428,20 @@ class ReflectionEngine:
             blob = self._extract_json_blob(raw)
             data = json.loads(blob)
             return {
-                "friends_updates": list(data.get("friends_updates") or []),
+                "people_updates": list(data.get("people_updates") or []),
                 "global_lore": list(data.get("global_lore") or []),
                 "behavior_rules": list(data.get("behavior_rules") or [])[:2],
             }
         except Exception as e:
             logger.error("Ошибка LLM-анализа рефлексии: %s", e)
-            return {"friends_updates": [], "global_lore": [], "behavior_rules": []}
+            return {"people_updates": [], "global_lore": [], "behavior_rules": []}
 
     @staticmethod
     def _compact_summary(data: dict) -> str:
-        fu = len(list(data.get("friends_updates") or []))
+        fu = len(list(data.get("people_updates") or []))
         gl = len(list(data.get("global_lore") or []))
         br = len(list(data.get("behavior_rules") or []))
-        return f"Self-reflection: friends_updates={fu}, global_lore={gl}, behavior_rules={br}"
+        return f"Self-reflection: people_updates={fu}, global_lore={gl}, behavior_rules={br}"
 
     async def hourly_diary_note(self) -> str:
         """Пишет почасовую заметку в личный дневник Нейры."""
@@ -300,6 +500,14 @@ class ReflectionEngine:
                 id="nightly_reflection",
                 kwargs={"force": False},
             )
+            if self.small_reflection_enabled:
+                scheduler.add_job(
+                    self.small_reflection,
+                    trigger="cron",
+                    hour=f"*/{self.small_reflection_hours}",
+                    minute=15,
+                    id="small_reflection",
+                )
             if self.diary_hourly_enabled:
                 scheduler.add_job(
                     self.hourly_diary_note,
@@ -309,6 +517,11 @@ class ReflectionEngine:
                 )
             scheduler.start()
             logger.info(f"Рефлексия запланирована на {self.reflection_time} каждую ночь")
+            if self.small_reflection_enabled:
+                logger.info(
+                    "Малая рефлексия: каждые %sч (minute=15)",
+                    self.small_reflection_hours,
+                )
             if self.diary_hourly_enabled:
                 logger.info("Личный дневник: автозапись каждый час (minute=00)")
             return scheduler

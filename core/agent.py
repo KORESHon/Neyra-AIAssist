@@ -5,12 +5,12 @@ core/agent.py — Главный агент Нейры
 Интегрирован с:
   • ShortTermMemory  — история текущего диалога
   • LongTermMemory   — ChromaDB RAG (прошлые диалоги)
-  • FriendsDB        — досье на друзей
+  • PeopleDB         — досье на людей
   • Tools            — инструменты (поиск, время, мониторинг)
 
 Логика ответа:
   1. Ищем похожие диалоги в RAG
-  2. Ищем упомянутых людей в FriendsDB
+  2. Ищем упомянутых людей в PeopleDB
   3. Собираем полный промпт (system + воспоминания + досье + история + запрос)
   4. Передаём LLM с инструментами
   5. Парсим CoT (<think>...</think>), сохраняем в thoughts.log
@@ -261,11 +261,11 @@ class NeyraAgent:
 
     def _setup_memory(self):
         """Инициализирует все модули памяти."""
-        from core.memory import FriendsDB, LongTermMemory, NeyraDiary, ShortTermMemory
+        from core.memory import LongTermMemory, NeyraDiary, PeopleDB, ShortTermMemory
 
         self.short_memory = ShortTermMemory(max_messages=10)
         self.long_memory = LongTermMemory(self.config)
-        self.friends_db = FriendsDB(self.config)
+        self.people_db = PeopleDB(self.config)
         self.diary = NeyraDiary(self.config)
 
         # Не блокируем старт бота тяжёлой загрузкой embedder'а:
@@ -279,13 +279,13 @@ class NeyraAgent:
             self.long_memory.initialize()
 
         # Создаём начальные досье если их нет
-        self._init_friends_db()
+        self._init_people_db()
 
     def _setup_tools(self):
         """Инициализирует инструменты (вызываются вручную, не через bind_tools)."""
         from core.tools import ALL_TOOLS, init_tools
 
-        init_tools(self.long_memory, self.friends_db, self.config.get("assistant") or {})
+        init_tools(self.long_memory, self.people_db, self.config.get("assistant") or {})
         self.tools = {t.name: t for t in ALL_TOOLS}
         logger.info(f"Tools готовы: {list(self.tools.keys())}")
 
@@ -300,14 +300,14 @@ class NeyraAgent:
         self.thoughts_log_path.parent.mkdir(parents=True, exist_ok=True)
         self.chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _init_friends_db(self):
+    def _init_people_db(self):
         """Создаёт базовые досье если папка пустая."""
-        if len(list(self.friends_db.db_dir.glob("*.json"))) > 0:
+        if len(list(self.people_db.db_dir.glob("*.json"))) > 0:
             return  # Уже есть файлы
 
-        logger.info("Создаю начальные досье FriendsDB...")
+        logger.info("Создаю начальные досье PeopleDB...")
 
-        friends = [
+        people = [
             {
                 "id": "maxim",
                 "names": ["Максим", "МаксимкусЮТ", "tiltedeverlastinghat", "hopelesness"],
@@ -404,23 +404,23 @@ class NeyraAgent:
         ]
 
         import json
-        for friend in friends:
-            friend.setdefault("last_seen", None)
-            path = self.friends_db.db_dir / f"{friend['id']}.json"
+        for person in people:
+            person.setdefault("last_seen", None)
+            path = self.people_db.db_dir / f"{person['id']}.json"
             path.write_text(
-                json.dumps(friend, ensure_ascii=False, indent=2),
+                json.dumps(person, ensure_ascii=False, indent=2),
                 encoding="utf-8"
             )
 
-        self.friends_db._load_all()
-        logger.info(f"Создано {len(friends)} начальных досье")
+        self.people_db._load_all()
+        logger.info(f"Создано {len(people)} начальных досье")
 
     # ─── Системный промпт ──────────────────────────────────────────────────
 
     def _build_system_prompt(
         self,
         extra_memories: list[str] = None,
-        friends_context: str = "",
+        people_context: str = "",
         diary_context: str = "",
         username: str = None,
         web_context: str = "",
@@ -491,8 +491,8 @@ class NeyraAgent:
                 )
 
         # Досье упомянутых людей
-        if friends_context:
-            sections.append(f"\n# АКТУАЛЬНОЕ ДОСЬЕ (из базы):\n{friends_context}")
+        if people_context:
+            sections.append(f"\n# АКТУАЛЬНОЕ ДОСЬЕ (из базы):\n{people_context}")
 
         if diary_context:
             sections.append(f"\n# ЛИЧНЫЙ ДНЕВНИК НЕЙРЫ (последние заметки):\n{diary_context}")
@@ -1111,7 +1111,7 @@ class NeyraAgent:
         """Определение известных имён/ников с учетом русских окончаний (падежей)."""
         import re
         text_lower = text.lower()
-        name_map = self.friends_db.get_all_names_map()
+        name_map = self.people_db.get_all_names_map()
         found = []
         for name_lower, pid in name_map.items():
             if pid in found:
@@ -1231,19 +1231,19 @@ class NeyraAgent:
             who = m.group(1).strip().strip("?.!, ")
             if who:
                 try:
-                    out = self.tools["get_friend_info"].invoke({"name_or_id": who[:120]})
+                    out = self.tools["get_person_info"].invoke({"name_or_id": who[:120]})
                     parts.append(f"[досье:{who}]\n{out[:2500]}")
                 except Exception as e:
-                    logger.debug("get_friend_info: %s", e)
+                    logger.debug("get_person_info: %s", e)
 
         # Автодосье: если упомянуто известное имя, подмешиваем краткую справку без явной команды.
         try:
             mentioned = self._detect_mentioned_names(text)
             for pid in mentioned[:2]:
-                out = self.tools["get_friend_info"].invoke({"name_or_id": pid})
+                out = self.tools["get_person_info"].invoke({"name_or_id": pid})
                 parts.append(f"[авто-досье:{pid}]\n{str(out)[:1400]}")
         except Exception as e:
-            logger.debug("auto get_friend_info: %s", e)
+            logger.debug("auto get_person_info: %s", e)
 
         # Автопамять: если похоже на продолжение темы/контекста, запрашиваем RAG без ключевого слова "вспомни".
         mem_hints = (
@@ -1306,7 +1306,7 @@ class NeyraAgent:
 
             # Кому сохраняем? Если в тексте упомянуты конкретные люди, сохраняем ИМ.
             # Иначе сохраняем самому отправителю.
-            author_p = self.friends_db.find(username) if username else None
+            author_p = self.people_db.find(username) if username else None
             
             # Автор сам всегда попадает в mentioned из-за логики chat_stream, вычистим его для поиска "кого упомянули"
             mentioned_others = [m for m in mentioned if not (author_p and m == author_p["id"])]
@@ -1319,7 +1319,7 @@ class NeyraAgent:
                 targets = []
 
             for uid in targets:
-                if self.friends_db.update_fact(uid, fact):
+                if self.people_db.update_fact(uid, fact):
                     saved.append(f"{uid}: {raw_fact}")
         return saved
 
@@ -1492,17 +1492,17 @@ class NeyraAgent:
         # 2. Ищем упомянутых людей
         mentioned = self._detect_mentioned_names(user_message)
         if username:
-            person = self.friends_db.find(username, discord_id=discord_user_id)
+            person = self.people_db.find(username, discord_id=discord_user_id)
             if person and person["id"] not in mentioned:
                 mentioned.append(person["id"])
 
         # Эвристика: ручное сохранение фактов
         saved_facts = self._handle_memory_trigger(user_message, mentioned, username)
 
-        friends_ctx = ""
+        people_ctx = ""
         if mentioned:
-            summaries = [self.friends_db.get_summary(pid) for pid in mentioned]
-            friends_ctx = "\n\n".join(s for s in summaries if s)
+            summaries = [self.people_db.get_summary(pid) for pid in mentioned]
+            people_ctx = "\n\n".join(s for s in summaries if s)
         diary_ctx = self.diary.recent_text(limit=6)
 
         # Эвристический веб-поиск
@@ -1512,7 +1512,7 @@ class NeyraAgent:
         # Разрешаем настоящее имя спикера
         speaker_name = username
         if username:
-            person = self.friends_db.find(username, discord_id=discord_user_id)
+            person = self.people_db.find(username, discord_id=discord_user_id)
             if person:
                 speaker_name = f"{person['names'][0]} (Discord-ник: {username})"
 
@@ -1521,7 +1521,7 @@ class NeyraAgent:
         # 3. Системный промпт
         system_prompt = self._build_system_prompt(
             extra_memories=memories,
-            friends_context=friends_ctx,
+            people_context=people_ctx,
             diary_context=diary_ctx,
             username=speaker_name,
             web_context=web_ctx,
@@ -1680,17 +1680,17 @@ class NeyraAgent:
         memories = self.long_memory.search(user_message)
         mentioned = self._detect_mentioned_names(user_message)
         if username:
-            person = self.friends_db.find(username, discord_id=discord_user_id)
+            person = self.people_db.find(username, discord_id=discord_user_id)
             if person and person["id"] not in mentioned:
                 mentioned.append(person["id"])
 
         # Эвристика: ручное сохранение фактов
         saved_facts = self._handle_memory_trigger(user_message, mentioned, username)
 
-        friends_ctx = ""
+        people_ctx = ""
         if mentioned:
-            summaries = [self.friends_db.get_summary(pid) for pid in mentioned]
-            friends_ctx = "\n\n".join(s for s in summaries if s)
+            summaries = [self.people_db.get_summary(pid) for pid in mentioned]
+            people_ctx = "\n\n".join(s for s in summaries if s)
         diary_ctx = self.diary.recent_text(limit=6)
 
         # Эвристический веб-поиск
@@ -1699,7 +1699,7 @@ class NeyraAgent:
 
         speaker_name = username
         if username:
-            person = self.friends_db.find(username, discord_id=discord_user_id)
+            person = self.people_db.find(username, discord_id=discord_user_id)
             if person:
                 speaker_name = f"{person['names'][0]} (Discord-ник: {username})"
 
@@ -1707,7 +1707,7 @@ class NeyraAgent:
         last_img_ctx = self._last_image_context_for_prompt(channel_id, vision_images)
         system_prompt = self._build_system_prompt(
             extra_memories=memories,
-            friends_context=friends_ctx,
+            people_context=people_ctx,
             diary_context=diary_ctx,
             username=speaker_name,
             web_context=web_ctx,
@@ -1793,7 +1793,7 @@ class NeyraAgent:
                 # Урезаем системный промпт (убираем веб и память, оставляем только базу)
                 system_prompt = self._build_system_prompt(
                     extra_memories=[],
-                    friends_context=friends_ctx[:500],
+                    people_context=people_ctx[:500],
                     username=speaker_name,
                     web_context="",
                     tool_context="",
@@ -1957,7 +1957,7 @@ class NeyraAgent:
             "model": self.llm_model,
             "short_memory_size": len(self.short_memory),
             "long_memory_records": self.long_memory.count(),
-            "friends_db_records": len(self.friends_db._cache),
+            "people_db_records": len(self.people_db._cache),
             "tools_count": len(self.tools),
             "event_bus": self.event_bus.handler_counts(),
         }

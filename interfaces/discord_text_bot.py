@@ -106,14 +106,14 @@ class NeyraDiscordTextBot(discord.Client):
             raw = self.agent.tools["web_search"].invoke({"query": q[:500]})
             await interaction.followup.send(f"```\n{str(raw)[:1900]}\n```", ephemeral=True)
 
-        @self.tree.command(name="friend", description="Досье из FriendsDB")
+        @self.tree.command(name="person", description="Досье из PeopleDB")
         @app_commands.describe(name_or_id="Имя или id")
-        async def slash_friend(interaction: discord.Interaction, name_or_id: str):
+        async def slash_person(interaction: discord.Interaction, name_or_id: str):
             key = (name_or_id or "").strip()
             if not key:
                 await interaction.response.send_message("Укажи имя или id.", ephemeral=True)
                 return
-            raw = self.agent.tools["get_friend_info"].invoke({"name_or_id": key[:120]})
+            raw = self.agent.tools["get_person_info"].invoke({"name_or_id": key[:120]})
             await interaction.response.send_message(f"```\n{str(raw)[:1900]}\n```", ephemeral=True)
 
         @self.tree.command(name="stats", description="Статистика агента и системы")
@@ -129,7 +129,7 @@ class NeyraDiscordTextBot(discord.Client):
                 f"Модель: {s['model']}",
                 f"Память диалога: {s['short_memory_size']} сообщений",
                 f"RAG: {s['long_memory_records']} записей",
-                f"Людей в БД: {s['friends_db_records']}",
+                f"Людей в БД: {s.get('people_db_records', 0)}",
                 "",
                 f"CPU: {cpu}%",
                 f"ОЗУ: {mem.percent}% ({mem.used // 1024**2} МБ / {mem.total // 1024**2} МБ)",

@@ -459,6 +459,94 @@ logging:
   # RU: Путь к системному логу рантайма.
   system_log: "./logs/system.log"
 
+  # EN: Log level: DEBUG | INFO | WARNING | ERROR.
+  # RU: Уровень логов: DEBUG | INFO | WARNING | ERROR.
+  level: "INFO"
+
+# ---------------------------
+# Core health monitor / Монитор здоровья ядра
+# ---------------------------
+health_monitor:
+  # EN: Enables periodic health checks and module self-healing.
+  # RU: Включает периодические health-проверки и самовосстановление модулей.
+  enabled: true
+
+  # EN: Run interval in seconds (3600 = hourly monitor).
+  # RU: Интервал запуска в секундах (3600 = проверка раз в час).
+  interval_seconds: 3600
+
+  # EN: Timeout for backend /v1/models probe.
+  # RU: Таймаут проверки backend через /v1/models.
+  llm_timeout_seconds: 10
+
+  # EN: JSONL status report file.
+  # RU: Файл JSONL с отчётами состояния.
+  status_log: "./logs/health_status.jsonl"
+
+# ---------------------------
+# Internal API / Внутреннее API
+# ---------------------------
+internal_api:
+  # EN: Bind host for /v1 endpoints.
+  # RU: Хост для запуска /v1 эндпоинтов.
+  host: "127.0.0.1"
+
+  # EN: Bind port for internal API.
+  # RU: Порт внутреннего API.
+  port: 8787
+
+  # EN: Optional bearer token. If empty, auth is disabled.
+  # RU: Опциональный bearer-токен. Если пусто — авторизация выключена.
+  token: ""
+
+  websocket:
+    # EN: Idle timeout for ws(s):// connections (no incoming frames).
+    # RU: Idle-таймаут ws(s):// соединения (нет входящих кадров).
+    idle_timeout_seconds: 60
+
+    # EN: Recommended ping interval for clients.
+    # RU: Рекомендуемый ping-интервал для клиентов.
+    ping_interval_seconds: 20
+
+    # EN: Grace period before close on timeout/errors.
+    # RU: Пауза перед закрытием сокета при timeout/ошибке.
+    close_grace_seconds: 5
+
   # EN: Log verbosity level: DEBUG | INFO | WARNING | ERROR.
   # RU: Уровень логирования: DEBUG | INFO | WARNING | ERROR.
   level: "INFO"
+
+# ---------------------------
+# Backup / Restore / External Storage
+# ---------------------------
+backup:
+  # EN: Local backup archive directory.
+  # RU: Локальная директория архивов бэкапа.
+  local_dir: "./backups"
+
+external_storage:
+  # EN: Global switch for remote storage adapter.
+  # RU: Глобальный переключатель адаптера внешнего хранилища.
+  enabled: false
+
+  # EN: Provider id: local_folder | google_drive
+  # RU: Провайдер: local_folder | google_drive
+  provider: "local_folder"
+
+  # EN: Run auto backup sync after big reflection.
+  # RU: Автосинхронизация бэкапа после большой рефлексии.
+  sync_after_big_reflection: true
+
+  local_folder:
+    # EN: Pseudo-remote target dir for local tests/dev.
+    # RU: Псевдо-удалённая папка для локальных тестов/разработки.
+    path: "./external_storage"
+
+  google_drive:
+    # EN: Service account credentials json path.
+    # RU: Путь к service account credentials json.
+    credentials_json: "./secrets/google-drive-service-account.json"
+
+    # EN: Target Google Drive folder id.
+    # RU: ID целевой папки Google Drive.
+    folder_id: ""

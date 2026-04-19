@@ -1,0 +1,10 @@
+id: example
+name: Example Plugin
+description: Minimal template plugin for Neyra Plugin SDK.
+version: "0.1.0"
+enabled: false
+main_script: core/main.py
+entry_mode: service
+events: []
+commands: []
+permissions: []
