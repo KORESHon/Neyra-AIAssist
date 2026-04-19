@@ -1,5 +1,5 @@
 # 000EXAMPLE — шаблон плагина Neyra (сортировка «первым в списке» по имени папки).
-# Полная документация: HELP.md и help.html в этой же папке.
+# Туториал и справка: HELP.md (EN), HELP-RU.md (RU), кратко: help.html
 
 id: example
 name: "000EXAMPLE (Plugin SDK template)"
