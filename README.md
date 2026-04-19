@@ -1,5 +1,7 @@
 # Neyra - AIAssist
 
+**Repository:** [github.com/KORESHon/Neyra-AIAssist](https://github.com/KORESHon/Neyra-AIAssist)
+
 Modular AI assistant platform with a core-first architecture.
 
 ## Overview

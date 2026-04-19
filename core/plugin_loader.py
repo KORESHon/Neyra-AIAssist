@@ -23,6 +23,8 @@ class PluginManifest:
     description: str
     version: str
     enabled: bool
+    # resident: load main_script at startup; on_demand: registry only until invoke
+    lifecycle: str
     main_script: str
     plugin_dir: Path
     raw: dict[str, Any]
@@ -43,6 +45,9 @@ class PluginLoader:
                 if not isinstance(raw, dict):
                     continue
                 plugin_dir = manifest_path.parent
+                lc = str(raw.get("lifecycle") or "resident").strip().lower()
+                if lc not in ("resident", "on_demand"):
+                    lc = "resident"
                 out.append(
                     PluginManifest(
                         id=str(raw.get("id") or plugin_dir.name).strip(),
@@ -50,6 +55,7 @@ class PluginLoader:
                         description=str(raw.get("description") or "").strip(),
                         version=str(raw.get("version") or "0.0.0").strip(),
                         enabled=bool(raw.get("enabled", True)),
+                        lifecycle=lc,
                         main_script=str(raw.get("main_script") or "").strip(),
                         plugin_dir=plugin_dir,
                         raw=raw,
@@ -69,6 +75,7 @@ class PluginLoader:
                     "description": p.description,
                     "version": p.version,
                     "enabled": p.enabled,
+                    "lifecycle": p.lifecycle,
                     "main_script": p.main_script,
                     "plugin_dir": str(p.plugin_dir),
                 }
@@ -99,6 +106,9 @@ class PluginLoader:
         for p in self.discover_manifests():
             if not p.enabled:
                 logger.info("Plugin disabled, skip: %s", p.id)
+                continue
+            if p.lifecycle == "on_demand":
+                logger.info("Plugin on_demand, registry only at startup: %s", p.id)
                 continue
             if not p.main_script:
                 logger.warning("Plugin %s has empty main_script", p.id)
