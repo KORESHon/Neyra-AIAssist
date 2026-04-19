@@ -27,7 +27,7 @@ Neyra строится как переиспользуемое ядро плюс
 - `core/` — модель, память, рефлексия, инструменты, загрузка секретов.
 - `core/voice/` — voice-адаптеры и будущие фабрики STT/TTS.
 - `interfaces/` — плагины (`interfaces/<id>/plugin.yaml` + `main.py`): discord, API, local voice, screen и шаблон **`000EXAMPLE`** (первый в списке по имени папки).
-- **Документация Plugin SDK** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md) (русский туториал), [HELP.md](interfaces/000EXAMPLE/HELP.md) (English); кратко офлайн: [help.html](interfaces/000EXAMPLE/help.html).
+- **Документация Plugin SDK** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md) (русский туториал), [HELP.md](interfaces/000EXAMPLE/HELP.md) (English).
 - `scripts/` — эксплуатационные скрипты (healthcheck и вспомогательные утилиты).
 - `main.py` — точка входа и запуск режимов.
 - `run_neyra.bat` — запуск на Windows с preflight-проверками.
@@ -95,5 +95,5 @@ Neyra развивается как персональный публичный 
 - `README.md` — публичный обзор (EN).
 - `README-RU.md` — публичный обзор (RU).
 - `PLAN.md` — дорожная карта (если ведёте в репозитории).
-- **Как писать плагины** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md), [HELP.md](interfaces/000EXAMPLE/HELP.md); офлайн: [help.html](interfaces/000EXAMPLE/help.html).
+- **Как писать плагины** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md), [HELP.md](interfaces/000EXAMPLE/HELP.md).
 

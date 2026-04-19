@@ -1,8 +1,6 @@
 """
-Точка входа плагина 000EXAMPLE.
-
-Обязательный контракт Neyra Plugin SDK: экспорт функции run_plugin(ctx).
-См. HELP.md, HELP-RU.md и help.html в каталоге плагина.
+RU: Точка входа плагина 000EXAMPLE. Обязателен экспорт run_plugin(ctx) — см. HELP.md / HELP-RU.md.
+EN: Entry point for 000EXAMPLE plugin. Must export run_plugin(ctx) — see HELP.md / HELP-RU.md.
 """
 
 from __future__ import annotations
@@ -16,23 +14,22 @@ logger = logging.getLogger("neyra.plugin.example")
 
 
 def run_plugin(ctx: PluginContext) -> None:
-    """
-    Синхронная точка входа. Вызывается из main.py при запуске режима из cli_modes
-    или при явной загрузке плагина. Блокирующий код допустим (как discord.run / uvicorn.run).
-    """
+    # RU: Синхронная функция; блокирующий код допустим (как discord.run / uvicorn.run).
+    # EN: Synchronous entry; blocking calls OK (e.g. discord.run / uvicorn.run).
     logger.info(
         "000EXAMPLE run_plugin | root=%s | agent=%s",
         ctx.root,
         "yes" if ctx.agent is not None else "no",
     )
-    # Учебный плагин: не поднимает сеть и не требует секретов.
+    # RU: Учебный пример — без сети и секретов. Реальные интерфейсы: discord_text, internal_api.
+    # EN: Tutorial only — no network/secrets. Real interfaces: discord_text, internal_api.
     print(
-        "[000EXAMPLE] Плагин отработал. Для реального интерфейса см. interfaces/discord_text/ "
-        "или interfaces/internal_api/."
+        "[000EXAMPLE] OK. See interfaces/discord_text/ or interfaces/internal_api/ for real plugins."
     )
 
 
-# Необязательные заготовки под будущий SDK (события / горячая перезагрузка):
+# RU: Ниже — необязательные заготовки под будущий SDK (события, горячая перезагрузка).
+# EN: Optional stubs for a future SDK (events, hot reload).
 def setup(context: dict[str, Any] | None = None) -> None:
     logger.info("Example plugin setup | context_keys=%s", list((context or {}).keys()))
 
