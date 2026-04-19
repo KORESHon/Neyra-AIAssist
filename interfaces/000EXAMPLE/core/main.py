@@ -2,7 +2,7 @@
 Точка входа плагина 000EXAMPLE.
 
 Обязательный контракт Neyra Plugin SDK: экспорт функции run_plugin(ctx).
-См. HELP.md и help.html в каталоге плагина.
+См. HELP.md, HELP-RU.md и help.html в каталоге плагина.
 """
 
 from __future__ import annotations

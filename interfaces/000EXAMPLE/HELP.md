@@ -1,44 +1,155 @@
-# Neyra Plugin SDK — справка / Help
+# Neyra Plugin SDK — Tutorial & Reference (English)
 
-**Languages:** [Русский](#русский) · [English](#english)
+**Other language:** [HELP-RU.md](HELP-RU.md) (Русский)
+
+This guide is both a **tutorial** and a **reference**: what plugins are for, what you should and should not do, a Hello World walkthrough, and pointers to real code in the repo.
 
 ---
 
-## Русский
+## Table of contents
 
-### Что такое плагин
+1. [Philosophy](#philosophy)
+2. [What you can build (capabilities)](#what-you-can-build-capabilities)
+3. [What you must not do (anti-patterns)](#what-you-must-not-do-anti-patterns)
+4. [Tutorial: Hello World plugin](#tutorial-hello-world-plugin)
+5. [Reference: layout & manifest](#reference-layout--manifest)
+6. [Reference: `PluginContext` & `run_plugin`](#reference-plugincontext--run_plugin)
+7. [How `main.py` wires CLI modes](#how-mainpy-wires-cli-modes)
+8. [Loader API](#loader-api)
+9. [Reference implementations](#reference-implementations)
+10. [Checklist before sharing your plugin](#checklist-before-sharing-your-plugin)
+11. [Troubleshooting](#troubleshooting)
 
-Плагин — это каталог в `interfaces/<имя_папки>/` с обязательным файлом **`plugin.yaml`** и точкой входа **`main_script`** (по умолчанию `core/main.py` или `main.py`). Ядро находит все `interfaces/*/plugin.yaml`, строит реестр и при необходимости загружает Python-модуль.
+---
 
-### Рекомендуемая структура (пример)
+## Philosophy
 
+A **plugin** is an isolated folder under `interfaces/<name>/`. The core discovers `interfaces/*/plugin.yaml` and loads your entry module only when needed (depending on `lifecycle`, CLI mode, or future `invoke` APIs). **Removing a plugin folder must not break the core** — that is the main design rule.
+
+---
+
+## What you can build (capabilities)
+
+With access to `PluginContext`, a plugin can:
+
+- **Add interfaces (entry points):** e.g. another chat transport (Telegram, VK, local STT pipeline), similar to `discord_text`.
+- **Run background workers:** periodic jobs (RSS, email checks) that write facts through the same memory APIs the core uses — follow async and process boundaries carefully.
+- **Embed servers:** run FastAPI/uvicorn inside the process, like `internal_api` (`api_server.py`).
+- **Use the core:** read `ctx.config`, and either use `ctx.agent` when the launcher passes it (e.g. Discord) or construct `NeyraAgent(ctx.config)` inside the plugin (like the API does). Prefer **not** calling raw OpenAI SDKs from the plugin — route LLM calls through `NeyraAgent` so models, logging, and safety stay consistent.
+
+---
+
+## What you must not do (anti-patterns)
+
+| Do not | Why |
+|--------|-----|
+| **Patch files under `core/` from a plugin** | Plugins must stay removable. Put logic in `interfaces/<your_plugin>/`. |
+| **Commit secrets in `plugin.yaml` or source** | Tokens belong in `.env` and are merged into `ctx.config` via `core/secrets_loader.py`. |
+| **Block the whole event loop without reason** | For long-running work inside a shared process, prefer `asyncio` and non-blocking I/O. Dedicated CLI modes (Discord, uvicorn) may block their thread by design. |
+| **Bypass `NeyraAgent` for LLM calls** | Do not embed ad-hoc `openai` clients for assistant replies — use `NeyraAgent` so configuration and tracing stay centralized. |
+| **Reuse production `cli_modes` names** | Do not register `discord`, `api`, etc., for experiments — pick unique names. |
+
+---
+
+## Tutorial: Hello World plugin
+
+### Step 1 — Create a folder
+
+```text
+interfaces/my_hello_plugin/
 ```
+
+Use a unique folder name (lowercase and underscores are fine).
+
+### Step 2 — Add `plugin.yaml`
+
+```yaml
+id: hello_world
+name: Hello World Plugin
+description: Minimal SDK demo
+version: "1.0.0"
+enabled: true
+lifecycle: on_demand
+cli_modes:
+  - hello
+main_script: main.py
+```
+
+### Step 3 — Add `main.py` at the plugin root
+
+`NeyraAgent.chat` is **async**. For a blocking `run_plugin`, use `asyncio.run`. The stock `main.py` only passes `ctx.agent` for **Discord**; for other modes, create an agent inside the plugin (same idea as `internal_api`).
+
+```python
+from __future__ import annotations
+
+import asyncio
+
+from core.agent import NeyraAgent
+from core.plugin_sdk import PluginContext
+
+
+def run_plugin(ctx: PluginContext) -> None:
+    print(f"[hello_world] project root = {ctx.root}")
+
+    async def _run() -> None:
+        agent = ctx.agent or NeyraAgent(ctx.config)
+        out = await agent.chat(
+            "Reply with one short English sentence: Hello from the plugin tutorial.",
+            username="hello_world",
+        )
+        print("[hello_world] model reply:", (out or {}).get("text", out))
+
+    asyncio.run(_run())
+```
+
+### Step 4 — Run
+
+```bash
+python main.py --mode hello
+```
+
+If two plugins register the same `cli_modes` entry, the loader keeps one (a warning is logged). Use a **unique** mode name.
+
+### Disabling the template `000EXAMPLE`
+
+The shipped template under `interfaces/000EXAMPLE/` stays **`enabled: false`** and has **no** `cli_modes` so it never conflicts with your modes. Copy it as a starting point, or follow the layout above from scratch.
+
+---
+
+## Reference: layout & manifest
+
+Typical layout:
+
+```text
 interfaces/000EXAMPLE/
-  plugin.yaml          # манифест
-  HELP.md              # эта справка (Markdown, удобно на GitHub)
-  help.html            # та же логика в виде HTML для просмотра в браузере с диска
+  plugin.yaml
+  HELP.md
+  HELP-RU.md
+  help.html
   core/
-    main.py            # main_script — экспорт run_plugin(ctx)
+    main.py       # if main_script points here
 ```
 
-Реальные интерфейсы в репозитории: `discord_text/`, `internal_api/`, `local_voice/`, `laptop_screen/`.
+Shipped plugins: `discord_text/`, `internal_api/`, `local_voice/`, `laptop_screen/`.
 
-### Поля `plugin.yaml`
+### `plugin.yaml` fields
 
-| Поле | Описание |
-|------|-----------|
-| `id` | Уникальный id плагина (строка). |
-| `name`, `description`, `version` | Метаданные для реестра и UI. |
-| `enabled` | `true` / `false` — участвует ли плагин в рантайме. |
-| `lifecycle` | `resident` — прелоад в списке «загруженных» при обходе resident; `on_demand` — код не импортируется до вызова / CLI. |
-| `cli_modes` | Список строк, совпадающих с `python main.py --mode <имя>`. Пустой список — плагин не привязан к отдельному режиму. |
-| `main_script` | Путь к `.py` относительно папки плагина (например `core/main.py`). |
+| Field | Meaning |
+|-------|---------|
+| `id` | Unique string id. |
+| `name`, `description`, `version` | Metadata for registry / UI. |
+| `enabled` | If `false`, `python main.py --mode …` for this plugin’s mode will exit with an error. |
+| `lifecycle` | `resident` — eligible for eager load paths; `on_demand` — skip eager import where the loader supports it. |
+| `cli_modes` | Strings that match `python main.py --mode <name>`. Empty if you only use programmatic loading later. |
+| `main_script` | Path to the entry `.py` file, relative to the plugin directory. |
 
-Дополнительные поля (`events`, `commands`, …) зарезервированы под будущий SDK и мини-сайт.
+Reserved keys such as `events`, `commands`, `permissions` are for future dashboard / SDK features.
 
-### Контракт Python: `PluginContext` и `run_plugin`
+---
 
-Модуль `main_script` **обязан** экспортировать:
+## Reference: `PluginContext` & `run_plugin`
+
+The entry module **must** export:
 
 ```python
 def run_plugin(ctx: PluginContext) -> None:
@@ -47,93 +158,53 @@ def run_plugin(ctx: PluginContext) -> None:
 
 `PluginContext` (`core/plugin_sdk.py`):
 
-- `root` — `Path` корня проекта;
-- `config` — полный словарь конфигурации после подстановки секретов из `.env`;
-- `agent` — экземпляр `NeyraAgent` или `None` (для Discord передаётся агент; для HTTP API плагин обычно создаёт свой агент внутри, как `internal_api`).
-
-Функция может блокировать поток (как `discord.py` `run()` или `uvicorn.run()`).
-
-### Связь с `main.py`
-
-- Режимы CLI задаются через **`cli_modes`** в манифесте.
-- Команда: `python main.py --mode discord` → плагин, у которого в `cli_modes` есть `discord`.
-- Если плагин **`enabled: false`**, запуск режима завершится ошибкой.
-- Пример шаблона **`000EXAMPLE`** по умолчанию выключен и **без** `cli_modes`, чтобы не пересекаться с боевыми режимами.
-
-### Загрузчик
-
-- `core/plugin_loader.py` — `PluginLoader`, `discover_manifests()`, `list_plugins()`, `import_plugin_module()`, `manifest_for_cli_mode()`.
-- `core/plugin_sdk.py` — `run_plugin_entrypoint(module, ctx)`.
-
-### Где смотреть рабочий код
-
-- Текстовый Discord: `interfaces/discord_text/`.
-- Internal API: `interfaces/internal_api/` (`api_server.py` — FastAPI-приложение).
+- `root: Path` — repository root.
+- `config: dict` — full YAML config after `.env` overlays.
+- `agent` — `NeyraAgent` or `None`. Today, `main.py` injects an agent for **Discord** only; other modes should call `NeyraAgent(ctx.config)` if they need the agent.
 
 ---
 
-## English
+## How `main.py` wires CLI modes
 
-### What a plugin is
+- `core/plugin_loader.PluginLoader.manifest_for_cli_mode(mode)` finds the plugin whose `cli_modes` contains `mode`.
+- If the manifest is missing or `enabled: false`, startup fails.
+- The entry module is loaded with `import_plugin_module`, then `run_plugin_entrypoint` calls `run_plugin(ctx)`.
 
-A plugin is a directory under `interfaces/<folder_name>/` with a required **`plugin.yaml`** and an entry module **`main_script`** (often `core/main.py` or `main.py`). The core discovers every `interfaces/*/plugin.yaml`, builds a registry, and loads the Python module when needed.
+---
 
-### Suggested layout (template)
+## Loader API
 
-```
-interfaces/000EXAMPLE/
-  plugin.yaml          # manifest
-  HELP.md              # this guide (renders nicely on GitHub)
-  help.html            # same content as HTML for local browser viewing
-  core/
-    main.py            # main_script — must export run_plugin(ctx)
-```
+- `core/plugin_loader.py` — `PluginLoader`, `discover_manifests()`, `list_plugins()`, `cli_mode_index()`, `import_plugin_module()`, `manifest_for_cli_mode()`, `set_enabled()`.
+- `core/plugin_sdk.py` — `PluginContext`, `run_plugin_entrypoint`.
 
-Shipped interfaces: `discord_text/`, `internal_api/`, `local_voice/`, `laptop_screen/`.
+---
 
-### `plugin.yaml` fields
+## Reference implementations
 
-| Field | Meaning |
-|-------|---------|
-| `id` | Unique plugin id (string). |
-| `name`, `description`, `version` | Metadata for registry / UI. |
-| `enabled` | `true` / `false` — whether the plugin participates at runtime. |
-| `lifecycle` | `resident` vs `on_demand` (see PLAN / loader: on_demand skips eager import where applicable). |
-| `cli_modes` | List of names matching `python main.py --mode <name>`. Empty = no dedicated CLI mode. |
-| `main_script` | Path to the entry `.py` relative to the plugin folder. |
+| Plugin | Role |
+|--------|------|
+| `interfaces/discord_text/` | Discord client, uses injected `ctx.agent`. |
+| `interfaces/internal_api/` | FastAPI + uvicorn; builds its own `NeyraAgent` in `build_app`. |
+| `interfaces/local_voice/`, `interfaces/laptop_screen/` | Stubs for future work. |
 
-Extra keys (`events`, `commands`, …) are reserved for future SDK and dashboard.
+---
 
-### Python contract: `PluginContext` and `run_plugin`
+## Checklist before sharing your plugin
 
-The `main_script` module **must** export:
+- [ ] No secrets in the repo — only `.env` / config keys documented in `.env.example`.
+- [ ] Unique `id` and unique `cli_modes` values vs other plugins.
+- [ ] `enabled` default appropriate for public clones (`false` if it needs local credentials).
+- [ ] LLM traffic goes through `NeyraAgent` (unless you have a rare, documented exception).
+- [ ] README or HELP snippet for users who install your folder under `interfaces/`.
 
-```python
-def run_plugin(ctx: PluginContext) -> None:
-    ...
-```
+---
 
-`PluginContext` (see `core/plugin_sdk.py`):
+## Troubleshooting
 
-- `root` — project root `Path`;
-- `config` — full config dict after `.env` overlays;
-- `agent` — `NeyraAgent` instance or `None` (Discord gets an agent from `main.py`; the API plugin builds its own inside `build_app`, etc.).
+**`No plugin registers cli_mode`** — Check `cli_modes` spelling and `enabled: true`.
 
-The function may block (Discord / uvicorn).
+**Import errors** — Run from project root so `core.*` imports resolve; use the same layout as shipped plugins.
 
-### Wiring to `main.py`
+**Agent is `None`** — Expected for non-Discord modes; instantiate `NeyraAgent(ctx.config)` in the plugin.
 
-- CLI modes come from **`cli_modes`** in the manifest.
-- Example: `python main.py --mode api` → plugin whose `cli_modes` contains `api`.
-- If the plugin is **`enabled: false`**, the mode exits with an error.
-- The **`000EXAMPLE`** template stays **disabled** and has **no** `cli_modes` so it never collides with production modes.
-
-### Loader API
-
-- `core/plugin_loader.py` — discovery, `list_plugins()`, `import_plugin_module()`, `manifest_for_cli_mode()`.
-- `core/plugin_sdk.py` — `run_plugin_entrypoint(module, ctx)`.
-
-### Reference implementations
-
-- Discord text bot: `interfaces/discord_text/`.
-- HTTP / WebSocket API: `interfaces/internal_api/` (`api_server.py`).
+**Duplicate mode warning** — Two manifests list the same `cli_modes` entry; rename your mode.
