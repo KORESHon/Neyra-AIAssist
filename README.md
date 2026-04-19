@@ -26,7 +26,7 @@ Current stable runtime:
 
 - `core/` - model, memory, reflection, tools, secrets loader.
 - `core/voice/` - voice adapters and factories (cloud/local evolution path).
-- `interfaces/` - plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: `discord_text`, `internal_api`, `local_voice`, `laptop_screen`.
+- `interfaces/` - plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: `discord_text`, `internal_api`, `local_voice`, `laptop_screen`; template **`000EXAMPLE/`** (see Plugin SDK links below).
 - `scripts/` - ops helpers (health checks and maintenance utilities).
 - `main.py` - app entrypoint and mode launcher.
 - `run_neyra.bat` - Windows launcher with mode selection and preflight.
@@ -115,6 +115,7 @@ Recommendation:
 - `README.md` - public product/technical overview (English).
 - `README-RU.md` - public product/technical overview (Russian).
 - `PLAN.md` - roadmap (when tracked in the repo).
+- **Plugin SDK (how to write plugins)** — [interfaces/000EXAMPLE/HELP.md](interfaces/000EXAMPLE/HELP.md) (Russian + English); optional offline view: [interfaces/000EXAMPLE/help.html](interfaces/000EXAMPLE/help.html).
 
 ## Notes
 

@@ -14,17 +14,19 @@
 
 ## Выполнено (кратко + что прогнать)
 
-| Этап | Суть | Проверки |
-|------|------|----------|
-| **1.1** | Единый OpenAI-compatible LLM-слой (`core/llm_profile.py`), backend из `config.yaml` | Переключение `BACKEND` / профилей; `scripts/healthcheck.py` |
-| **1.2** | Event Bus + identity (`core/event_bus.py`, `core/identity.py`) | Discord/API: события; `user_id` в памяти |
-| **1.3** | Двухуровневая рефлексия (`core/reflection.py`) | `/reflect`, ночной cron |
-| **1.4** | Health monitor (`core/health_monitor.py`), JSONL | `logs/health_status.jsonl` |
-| **1.5** | PeopleDB (`core/memory.py`, инструменты) | `/person`, `/v1/memory/*` |
-| **2.1** | Internal REST API в плагине `interfaces/internal_api/` (`api_server.py`): chat, memory, notify, health, stats, config/update, backup | `python main.py --mode api`; curl/OpenAPI; Bearer опционально |
-| **2.2** | WebSocket `/v1/ws/chat`, `/v1/ws/audio` в том же приложении | `ws://` локально; WSS — `docs/wss-deploy.md` |
-| **2.4** | Бэкап + внешнее хранилище | `POST /v1/backup/run` |
-| **5.1** | **Plugin SDK:** `core/plugin_sdk.py` (`PluginContext`, `run_plugin_entrypoint`), `core/plugin_loader.py` (`cli_modes`, `import_plugin_module`, реестр). Интерфейсы как плагины: `interfaces/discord_text/`, `interfaces/internal_api/`, `interfaces/local_voice/`, `interfaces/laptop_screen/`, шаблон `interfaces/example/`. Контракт: `main_script` экспортирует `run_plugin(ctx)`. Связь CLI: `plugin.yaml` → `cli_modes` (например `discord`, `api`, `local_voice`, `screen`). | `PluginLoader(_PROJECT_ROOT).list_plugins()`; `python main.py --mode discord\|api\|local_voice\|screen`; выключенный плагин (`enabled: false`) → выход с ошибкой |
+
+| Этап    | Суть                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Проверки                                                                     |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| **1.1** | Единый OpenAI-compatible LLM-слой (`core/llm_profile.py`), backend из `config.yaml`                                                                                                                                                                                                                                                                                                                                                                                                                             | Переключение `BACKEND` / профилей; `scripts/healthcheck.py`                  |
+| **1.2** | Event Bus + identity (`core/event_bus.py`, `core/identity.py`)                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Discord/API: события; `user_id` в памяти                                     |
+| **1.3** | Двухуровневая рефлексия (`core/reflection.py`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `/reflect`, ночной cron                                                      |
+| **1.4** | Health monitor (`core/health_monitor.py`), JSONL                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `logs/health_status.jsonl`                                                   |
+| **1.5** | PeopleDB (`core/memory.py`, инструменты)                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `/person`, `/v1/memory/`*                                                    |
+| **2.1** | Internal REST API в плагине `interfaces/internal_api/` (`api_server.py`): chat, memory, notify, health, stats, config/update, backup                                                                                                                                                                                                                                                                                                                                                                            | `python main.py --mode api`; curl/OpenAPI; Bearer опционально                |
+| **2.2** | WebSocket `/v1/ws/chat`, `/v1/ws/audio` в том же приложении                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `ws://` локально; WSS — `docs/wss-deploy.md`                                 |
+| **2.4** | Бэкап + внешнее хранилище                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `POST /v1/backup/run`                                                        |
+| **5.1** | **Plugin SDK:** `core/plugin_sdk.py` (`PluginContext`, `run_plugin_entrypoint`), `core/plugin_loader.py` (`cli_modes`, `import_plugin_module`, реестр). Интерфейсы как плагины: `interfaces/discord_text/`, `interfaces/internal_api/`, `interfaces/local_voice/`, `interfaces/laptop_screen/`, шаблон `interfaces/000EXAMPLE/` (см. HELP.md / help.html). Контракт: `main_script` экспортирует `run_plugin(ctx)`. Связь CLI: `plugin.yaml` → `cli_modes` (например `discord`, `api`, `local_voice`, `screen`). | `PluginLoader(_PROJECT_ROOT).list_plugins()`; `python main.py --mode discord |
+
 
 ---
 
@@ -34,7 +36,7 @@
 
 - Дашборд, OpenAPI/Swagger, управление плагинами.
 - **Вебхуки и микро-оповещения** (бывш. 2.3): настройка через UI; в ядре retry/backoff, throttling, dead-letter.
-- **Фронт** для чата с Нейрой: папка **`site/`** или **`frontend/`** (уточнится при старте реализации), работа через существующий API ядра.
+- **Фронт** для чата с Нейрой: папка `**site/`** или `**frontend/`** (уточнится при старте реализации), работа через существующий API ядра.
 
 ### GitHub Pages — демо одной страницы
 
@@ -69,3 +71,4 @@ Desktop, mobile-lite через API.
 - Режим «ИИ-станция», device-интеграция.
 - Open-core / платные расширения.
 - Поддержка проекта: `README.md` / `README-RU.md` (крипто-адреса).
+
