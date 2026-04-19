@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Neyra Plugin SDK — HELP</title>
+  <style>
+    :root { --fg: #1a1a1a; --muted: #555; --border: #ddd; --code: #f4f4f4; --link: #0969da; }
+    body { font-family: system-ui, Segoe UI, Roboto, sans-serif; line-height: 1.5; color: var(--fg); max-width: 52rem; margin: 0 auto; padding: 1rem 1.25rem 3rem; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+    .sub { color: var(--muted); font-size: 0.95rem; margin-bottom: 1.5rem; }
+    nav { margin: 1rem 0 2rem; padding: 0.75rem 1rem; background: var(--code); border-radius: 6px; }
+    nav a { color: var(--link); margin-right: 1rem; }
+    h2 { font-size: 1.2rem; margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
+    h3 { font-size: 1.05rem; margin-top: 1.25rem; }
+    pre, code { font-family: ui-monospace, Consolas, monospace; font-size: 0.88rem; }
+    pre { background: var(--code); padding: 1rem; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.92rem; margin: 0.5rem 0; }
+    th, td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+    th { background: #fafafa; }
+    .note { font-size: 0.9rem; color: var(--muted); margin-top: 2rem; }
+  </style>
+</head>
+<body>
+  <h1>Neyra Plugin SDK</h1>
+  <p class="sub">Offline help for the <code>000EXAMPLE</code> template. Open this file from disk or serve it locally.</p>
+
+  <nav>
+    <a href="#ru">Русский</a>
+    <a href="#en">English</a>
+    <a href="HELP.md">HELP.md</a> (on GitHub)
+  </nav>
+
+  <section id="ru" lang="ru">
+    <h2>Русский</h2>
+    <p>Плагин — каталог <code>interfaces/&lt;папка&gt;/</code> с <strong>plugin.yaml</strong> и модулем <strong>main_script</strong>. Ядро сканирует <code>interfaces/*/plugin.yaml</code>.</p>
+
+    <h3>Структура (шаблон)</h3>
+    <pre>interfaces/000EXAMPLE/
+  plugin.yaml
+  HELP.md
+  help.html
+  core/main.py</pre>
+
+    <h3>Поля plugin.yaml</h3>
+    <table>
+      <tr><th>Поле</th><th>Смысл</th></tr>
+      <tr><td><code>id</code></td><td>Уникальный идентификатор.</td></tr>
+      <tr><td><code>enabled</code></td><td>Включён ли плагин в рантайме.</td></tr>
+      <tr><td><code>lifecycle</code></td><td><code>resident</code> / <code>on_demand</code>.</td></tr>
+      <tr><td><code>cli_modes</code></td><td>Список имён для <code>python main.py --mode …</code>; можно оставить пустым.</td></tr>
+      <tr><td><code>main_script</code></td><td>Путь к Python от корня плагина.</td></tr>
+    </table>
+
+    <h3>Контракт</h3>
+    <p>В <code>main_script</code> нужна функция:</p>
+    <pre>def run_plugin(ctx: PluginContext) -> None:
+    ...</pre>
+    <p><code>ctx.root</code> — корень проекта, <code>ctx.config</code> — конфиг, <code>ctx.agent</code> — агент или <code>None</code> (см. <code>core/plugin_sdk.py</code>).</p>
+
+    <h3>Примеры в репозитории</h3>
+    <p><code>interfaces/discord_text/</code>, <code>interfaces/internal_api/</code>.</p>
+  </section>
+
+  <section id="en" lang="en">
+    <h2>English</h2>
+    <p>A plugin is a folder under <code>interfaces/&lt;name&gt;/</code> with <strong>plugin.yaml</strong> and the <strong>main_script</strong> module. The core globs <code>interfaces/*/plugin.yaml</code>.</p>
+
+    <h3>Layout (template)</h3>
+    <pre>interfaces/000EXAMPLE/
+  plugin.yaml
+  HELP.md
+  help.html
+  core/main.py</pre>
+
+    <h3>plugin.yaml fields</h3>
+    <table>
+      <tr><th>Field</th><th>Meaning</th></tr>
+      <tr><td><code>id</code></td><td>Unique id.</td></tr>
+      <tr><td><code>enabled</code></td><td>Runtime on/off.</td></tr>
+      <tr><td><code>lifecycle</code></td><td><code>resident</code> / <code>on_demand</code>.</td></tr>
+      <tr><td><code>cli_modes</code></td><td>Names for <code>python main.py --mode …</code>; may be empty.</td></tr>
+      <tr><td><code>main_script</code></td><td>Path to the entry Python file.</td></tr>
+    </table>
+
+    <h3>Contract</h3>
+    <p>Export from <code>main_script</code>:</p>
+    <pre>def run_plugin(ctx: PluginContext) -> None:
+    ...</pre>
+    <p>See <code>core/plugin_sdk.py</code> for <code>PluginContext</code>.</p>
+
+    <h3>Reference plugins</h3>
+    <p><code>interfaces/discord_text/</code>, <code>interfaces/internal_api/</code>.</p>
+  </section>
+
+  <p class="note">Полная версия с таблицами и ссылками — в <a href="HELP.md">HELP.md</a> (удобно в интерфейсе GitHub). Этот HTML — для локального просмотра в браузере без рендеринга Markdown.</p>
+</body>
+</html>

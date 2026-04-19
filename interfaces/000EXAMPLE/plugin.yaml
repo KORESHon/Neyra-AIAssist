@@ -1,0 +1,23 @@
+# 000EXAMPLE — шаблон плагина Neyra (сортировка «первым в списке» по имени папки).
+# Полная документация: HELP.md и help.html в этой же папке.
+
+id: example
+name: "000EXAMPLE (Plugin SDK template)"
+description: >
+  Учебный плагин с документацией. По умолчанию выключен. Не регистрирует cli_modes,
+  чтобы не пересекаться с боевыми режимами (discord, api, …).
+version: "0.2.0"
+enabled: false
+
+# resident   — main_script импортируется при предзагрузке resident-плагинов ядром
+# on_demand  — только реестр; код подгружается по invoke или при явном import_plugin_module (CLI)
+lifecycle: on_demand
+cli_modes: []
+
+main_script: core/main.py
+
+# Дополнительные поля (резерв под SDK / мини-сайт)
+entry_mode: service
+events: []
+commands: []
+permissions: []
