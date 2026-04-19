@@ -1,5 +1,7 @@
 # Neyra - AIAssist
 
+**Репозиторий:** [github.com/KORESHon/Neyra-AIAssist](https://github.com/KORESHon/Neyra-AIAssist)
+
 Модульная платформа ИИ-ассистента с приоритетом на стабильное ядро.
 
 ## Обзор
