@@ -79,6 +79,10 @@ def apply_env_secrets(cfg: dict) -> None:
     if apk:
         cfg.setdefault("agent_proxy", {})["secret_key"] = apk
 
+    iat = _s("INTERNAL_API_TOKEN")
+    if iat:
+        cfg.setdefault("internal_api", {})["token"] = iat
+
     yk = _s("YANDEX_API_KEY")
     yf = _s("YANDEX_FOLDER_ID") or _s("YANDEX_ID_KEY")
     if yk or yf:

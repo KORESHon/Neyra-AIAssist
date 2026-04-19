@@ -1,6 +1,5 @@
 .env
 config.yaml
-PLAN.md
 Gemini.md
 Diplom.md
 .venv/
@@ -22,7 +21,7 @@ __pycache__/
 memory/chroma_db/
 memory/journal.json
 memory/thoughts.log
-memory/friends_db/
+memory/people_db/
 memory/neyra_diary.jsonl
 logs/
 *.wav

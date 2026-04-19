@@ -3,7 +3,7 @@ core/memory.py — Система памяти Нейры
 ──────────────────────────────────────
 • Краткосрочная: скользящее окно сообщений (in-context)
 • Долгосрочная: ChromaDB RAG — векторизованные диалоги
-• FriendsDB: JSON-досье на каждого человека
+• PeopleDB: JSON-досье на каждого человека
 """
 
 from __future__ import annotations
@@ -203,19 +203,19 @@ class LongTermMemory:
             return 0
 
 
-# ─── FriendsDB — досье на друзей ─────────────────────────────────────────────
+# ─── PeopleDB — досье на людей ───────────────────────────────────────────────
 
-class FriendsDB:
+class PeopleDB:
     """
     JSON-досье на каждого человека.
-    Файлы: memory/friends_db/<id>.json
+    Файлы: memory/people_db/<id>.json
     Идентификация: discord_user_id > ник > имя
     """
 
     def __init__(self, config: dict):
         mem_cfg = config.get("memory", {})
         base = Path(mem_cfg.get("chroma_db_path", "./memory/chroma_db")).parent
-        self.db_dir = base / "friends_db"
+        self.db_dir = base / "people_db"
         self.db_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, dict] = {}
         self._load_all()
@@ -228,7 +228,7 @@ class FriendsDB:
                 self._cache[data["id"]] = data
             except Exception as e:
                 logger.warning(f"Не удалось загрузить {f}: {e}")
-        logger.info(f"FriendsDB загружена: {len(self._cache)} записей")
+        logger.info(f"PeopleDB загружена: {len(self._cache)} записей")
 
     def _save(self, person_id: str) -> None:
         """Сохраняет досье на диск."""
@@ -269,7 +269,7 @@ class FriendsDB:
     def update_fact(self, person_id: str, fact: str) -> bool:
         """Добавляет новый динамический факт о человеке."""
         if person_id not in self._cache:
-            logger.warning(f"FriendsDB: человек не найден: {person_id}")
+            logger.warning(f"PeopleDB: человек не найден: {person_id}")
             return False
 
         entry = {
@@ -279,19 +279,19 @@ class FriendsDB:
         self._cache[person_id].setdefault("dynamic_facts", []).append(entry)
         self._cache[person_id]["last_seen"] = datetime.now().isoformat()
         self._save(person_id)
-        logger.info(f"FriendsDB: факт добавлен [{person_id}]: {fact}")
+        logger.info(f"PeopleDB: факт добавлен [{person_id}]: {fact}")
         return True
 
     def link_discord_id(self, person_id: str, discord_id: str) -> bool:
         """Привязывает Discord User ID к существующему досье."""
         if person_id not in self._cache:
-            logger.warning(f"FriendsDB: не найден для привязки: {person_id}")
+            logger.warning(f"PeopleDB: не найден для привязки: {person_id}")
             return False
         ids = self._cache[person_id].setdefault("discord_ids", [])
         if discord_id not in ids:
             ids.append(discord_id)
             self._save(person_id)
-            logger.info(f"FriendsDB: привязан Discord ID {discord_id} → {person_id}")
+            logger.info(f"PeopleDB: привязан Discord ID {discord_id} → {person_id}")
             return True
         return False  # Уже привязан
 
@@ -307,7 +307,7 @@ class FriendsDB:
         }
         self._cache[person_id] = person
         self._save(person_id)
-        logger.info(f"FriendsDB: создано новое досье [{person_id}]")
+        logger.info(f"PeopleDB: создано новое досье [{person_id}]")
         return person
 
     def get_summary(self, person_id: str) -> str:
@@ -351,8 +351,6 @@ class FriendsDB:
                     summaries.append(summary)
 
         return "\n\n".join(summaries) if summaries else ""
-
-
 # ─── Личный дневник Нейры ────────────────────────────────────────────────────
 
 class NeyraDiary:

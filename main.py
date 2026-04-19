@@ -7,6 +7,7 @@ Cyber-Core — Проект «Нейра»
   python main.py                  # Model-режим (консоль)
   python main.py --mode model     # то же, что console
   python main.py --mode discord   # Discord text-бот
+  python main.py --mode api       # Internal API (FastAPI)
   python main.py --mode local_voice  # Заглушка local voice интерфейса
   python main.py --mode screen       # Заглушка screen интерфейса
 
@@ -19,7 +20,7 @@ Cyber-Core — Проект «Нейра»
   /time — дата и время
   /sys <uptime|disk|memory|cpu|python> — железо
   /web <запрос> — DuckDuckGo
-  /friend <имя|id> — досье из FriendsDB
+  /person <имя|id> — досье из PeopleDB
   exit / quit — выход
 """
 
@@ -118,12 +119,13 @@ HELP_TEXT = """
   /time              — дата и время
   /sys <команда>    — uptime | disk | memory | cpu | python
   /web <запрос>      — поиск в интернете (ddgs)
-  /friend <имя|id>   — досье FriendsDB
+  /person <имя|id>   — досье PeopleDB
   /launch <discord|local_voice|screen> — запустить интерфейс-плагин в фоне
   /running           — показать запущенные интерфейсы
+  /health            — health-report и self-healing проверка
   exit / quit        — выход
 
-  В Discord: текстовые slash-команды (reset, stats, search, web, friend, ...)
+  В Discord: текстовые slash-команды (reset, stats, search, web, person, ...)
 """
 
 _SPAWNED_INTERFACES: dict[str, subprocess.Popen] = {}
@@ -143,6 +145,18 @@ def launch_interface_mode(mode: str) -> tuple[bool, str]:
     return True, f"Запущен интерфейс {mode} (pid={p.pid})"
 
 
+def restart_interface_mode(mode: str) -> tuple[bool, str]:
+    mode = (mode or "").strip().lower()
+    proc = _SPAWNED_INTERFACES.get(mode)
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    _SPAWNED_INTERFACES.pop(mode, None)
+    return launch_interface_mode(mode)
+
+
 # ─── Консольный режим ─────────────────────────────────────────────────────────
 
 async def run_console():
@@ -150,6 +164,7 @@ async def run_console():
     from rich.console import Console
     from rich.panel import Panel
     from rich.text import Text
+    from core.health_monitor import HealthMonitor
 
     console = Console()
 
@@ -205,6 +220,13 @@ async def run_console():
     from core.reflection import ReflectionEngine
     reflection = ReflectionEngine(config, agent)
     reflection.start_scheduler()
+    health_monitor = HealthMonitor(
+        config,
+        process_registry=lambda: dict(_SPAWNED_INTERFACES),
+        restart_callback=restart_interface_mode,
+    )
+    health_monitor.start()
+    await health_monitor.run_once()
 
     # Обновляем баннер с реальной моделью
     stats = agent.get_stats()
@@ -219,7 +241,7 @@ async def run_console():
     console.print(
         f"  RAM памяти: {stats['short_memory_size']} сообщений | "
         f"RAG: {stats['long_memory_records']} записей | "
-        f"Друзья: {stats['friends_db_records']}",
+        f"Люди: {stats.get('people_db_records', 0)}",
         style="dim"
     )
     console.print(HELP_TEXT, style="dim")
@@ -252,7 +274,7 @@ async def run_console():
                 f"Модель: [bold]{s['model']}[/bold]\n"
                 f"История: {s['short_memory_size']} сообщений\n"
                 f"RAG записей: {s['long_memory_records']}\n"
-                f"Друзей в базе: {s['friends_db_records']}\n"
+                f"Людей в базе: {s.get('people_db_records', 0)}\n"
                 f"Инструментов: {s['tools_count']}",
                 title="Статистика",
                 border_style="cyan"
@@ -320,10 +342,10 @@ async def run_console():
                 console.print(Panel(str(raw), title="Web", border_style="blue"))
             continue
 
-        if user_input.startswith("/friend "):
+        if user_input.startswith("/person "):
             q = user_input[8:].strip()
             if q:
-                raw = agent.tools["get_friend_info"].invoke({"name_or_id": q[:120]})
+                raw = agent.tools["get_person_info"].invoke({"name_or_id": q[:120]})
                 console.print(Panel(str(raw), title=f"Досье: {q}", border_style="cyan"))
             continue
 
@@ -339,6 +361,21 @@ async def run_console():
                 if p.poll() is None:
                     alive.append(f"{m} (pid={p.pid})")
             console.print(Panel("\n".join(alive) if alive else "Нет активных интерфейсов.", title="Интерфейсы"))
+            continue
+
+        if user_input == "/health":
+            rep = await health_monitor.run_once()
+            console.print(
+                Panel(
+                    f"OK: {rep.get('ok')}\n"
+                    f"backend: {rep.get('backend')}\n"
+                    f"storage: {rep.get('storage')}\n"
+                    f"integrations: {rep.get('integrations')}\n"
+                    f"self_healing: {rep.get('self_healing')}",
+                    title="Health monitor",
+                    border_style="yellow",
+                )
+            )
             continue
 
         # ── Отправляем в агент (стриминг) ──
@@ -387,6 +424,7 @@ async def run_discord():
     """Запускает Discord text-бот."""
     from interfaces.discord_text_bot import run_discord_text_bot
     from core.agent import NeyraAgent
+    from core.health_monitor import HealthMonitor
     from rich.console import Console
 
     console = Console()
@@ -394,6 +432,9 @@ async def run_discord():
     console.print("Режим: [bold magenta]Discord[/bold magenta]")
 
     agent = NeyraAgent(config)
+    health_monitor = HealthMonitor(config)
+    health_monitor.start()
+    await health_monitor.run_once()
 
     # run_discord_text_bot — блокирующий, запускаем в executor чтобы не блокировать loop
     loop = asyncio.get_event_loop()
@@ -416,6 +457,14 @@ async def run_screen():
     await loop.run_in_executor(None, run_laptop_screen_agent, config)
 
 
+async def run_api():
+    """Запускает Internal API (FastAPI)."""
+    from interfaces.internal_api import run_internal_api
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, run_internal_api, config)
+
+
 # ─── Точка входа ─────────────────────────────────────────────────────────────
 
 def main():
@@ -425,14 +474,14 @@ def main():
     )
     parser.add_argument(
         "--mode",
-        choices=["model", "console", "discord", "local_voice", "screen"],
+        choices=["model", "console", "discord", "api", "local_voice", "screen"],
         default="model",
         help="Режим запуска (по умолчанию: model)",
     )
     args = parser.parse_args()
 
     # Создаём нужные директории
-    for d in ["./logs", "./memory", "./sounds", "./memory/chroma_db", "./memory/friends_db"]:
+    for d in ["./logs", "./memory", "./sounds", "./memory/chroma_db", "./memory/people_db"]:
         Path(d).mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Старт | mode={args.mode} | backend={BACKEND}")
@@ -441,6 +490,7 @@ def main():
         "model": run_console,
         "console": run_console,
         "discord": run_discord,
+        "api": run_api,
         "local_voice": run_local_voice,
         "screen": run_screen,
     }

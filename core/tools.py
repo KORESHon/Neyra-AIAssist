@@ -8,8 +8,8 @@ LLM может вызывать эти функции сама через Functi
   • SystemMonitorTool — состояние системы (безопасные команды)
   • WebSearchTool     — поиск через DuckDuckGo
   • MemorySearchTool  — поиск по ChromaDB
-  • UpdateFriendFact  — записать новый факт о человеке
-  • GetFriendInfo     — получить досье на человека
+  • UpdatePersonFact  — записать новый факт о человеке
+  • GetPersonInfo     — получить досье на человека
 """
 
 from __future__ import annotations
@@ -23,21 +23,21 @@ from typing import TYPE_CHECKING
 from langchain_core.tools import tool
 
 if TYPE_CHECKING:
-    from core.memory import FriendsDB, LongTermMemory
+    from core.memory import LongTermMemory, PeopleDB
 
 logger = logging.getLogger("neyra.tools")
 
 # Будут заинжектированы при инициализации агента
 _long_memory: "LongTermMemory | None" = None
-_friends_db: "FriendsDB | None" = None
+_people_db: "PeopleDB | None" = None
 _assistant_cfg: dict | None = None
 
 
-def init_tools(long_memory, friends_db, assistant_cfg: dict | None = None) -> None:
+def init_tools(long_memory, people_db, assistant_cfg: dict | None = None) -> None:
     """Инициализирует ссылки на модули памяти."""
-    global _long_memory, _friends_db, _assistant_cfg
+    global _long_memory, _people_db, _assistant_cfg
     _long_memory = long_memory
-    _friends_db = friends_db
+    _people_db = people_db
     _assistant_cfg = assistant_cfg or {}
 
 
@@ -179,48 +179,48 @@ def search_memory(query: str) -> str:
     return "\n\n".join(lines)
 
 
-# ─── UpdateFriendFact ────────────────────────────────────────────────────────
+# ─── UpdatePersonFact ────────────────────────────────────────────────────────
 
 @tool
-def update_friend_fact(person_id: str, fact: str) -> str:
+def update_person_fact(person_id: str, fact: str) -> str:
     """
-    Записывает новый факт о человеке в базу досье (FriendsDB).
+    Записывает новый факт о человеке в базу досье (PeopleDB).
     Используй когда узнала что-то новое о друге или знакомом.
     person_id — ID человека (maxim, kutyr, timofey, andrey_griniks, bogdan, foxy, erik).
     fact — что именно узнала (кратко, своими словами).
     """
-    if _friends_db is None:
-        return "FriendsDB не инициализирована."
+    if _people_db is None:
+        return "PeopleDB не инициализирована."
 
-    success = _friends_db.update_fact(person_id, fact)
+    success = _people_db.update_fact(person_id, fact)
     if success:
         return f"Записала. Теперь знаю про {person_id}: {fact}"
     else:
         # Попробуем найти по нечёткому совпадению
-        person = _friends_db.find(person_id)
+        person = _people_db.find(person_id)
         if person:
-            _friends_db.update_fact(person["id"], fact)
+            _people_db.update_fact(person["id"], fact)
             return f"Нашла по имени и записала про {person['names'][0]}: {fact}"
         return f"Не нашла человека '{person_id}' в базе. Проверь ID."
 
 
-# ─── GetFriendInfo ───────────────────────────────────────────────────────────
+# ─── GetPersonInfo ───────────────────────────────────────────────────────────
 
 @tool
-def get_friend_info(name_or_id: str) -> str:
+def get_person_info(name_or_id: str) -> str:
     """
     Получает досье на человека из базы.
     Используй когда нужно вспомнить кто это такой и что о нём знаешь.
     name_or_id — имя, ник или ID человека.
     """
-    if _friends_db is None:
-        return "FriendsDB не инициализирована."
+    if _people_db is None:
+        return "PeopleDB не инициализирована."
 
-    person = _friends_db.find(name_or_id)
+    person = _people_db.find(name_or_id)
     if not person:
         return f"Никого с именем/ником '{name_or_id}' в базе нет. Может это новый человек?"
 
-    summary = _friends_db.get_summary(person["id"])
+    summary = _people_db.get_summary(person["id"])
     return summary or f"Досье на {name_or_id} есть, но оно пустое."
 
 
@@ -249,7 +249,7 @@ ALL_TOOLS = [
     check_system,
     web_search,
     search_memory,
-    update_friend_fact,
-    get_friend_info,
+    update_person_fact,
+    get_person_info,
     get_character_profile,
 ]
