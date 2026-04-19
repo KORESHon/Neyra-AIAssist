@@ -1,5 +1,7 @@
 # Neyra - AIAssist
 
+![AI Assisted](https://img.shields.io/badge/AI_Assisted-Code_Generation-000000?style=for-the-badge&logo=openai&logoColor=white)
+
 **Repository:** [github.com/KORESHon/Neyra-AIAssist](https://github.com/KORESHon/Neyra-AIAssist)
 
 Modular AI assistant platform with a core-first architecture.
@@ -133,6 +135,15 @@ If you like Neyra and want to support its development (or just buy the author a 
 *Always verify the network before sending. Thank you for your support 🚀*
 
 The core stays open source under the MIT license regardless of donations.
+
+## AI-assisted development
+
+This project is a practical exploration of **prompt engineering** and how complex AI systems can be steered in a real codebase.
+
+- **Architecture, system design, and module integration** are intentionally driven by a human.
+- **Routine code, scaffolding, and much of the implementation** were written with heavy use of AI coding agents (Cursor, LLM assistants).
+
+I believe the future of building software is the synergy between a human **architect** and AI-assisted **implementation**. If you find rough or suboptimal generated patches, open an Issue or a PR—reviews from experienced developers are genuinely welcome.
 
 ## License
 
