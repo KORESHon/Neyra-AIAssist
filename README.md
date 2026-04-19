@@ -66,7 +66,7 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
 - **`core`** (default) — HTTP API, dashboard, resident plugins.
 - **`console`** — terminal chat only.
 
-Plugins start **with** the core from `config.yaml` and `plugin.yaml` (`lifecycle: resident`). There is no separate `--mode discord` CLI.
+Plugins start **with** the core from root `config.yaml`, optional per-plugin `interfaces/<id>/config.yaml`, and **`plugin.yaml`** (enable/disable and lifecycle only there). There is no separate `--mode discord` CLI.
 
 ## Environment variables
 
@@ -76,9 +76,9 @@ Required for cloud model:
 
 - `OPENROUTER_API_KEY`
 
-Required when Discord is enabled in `config.yaml`:
+Required when `discord_text` is enabled in `interfaces/discord_text/plugin.yaml`:
 
-- `DISCORD_TOKEN` (or `discord.token` in config)
+- `DISCORD_TOKEN` in `.env` (optional legacy: `discord.token` merged from old configs)
 
 Optional (future voice integrations):
 
@@ -91,6 +91,7 @@ Optional (future voice integrations):
 
 - Public template: `config.example.yaml`
 - Local private runtime config: `config.yaml` (ignored by git)
+- Plugin settings: `interfaces/<plugin_id>/config.yaml` (optional; copy from `config.example.yaml` in that folder). HTTP bind + dashboard: `interfaces/internal_api/config.yaml`.
 - Secret values: `.env` (ignored by git)
 
 ## System prompts and behavior tuning

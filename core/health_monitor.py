@@ -20,10 +20,12 @@ class HealthMonitor:
         self,
         config: dict,
         *,
+        project_root: Optional[Path] = None,
         process_registry: Optional[Callable[[], dict]] = None,
         restart_callback: Optional[Callable[[str], tuple[bool, str]]] = None,
     ):
         self.config = config or {}
+        self._project_root = Path(project_root).resolve() if project_root is not None else None
         mon_cfg = (self.config.get("health_monitor") or {}) if isinstance(self.config, dict) else {}
         self.enabled = bool(mon_cfg.get("enabled", True))
         self.interval_seconds = max(60, int(mon_cfg.get("interval_seconds", 3600)))
@@ -130,14 +132,35 @@ class HealthMonitor:
     def _check_integrations(self) -> dict:
         try:
             issues: list[str] = []
-            disc = (self.config.get("discord") or {}) if isinstance(self.config, dict) else {}
-            if bool(disc.get("enabled", False)):
-                token = str(disc.get("token") or os.environ.get("DISCORD_TOKEN") or "").strip()
-                if not token:
-                    issues.append("discord.enabled=true but token is missing")
+            if not isinstance(self.config, dict):
+                return {"ok": True, "issues": []}
+            if not self._discord_resident_enabled():
+                return {"ok": True, "issues": []}
+            token = str(
+                (os.environ.get("DISCORD_TOKEN") or "")
+                or (self.config.get("discord") or {}).get("token")
+                or ""
+            ).strip()
+            if not token:
+                issues.append("discord_text enabled in plugin.yaml but DISCORD_TOKEN is missing")
             return {"ok": len(issues) == 0, "issues": issues}
         except Exception as e:
             return {"ok": False, "error": str(e)[:500]}
+
+    def _discord_resident_enabled(self) -> bool:
+        """Включён ли resident discord_text в plugin.yaml (без дублирования в config.yaml плагина)."""
+        root = self._project_root
+        if root is None:
+            return False
+        try:
+            from core.plugin_loader import PluginLoader
+
+            for m in PluginLoader(root).discover_manifests():
+                if m.id == "discord_text" and m.enabled and m.lifecycle == "resident":
+                    return True
+        except Exception:
+            return False
+        return False
 
     async def _check_and_heal_modules(self) -> dict:
         if not self.process_registry:

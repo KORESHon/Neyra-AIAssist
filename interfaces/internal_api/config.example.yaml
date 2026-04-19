@@ -1,0 +1,23 @@
+# Copy to `config.yaml` in this folder. Merged into root config (internal_api + dashboard).
+# RU: Скопируйте в config.yaml здесь. Подмешивается в корень как internal_api и dashboard.
+#
+# EN: Bearer token for /v1: INTERNAL_API_TOKEN in project .env (not in this file).
+# RU: Bearer для /v1 — INTERNAL_API_TOKEN в .env проекта (не в этом файле).
+
+internal_api:
+  # EN: Also exposes GET /v1/llm/balance when provider is openrouter.
+  # RU: Также GET /v1/llm/balance при провайдере openrouter.
+  host: "127.0.0.1"
+  port: 8787
+
+  websocket:
+    idle_timeout_seconds: 60
+    ping_interval_seconds: 20
+    close_grace_seconds: 5
+
+  level: "INFO"
+
+dashboard:
+  enabled: true
+  dist_path: "frontend/dist"
+  require_build: false

@@ -58,10 +58,6 @@ def apply_env_secrets(cfg: dict) -> None:
     if hf:
         cfg.setdefault("memory", {})["hf_token"] = hf
 
-    ex = _s("EXTERNAL_API_KEY")
-    if ex:
-        cfg.setdefault("external_api", {})["api_key"] = ex
-
     sp = _s("SCREEN_PROXY_SECRET")
     if sp:
         vis = cfg.setdefault("vision", {})

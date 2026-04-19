@@ -1,0 +1,26 @@
+# Copy to `config.yaml` in this folder. Merged into root config as `discord.*`.
+# RU: Скопируйте в config.yaml в этой папке — попадает в общий конфиг как `discord`.
+#
+# EN: Bot token only via DISCORD_TOKEN in project .env (not in this file).
+# RU: Токен бота только через DISCORD_TOKEN в .env проекта (не в этом файле).
+#
+# EN: Enable/disable the plugin in interfaces/discord_text/plugin.yaml (`enabled:`).
+# RU: Вкл/выкл — в interfaces/discord_text/plugin.yaml (`enabled:`).
+
+# EN: List of channel IDs where bot can answer without mention.
+channel_ids: []
+
+# EN: true = answer only when bot is mentioned.
+mention_only: false
+
+# EN: Per-user cooldown in seconds.
+cooldown_seconds: 3.0
+
+# EN: Stream edit interval for partial message updates.
+stream_edit_interval: 0.7
+
+# EN: Output mode: stream | final_only
+stream_output_mode: "stream"
+
+# EN: Optional guild ID for faster slash command sync; null for global sync.
+slash_sync_guild_id: null

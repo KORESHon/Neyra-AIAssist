@@ -43,6 +43,8 @@ import subprocess
 
 import yaml
 
+from core.plugin_config import merge_plugin_configs
+
 # ─── Загрузка конфига ─────────────────────────────────────────────────────────
 
 CONFIG_PATH = _PROJECT_ROOT / "config.yaml"
@@ -56,6 +58,7 @@ def load_config() -> dict:
         data = yaml.safe_load(f)
     if not isinstance(data, dict):
         data = {}
+    merge_plugin_configs(data, _PROJECT_ROOT)
     apply_env_secrets(data)
     return data
 
@@ -225,6 +228,7 @@ async def run_console():
     reflection.start_scheduler()
     health_monitor = HealthMonitor(
         config,
+        project_root=_PROJECT_ROOT,
         process_registry=_spawn_registry,
         restart_callback=restart_interface_mode,
     )

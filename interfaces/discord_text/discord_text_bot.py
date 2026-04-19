@@ -407,9 +407,9 @@ def _split_message(text: str) -> list[str]:
 
 def run_discord_text_bot(agent: "NeyraAgent", config: dict) -> None:
     disc_cfg = config.get("discord", {})
-    token = (disc_cfg.get("token") or "").strip() or (os.environ.get("DISCORD_TOKEN") or "").strip()
-    if not token or token == "ВАШ_ТОКЕН_СЮДА":
-        raise ValueError("DISCORD_TOKEN не задан в .env")
+    token = (os.environ.get("DISCORD_TOKEN") or "").strip() or (disc_cfg.get("token") or "").strip()
+    if not token:
+        raise ValueError("Задайте DISCORD_TOKEN в .env (или legacy discord.token в конфиге)")
 
     from core.reflection import ReflectionEngine
 

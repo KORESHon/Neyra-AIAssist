@@ -30,6 +30,7 @@ def load_dotenv(root: Path) -> None:
 def load_config(root: Path) -> dict:
     import yaml
 
+    from core.plugin_config import merge_plugin_configs
     from core.secrets_loader import apply_env_secrets
 
     cfg_path = root / "config.yaml"
@@ -39,6 +40,7 @@ def load_config(root: Path) -> dict:
         data = yaml.safe_load(f)
     if not isinstance(data, dict):
         return {}
+    merge_plugin_configs(data, root)
     apply_env_secrets(data)
     return data
 
@@ -80,16 +82,23 @@ def check_llm_config_and_env(cfg: dict) -> list[str]:
     return errs
 
 
-def check_discord_token(mode: str, cfg: dict) -> list[str]:
-    """Для core: если в конфиге включён Discord — нужен токен."""
+def check_discord_token(mode: str, cfg: dict, root: Path) -> list[str]:
+    """Для core: если discord_text включён в plugin.yaml — нужен DISCORD_TOKEN в .env."""
     if mode != "core":
         return []
-    disc = cfg.get("discord") if isinstance(cfg.get("discord"), dict) else {}
-    if not bool(disc.get("enabled", True)):
+    from core.plugin_loader import PluginLoader
+
+    for m in PluginLoader(root).discover_manifests():
+        if m.id == "discord_text" and m.enabled and m.lifecycle == "resident":
+            break
+    else:
         return []
-    token = (str(disc.get("token") or "").strip() or os.environ.get("DISCORD_TOKEN") or "").strip()
+    token = (
+        (os.environ.get("DISCORD_TOKEN") or "").strip()
+        or str((cfg.get("discord") or {}).get("token") or "").strip()
+    )
     if not token:
-        return ["Discord enabled but no token (set discord.token in config or DISCORD_TOKEN in .env)"]
+        return ["discord_text enabled in plugin.yaml but DISCORD_TOKEN is missing in .env"]
     return []
 
 
@@ -142,7 +151,7 @@ def main() -> int:
     errors: list[str] = []
     errors.extend(check_files(root))
     errors.extend(check_llm_config_and_env(cfg))
-    errors.extend(check_discord_token(args.mode, cfg))
+    errors.extend(check_discord_token(args.mode, cfg, root))
     if not args.skip_http:
         errors.extend(check_llm_models_probe(cfg))
 

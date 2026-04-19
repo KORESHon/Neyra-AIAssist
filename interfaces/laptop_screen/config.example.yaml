@@ -1,0 +1,7 @@
+# Copy to `config.yaml`. Merged as config.plugins.laptop_screen.
+# RU: Скопируйте в config.yaml — в корне будет plugins.laptop_screen.
+#
+# EN: Enable/disable in interfaces/laptop_screen/plugin.yaml (`enabled:`).
+
+# EN: Screen capture interval in seconds.
+capture_interval_seconds: 2.0
