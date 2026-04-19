@@ -16,11 +16,10 @@ logger = logging.getLogger("neyra.local_voice")
 
 
 def run_local_voice_agent(config: dict) -> None:
-    cfg = ((config.get("interfaces") or {}).get("local_voice_agent") or {})
+    cfg = ((config.get("plugins") or {}).get("local_voice") or {})
     logger.info(
-        "local_voice_agent пока заглушка | wake_word=%s | enabled=%s",
+        "local_voice_agent пока заглушка | wake_word=%s",
         cfg.get("wake_word", "нейра"),
-        bool(cfg.get("enabled", False)),
     )
     logger.info("Реализация будет добавлена отдельным этапом.")
 

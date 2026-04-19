@@ -14,6 +14,11 @@
 # EN: Keep secrets in .env only (see .env.example).
 # RU: Секреты храни только в .env (смотри .env.example).
 #
+# EN: Plugin settings: interfaces/<plugin_id>/config.yaml (copy from config.example.yaml there).
+#     HTTP API + dashboard: interfaces/internal_api/. Enable/disable plugins in each plugin.yaml, not in these files.
+# RU: Плагины — interfaces/<plugin_id>/config.yaml. API+дашборд — interfaces/internal_api/.
+#     Вкл/выкл — только в plugin.yaml каждого плагина, не в config.yaml плагина.
+#
 # EN: This file is intentionally generic; no private prompts or personal data.
 # RU: Этот шаблон намеренно обезличен; без приватных промптов и личных данных.
 
@@ -251,22 +256,6 @@ vision:
     default_display: 0
 
 # ---------------------------
-# Optional external API routing / Опциональная внешняя маршрутизация API
-# ---------------------------
-external_api:
-  # EN: Global switch for optional external model provider routing.
-  # RU: Глобальный переключатель опциональной маршрутизации к внешнему провайдеру.
-  enabled: false
-
-  # EN: Provider name used by external integration code.
-  # RU: Имя провайдера, используемое внешней интеграцией.
-  provider: "anthropic"
-
-  # EN: External model identifier for that provider.
-  # RU: Идентификатор внешней модели для выбранного провайдера.
-  model: "claude-sonnet-4-5"
-
-# ---------------------------
 # Memory subsystem / Подсистема памяти
 # ---------------------------
 # EN: Event bus lives on NeyraAgent (chat.turn_completed, memory.*, notify.discord_*). Subscribe in code.
@@ -383,77 +372,6 @@ voice_cloud:
     timeout_seconds: 60.0
 
 # ---------------------------
-# Discord text interface / Discord текстовый интерфейс
-# ---------------------------
-discord:
-  # EN: Enables Discord runtime mode.
-  # RU: Включает Discord-режим работы.
-  enabled: true
-
-  # EN: List of channel IDs where bot can answer without mention.
-  # RU: Список ID каналов, где бот отвечает без обязательного mention.
-  channel_ids: []
-
-  # EN: true = answer only when bot is mentioned.
-  # RU: true = отвечать только при mention бота.
-  mention_only: false
-
-  # EN: Per-user cooldown in seconds.
-  # RU: Кулдаун в секундах на пользователя.
-  cooldown_seconds: 3.0
-
-  # EN: Stream edit interval for partial message updates.
-  # RU: Интервал обновления сообщения при стриминге ответа.
-  stream_edit_interval: 0.7
-
-  # EN: Output mode: stream (live) or final_only (single final message).
-  # RU: Режим вывода: stream (по токенам) или final_only (одним сообщением).
-  stream_output_mode: "stream"  # stream | final_only
-
-  # EN: Optional guild ID for faster slash command sync; null for global sync.
-  # RU: Опциональный ID сервера для быстрого sync slash-команд; null для глобального sync.
-  slash_sync_guild_id: null
-
-# ---------------------------
-# Interface plugins / Плагины интерфейсов
-# ---------------------------
-interfaces:
-  discord_text:
-    # EN: Enables text-only Discord interface plugin.
-    # RU: Включает плагин текстового Discord-интерфейса.
-    enabled: true
-
-  local_voice_agent:
-    # EN: Stub/future local voice interface switch.
-    # RU: Переключатель заготовки локального голосового интерфейса.
-    enabled: false
-
-    # EN: Wake word for local voice trigger.
-    # RU: Wake-word для активации локального голоса.
-    wake_word: "neyra"
-
-    # EN: Input audio device name/id (optional, OS-dependent).
-    # RU: Имя/ID входного устройства (опционально, зависит от ОС).
-    input_device: ""
-
-    # EN: Output audio device name/id for playback.
-    # RU: Имя/ID выходного устройства для озвучки.
-    output_device: ""
-
-    # EN: Virtual cable output device (for routing to other apps).
-    # RU: Устройство виртуального кабеля (для маршрутизации в другие приложения).
-    vb_cable_output_device: ""
-
-  laptop_screen_agent:
-    # EN: Stub/future screen-context interface switch.
-    # RU: Переключатель заготовки screen-интерфейса.
-    enabled: false
-
-    # EN: Screen capture interval in seconds.
-    # RU: Интервал захвата экрана в секундах.
-    capture_interval_seconds: 2.0
-
-# ---------------------------
 # Logging / Логирование
 # ---------------------------
 logging:
@@ -489,58 +407,9 @@ health_monitor:
   # RU: Файл JSONL с отчётами состояния.
   status_log: "./logs/health_status.jsonl"
 
-# ---------------------------
-# Internal API / Внутреннее API
-# ---------------------------
-internal_api:
-  # EN: Also exposes GET /v1/llm/balance (OpenRouter key usage) when provider is openrouter.
-  # RU: Также GET /v1/llm/balance (usage ключа OpenRouter), если провайдер — openrouter.
-  #
-  # EN: Bind host for /v1 endpoints.
-  # RU: Хост для запуска /v1 эндпоинтов.
-  host: "127.0.0.1"
-
-  # EN: Bind port for internal API.
-  # RU: Порт внутреннего API.
-  port: 8787
-
-  # EN: Optional bearer token. If empty, auth is disabled.
-  # RU: Опциональный bearer-токен. Если пусто — авторизация выключена.
-  token: ""
-
-  websocket:
-    # EN: Idle timeout for ws(s):// connections (no incoming frames).
-    # RU: Idle-таймаут ws(s):// соединения (нет входящих кадров).
-    idle_timeout_seconds: 60
-
-    # EN: Recommended ping interval for clients.
-    # RU: Рекомендуемый ping-интервал для клиентов.
-    ping_interval_seconds: 20
-
-    # EN: Grace period before close on timeout/errors.
-    # RU: Пауза перед закрытием сокета при timeout/ошибке.
-    close_grace_seconds: 5
-
-  # EN: Log verbosity level: DEBUG | INFO | WARNING | ERROR.
-  # RU: Уровень логирования: DEBUG | INFO | WARNING | ERROR.
-  level: "INFO"
-
-# ---------------------------
-# Web dashboard (Vite React → frontend/dist)
-# Дашборд (Vite React → frontend/dist)
-# ---------------------------
-dashboard:
-  # EN: Serve built static UI at / when dist exists (same port as internal_api).
-  # RU: Раздавать собранный UI по / при наличии dist (тот же порт, что internal_api).
-  enabled: true
-
-  # EN: Path to Vite output (index.html + assets/), relative to project root.
-  # RU: Путь к сборке Vite (index.html + assets/), относительно корня проекта.
-  dist_path: "frontend/dist"
-
-  # EN: If true, `python main.py` (core) exits when dist is missing (CI/production gate).
-  # RU: Если true — `python main.py` (ядро) завершится без dist (контроль CI/прод).
-  require_build: false
+# EN: HTTP API + dashboard bind (host/port, dist_path, …) — interfaces/internal_api/config.yaml
+#     (template: interfaces/internal_api/config.example.yaml).
+# RU: HTTP API и дашборд — interfaces/internal_api/config.yaml (шаблон — config.example.yaml там).
 
 # ---------------------------
 # Backup / Restore / External Storage

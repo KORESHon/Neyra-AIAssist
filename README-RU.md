@@ -27,7 +27,7 @@ Neyra строится как переиспользуемое ядро плюс
 
 - `core/` — модель, память, рефлексия, инструменты, загрузка секретов.
 - `core/voice/` — voice-адаптеры и будущие фабрики STT/TTS.
-- `interfaces/` — плагины (`interfaces/<id>/plugin.yaml` + `main.py`): discord, API, local voice, screen и шаблон **`000EXAMPLE`** (первый в списке по имени папки).
+- `interfaces/` — плагины (`plugin.yaml` + `main.py` + опционально `config.yaml`): discord, API, local voice, screen и шаблон **`000EXAMPLE`** (первый в списке по имени папки).
 - **Документация Plugin SDK** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md) (русский туториал), [HELP.md](interfaces/000EXAMPLE/HELP.md) (English).
 - `scripts/` — эксплуатационные скрипты (healthcheck и вспомогательные утилиты).
 - `main.py` — точка входа (`core` или `console`).
@@ -56,8 +56,9 @@ Neyra развивается как персональный публичный 
   - `pip install -r requirements.txt`
 3. Создай `.env` из `.env.example` и заполни секреты.
 4. Создай `config.yaml` из `config.example.yaml`.
-5. Preflight (пример): `python scripts/healthcheck.py --mode console --skip-http`
-6. Запуск:
+5. Скопируй шаблоны конфигов плагинов: `interfaces/<id>/config.example.yaml` → `interfaces/<id>/config.yaml` (Discord, internal_api с HTTP/дашбордом, заглушки voice/screen при необходимости).
+6. Preflight (пример): `python scripts/healthcheck.py --mode console --skip-http`
+7. Запуск:
   - Windows: `run_neyra.bat`
   - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`
   - Напрямую: `python main.py` (ядро) или `python main.py --mode console`

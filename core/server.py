@@ -30,17 +30,6 @@ def project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _resident_allowed(plugin_id: str, config: dict) -> bool:
-    if plugin_id == "discord_text":
-        iface = (config.get("interfaces") or {}).get("discord_text") or {}
-        if not bool(iface.get("enabled", True)):
-            return False
-        if not bool((config.get("discord") or {}).get("enabled", True)):
-            return False
-        return True
-    return True
-
-
 def _start_resident_plugin_threads(config: dict, root: Path, agent: NeyraAgent) -> None:
     loader = PluginLoader(root)
     for manifest in loader.discover_manifests():
@@ -49,9 +38,6 @@ def _start_resident_plugin_threads(config: dict, root: Path, agent: NeyraAgent) 
         if manifest.lifecycle != "resident":
             continue
         if not manifest.enabled:
-            continue
-        if not _resident_allowed(manifest.id, config):
-            logger.info("Resident plugin %s skipped by config.", manifest.id)
             continue
         try:
             mod = loader.import_plugin_module(manifest)
@@ -111,7 +97,7 @@ def run_neyra_server(config: dict) -> None:
 
     agent = NeyraAgent(config)
     reflection = ReflectionEngine(config, agent)
-    monitor = HealthMonitor(config)
+    monitor = HealthMonitor(config, project_root=root)
     backup_manager = BackupManager(config)
 
     app = build_app(

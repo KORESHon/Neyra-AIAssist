@@ -49,11 +49,14 @@ def main() -> int:
     if not cfg_path.is_file():
         print("config.yaml not found", file=sys.stderr)
         return 1
-    from core.secrets_loader import apply_env_secrets
+    from core.plugin_config import merge_plugin_configs
+    from core.secrets_loader import apply_env_secrets, load_dotenv_file
 
+    load_dotenv_file(root)
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
     if not isinstance(cfg, dict):
         cfg = {}
+    merge_plugin_configs(cfg, root)
     apply_env_secrets(cfg)
 
     agent = None

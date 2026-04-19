@@ -132,7 +132,7 @@ def build_app(
         backup_manager = shared_backup_manager
     else:
         agent = NeyraAgent(config)
-        monitor = HealthMonitor(config)
+        monitor = HealthMonitor(config, project_root=_project_root())
         backup_manager = BackupManager(config)
     app.state.agent = agent
     app.state.monitor = monitor
