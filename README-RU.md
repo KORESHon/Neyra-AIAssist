@@ -26,7 +26,7 @@ Neyra строится как переиспользуемое ядро плюс
 
 - `core/` — модель, память, рефлексия, инструменты, загрузка секретов.
 - `core/voice/` — voice-адаптеры и будущие фабрики STT/TTS.
-- `interfaces/` — подключаемые интерфейсы (`discord_text`, заготовки local voice/screen).
+- `interfaces/` — плагины (`interfaces/<id>/plugin.yaml` + `main.py`): discord, API, local voice, screen и шаблон `example`.
 - `scripts/` — эксплуатационные скрипты (healthcheck и вспомогательные утилиты).
 - `main.py` — точка входа и запуск режимов.
 - `run_neyra.bat` — запуск на Windows с preflight-проверками.

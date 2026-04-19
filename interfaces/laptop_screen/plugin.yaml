@@ -1,0 +1,9 @@
+id: laptop_screen
+name: Laptop Screen Agent
+description: Заглушка screen-агента (будущая реализация).
+version: "0.1.0"
+enabled: true
+lifecycle: on_demand
+cli_modes:
+  - screen
+main_script: main.py

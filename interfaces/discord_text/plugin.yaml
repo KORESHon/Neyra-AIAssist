@@ -1,0 +1,9 @@
+id: discord_text
+name: Discord Text Bot
+description: Текстовый Discord-бот Нейры (текст и изображения, без voice).
+version: "1.0.0"
+enabled: true
+lifecycle: resident
+cli_modes:
+  - discord
+main_script: main.py

@@ -8,6 +8,7 @@ enabled: false
 # on_demand  — только реестр метаданных; код подгружается по вызову ядра/пользователя
 #              (кастомный поиск, музыка, тяжёлые API — чтобы не раздувать процесс заранее)
 lifecycle: on_demand
+cli_modes: []
 
 main_script: core/main.py
 entry_mode: service

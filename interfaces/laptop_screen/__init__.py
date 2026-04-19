@@ -1,0 +1,1 @@
+"""Плагин: laptop screen (stub)."""

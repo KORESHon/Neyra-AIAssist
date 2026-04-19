@@ -26,7 +26,7 @@ Current stable runtime:
 
 - `core/` - model, memory, reflection, tools, secrets loader.
 - `core/voice/` - voice adapters and factories (cloud/local evolution path).
-- `interfaces/` - pluggable runtimes (`discord_text`, local voice stub, screen stub).
+- `interfaces/` - plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: `discord_text`, `internal_api`, `local_voice`, `laptop_screen`.
 - `scripts/` - ops helpers (health checks and maintenance utilities).
 - `main.py` - app entrypoint and mode launcher.
 - `run_neyra.bat` - Windows launcher with mode selection and preflight.

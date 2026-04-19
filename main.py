@@ -420,9 +420,31 @@ async def run_console():
 
 # ─── Discord режим ────────────────────────────────────────────────────────────
 
+async def _run_registered_plugin(mode: str, *, agent=None) -> None:
+    """Запускает плагин с полем cli_modes, содержащим mode (см. interfaces/*/plugin.yaml)."""
+    from core.plugin_loader import PluginLoader
+    from core.plugin_sdk import PluginContext, run_plugin_entrypoint
+
+    loader = PluginLoader(_PROJECT_ROOT)
+    manifest = loader.manifest_for_cli_mode(mode)
+    if not manifest:
+        logger.error("Нет плагина для --mode %s (проверьте cli_modes в plugin.yaml).", mode)
+        sys.exit(1)
+    if not manifest.enabled:
+        logger.error("Плагин %s отключён (enabled: false в plugin.yaml).", manifest.id)
+        sys.exit(1)
+    mod = loader.import_plugin_module(manifest)
+    ctx = PluginContext(root=_PROJECT_ROOT, config=config, agent=agent)
+    loop = asyncio.get_event_loop()
+
+    def _entry() -> None:
+        run_plugin_entrypoint(mod, ctx)
+
+    await loop.run_in_executor(None, _entry)
+
+
 async def run_discord():
-    """Запускает Discord text-бот."""
-    from interfaces.discord_text_bot import run_discord_text_bot
+    """Запускает плагин Discord text-бот."""
     from core.agent import NeyraAgent
     from core.health_monitor import HealthMonitor
     from rich.console import Console
@@ -436,33 +458,22 @@ async def run_discord():
     health_monitor.start()
     await health_monitor.run_once()
 
-    # run_discord_text_bot — блокирующий, запускаем в executor чтобы не блокировать loop
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, run_discord_text_bot, agent, config)
+    await _run_registered_plugin("discord", agent=agent)
 
 
 async def run_local_voice():
-    """Запускает local voice интерфейс (заглушка)."""
-    from interfaces.local_voice_agent import run_local_voice_agent
-
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, run_local_voice_agent, config)
+    """Плагин local_voice (заглушка)."""
+    await _run_registered_plugin("local_voice", agent=None)
 
 
 async def run_screen():
-    """Запускает screen интерфейс (заглушка)."""
-    from interfaces.laptop_screen_agent import run_laptop_screen_agent
-
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, run_laptop_screen_agent, config)
+    """Плагин laptop_screen (заглушка)."""
+    await _run_registered_plugin("screen", agent=None)
 
 
 async def run_api():
-    """Запускает Internal API (FastAPI)."""
-    from interfaces.internal_api import run_internal_api
-
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, run_internal_api, config)
+    """Плагин Internal API (FastAPI)."""
+    await _run_registered_plugin("api", agent=None)
 
 
 # ─── Точка входа ─────────────────────────────────────────────────────────────
