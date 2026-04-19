@@ -25,6 +25,8 @@ class PluginManifest:
     enabled: bool
     # resident: load main_script at startup; on_demand: registry only until invoke
     lifecycle: str
+    # Соответствие python main.py --mode <name>
+    cli_modes: list[str]
     main_script: str
     plugin_dir: Path
     raw: dict[str, Any]
@@ -48,6 +50,10 @@ class PluginLoader:
                 lc = str(raw.get("lifecycle") or "resident").strip().lower()
                 if lc not in ("resident", "on_demand"):
                     lc = "resident"
+                raw_modes = raw.get("cli_modes") or raw.get("modes") or []
+                if isinstance(raw_modes, str):
+                    raw_modes = [raw_modes]
+                cli_modes = [str(x).strip().lower() for x in raw_modes if str(x).strip()]
                 out.append(
                     PluginManifest(
                         id=str(raw.get("id") or plugin_dir.name).strip(),
@@ -56,6 +62,7 @@ class PluginLoader:
                         version=str(raw.get("version") or "0.0.0").strip(),
                         enabled=bool(raw.get("enabled", True)),
                         lifecycle=lc,
+                        cli_modes=cli_modes,
                         main_script=str(raw.get("main_script") or "").strip(),
                         plugin_dir=plugin_dir,
                         raw=raw,
@@ -76,11 +83,48 @@ class PluginLoader:
                     "version": p.version,
                     "enabled": p.enabled,
                     "lifecycle": p.lifecycle,
+                    "cli_modes": p.cli_modes,
                     "main_script": p.main_script,
                     "plugin_dir": str(p.plugin_dir),
                 }
             )
         return rows
+
+    def cli_mode_index(self) -> dict[str, PluginManifest]:
+        """mode -> manifest (последний выигрывает при дубликатах, с предупреждением в лог)."""
+        idx: dict[str, PluginManifest] = {}
+        for p in self.discover_manifests():
+            for m in p.cli_modes:
+                if m in idx and idx[m].id != p.id:
+                    logger.warning(
+                        "Duplicate cli_mode %r: plugin %s overrides %s",
+                        m,
+                        p.id,
+                        idx[m].id,
+                    )
+                idx[m] = p
+        return idx
+
+    def manifest_for_cli_mode(self, mode: str) -> PluginManifest | None:
+        mode = (mode or "").strip().lower()
+        if not mode:
+            return None
+        return self.cli_mode_index().get(mode)
+
+    def import_plugin_module(self, manifest: PluginManifest) -> ModuleType:
+        """Загрузить main_script плагина (для CLI или invoke), независимо от lifecycle."""
+        if not manifest.main_script:
+            raise ValueError(f"Plugin {manifest.id} has empty main_script")
+        target = (manifest.plugin_dir / manifest.main_script).resolve()
+        if not target.exists():
+            raise FileNotFoundError(f"Plugin {manifest.id} main script not found: {target}")
+        mod_name = f"neyra_plugin_{manifest.id.replace('-', '_')}"
+        spec = importlib.util.spec_from_file_location(mod_name, target)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Plugin {manifest.id} spec load failed")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> bool:
         plugin_id = (plugin_id or "").strip().lower()
@@ -110,20 +154,11 @@ class PluginLoader:
             if p.lifecycle == "on_demand":
                 logger.info("Plugin on_demand, registry only at startup: %s", p.id)
                 continue
-            if not p.main_script:
-                logger.warning("Plugin %s has empty main_script", p.id)
+            try:
+                module = self.import_plugin_module(p)
+            except Exception as e:
+                logger.warning("Plugin %s load failed: %s", p.id, e)
                 continue
-            target = (p.plugin_dir / p.main_script).resolve()
-            if not target.exists():
-                logger.warning("Plugin %s main script not found: %s", p.id, target)
-                continue
-            mod_name = f"neyra_plugin_{p.id}"
-            spec = importlib.util.spec_from_file_location(mod_name, target)
-            if spec is None or spec.loader is None:
-                logger.warning("Plugin %s spec load failed", p.id)
-                continue
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
             loaded.append((p, module))
             logger.info("Plugin loaded: %s (%s)", p.id, p.version)
         return loaded

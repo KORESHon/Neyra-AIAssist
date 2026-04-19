@@ -1,9 +1,8 @@
 """
-Interfaces package.
+Interfaces package: плагины лежат в interfaces/<plugin_id>/ (plugin.yaml + main.py).
 
-Intentionally avoids heavy imports at package import time.
-Use direct module imports, e.g.:
-  from interfaces.discord_text_bot import run_discord_text_bot
+Точка входа процесса: python main.py --mode <cli_mode>; соответствие mode → плагин задаётся
+в plugin.yaml полем cli_modes.
 """
 
 __all__ = []

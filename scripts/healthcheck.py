@@ -49,7 +49,8 @@ def check_files(root: Path) -> list[str]:
         "config.yaml",
         "requirements.txt",
         ".env.example",
-        "interfaces/discord_text_bot.py",
+        "interfaces/discord_text/plugin.yaml",
+        "interfaces/discord_text/discord_text_bot.py",
     ]
     errors: list[str] = []
     for rel in required:

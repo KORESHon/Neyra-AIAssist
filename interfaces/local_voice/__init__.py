@@ -1,0 +1,1 @@
+"""Плагин: local voice (stub)."""

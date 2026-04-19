@@ -1,0 +1,9 @@
+id: internal_api
+name: Internal API
+description: REST + WebSocket gateway (FastAPI /v1).
+version: "1.0.0"
+enabled: true
+lifecycle: resident
+cli_modes:
+  - api
+main_script: main.py
