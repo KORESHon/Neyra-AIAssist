@@ -1,10 +1,10 @@
 # 000EXAMPLE
 
-Шаблон плагина Neyra (префикс `000` — первым в списке каталогов).
+**RU:** Шаблон плагина (префикс `000` — первым в списке каталогов).
 
-**Документация (туториал + справка):**
+**EN:** Plugin template (`000` prefix — sorts first in folder listings).
 
-- [HELP.md](HELP.md) — English  
-- [HELP-RU.md](HELP-RU.md) — Русский  
+**Документация / Documentation:**
 
-**Офлайн:** откройте [help.html](help.html) в браузере — краткая шпаргалка и ссылки на оба файла.
+- [HELP.md](HELP.md) — English (full tutorial)
+- [HELP-RU.md](HELP-RU.md) — Русский (полный туториал)

@@ -1,22 +1,31 @@
-# 000EXAMPLE — шаблон плагина Neyra (сортировка «первым в списке» по имени папки).
-# Туториал и справка: HELP.md (EN), HELP-RU.md (RU), кратко: help.html
+# RU: Префикс 000 — папка сортируется первой в списке. Документация: HELP.md (EN), HELP-RU.md (RU).
+# EN: 000 prefix sorts this folder first. Docs: HELP.md, HELP-RU.md.
 
 id: example
+# RU: Человекочитаемое имя для реестра / UI.
+# EN: Human-readable name for registry / UI.
 name: "000EXAMPLE (Plugin SDK template)"
+# RU: Учебный шаблон; по умолчанию выключен; без cli_modes — не пересекается с discord/api/…
+# EN: Tutorial template; disabled by default; no cli_modes — no clash with discord/api/…
 description: >
-  Учебный плагин с документацией. По умолчанию выключен. Не регистрирует cli_modes,
-  чтобы не пересекаться с боевыми режимами (discord, api, …).
+  Tutorial plugin with documentation. Disabled by default. No cli_modes so it does not
+  overlap production modes (discord, api, …).
 version: "0.2.0"
 enabled: false
 
-# resident   — main_script импортируется при предзагрузке resident-плагинов ядром
-# on_demand  — только реестр; код подгружается по invoke или при явном import_plugin_module (CLI)
+# RU: resident — может предзагружаться; on_demand — код не тянется, пока не нужен.
+# EN: resident — may preload; on_demand — code loads only when needed.
 lifecycle: on_demand
+# RU: Пусто = нет отдельного python main.py --mode …
+# EN: Empty = no dedicated python main.py --mode …
 cli_modes: []
 
+# RU: Точка входа относительно этой папки.
+# EN: Entry module path relative to this folder.
 main_script: core/main.py
 
-# Дополнительные поля (резерв под SDK / мини-сайт)
+# RU: Зарезервировано под SDK / сайт.
+# EN: Reserved for future SDK / dashboard.
 entry_mode: service
 events: []
 commands: []
