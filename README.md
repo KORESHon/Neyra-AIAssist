@@ -121,33 +121,18 @@ Recommendation:
 
 ## Support the project
 
-Neyra is an independent open-source effort: inference APIs, embedding models, hosting for demos, and sustained development all have a real cost. If the project is useful to you, consider supporting it—any amount helps keep the core free and moving forward.
+If you like Neyra and want to support its development (or just buy the author a coffee), you can send cryptocurrency. The addresses below match wallets used in Trust Wallet and Telegram (TG) Wallet.
 
-### Why donate
+- **TON (network: TON):** `UQD6p87_YQNeZmGduBHnkWBF3AbvyNOwt_xt8fn1Vd3zBSYa`
+- **USDT (network: TON):** `UQD6p87_YQNeZmGduBHnkWBF3AbvyNOwt_xt8fn1Vd3zBSYa`
+- **USDT (network: TRC20):** `TU467q2tsQLH58u6KVh3LyGwx7sqn2WyPQ`
+- **USDT (network: ERC20):** `0xf834f04668b947eeb56b433c54173f311a06392a`
+- **ETH (Ethereum Mainnet):** `0xf834f04668b947eeb56b433c54173f311a06392a`
+- **BTC (Bitcoin Network):** `bc1qevu7yty2l4u3n54gjkvj9nrtypj303ejd7e0z3`
 
-- **API and infrastructure:** cloud LLM calls, optional voice providers, backups, and test environments add up over time.
-- **Time:** design, security review, documentation, and community support are ongoing work alongside feature development.
-- **Independence:** voluntary support reduces pressure to gate core features or ship low-quality integrations just to monetize.
+*Always verify the network before sending. Thank you for your support 🚀*
 
-### How we use support
-
-Funds typically go toward: API bills for development and CI-related checks, domain/hosting if we add a public demo or docs site, and occasionally hardware for local-model testing. There is no corporate backing behind this repository—transparency is the default.
-
-### Ways to support
-
-- **GitHub Sponsors** — recurring or one-time tips tied to this repo (add your maintainer profile link when available).
-- **One-time tips** — platforms such as Ko-fi, Boosty, or similar (links can be published in repo wiki or pinned issue when set up).
-- **Cryptocurrency** — if offered, addresses will be listed only in verified project channels (README or releases), never via unsolicited DMs.
-
-**Security:** never send money or secrets to anyone claiming to represent the project without verifying it is the official repository (`https://github.com/KORESHon/Neyra-AIAssist`) and official links from this README.
-
-### What you get
-
-The MIT-licensed core stays open regardless of donations. Support is voluntary and does not unlock proprietary “premium” core code here—though future optional add-ons, if any, may be documented separately.
-
-### Contact
-
-For sponsorship questions or to propose institutional support, open a discussion on GitHub or contact the maintainer through the profile linked from the repository.
+The core stays open source under the MIT license regardless of donations.
 
 ## License
 
