@@ -1,5 +1,8 @@
 """
-Internal API (v1) for Neyra core.
+Internal API (v1): маршруты FastAPI и сборка приложения (`build_app`).
+
+Процесс поднимается из ядра — `core.server.run_neyra_server`; папка `interfaces/internal_api/`
+остаётся адаптером для `cli_modes: api` и совместимости с PluginLoader.
 """
 
 from __future__ import annotations
@@ -14,14 +17,30 @@ from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from core.agent import NeyraAgent
 from core.backup_manager import BackupManager
 from core.event_bus import CoreEvent
 from core.health_monitor import HealthMonitor
+from core.plugin_loader import PluginLoader
+from core.reflection import ReflectionEngine
 
 logger = logging.getLogger("neyra.api")
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _dashboard_dist_path(config: dict) -> Path:
+    dash = config.get("dashboard") or {}
+    raw = str(dash.get("dist_path") or "frontend/dist").strip()
+    p = Path(raw)
+    if not p.is_absolute():
+        p = (_project_root() / p).resolve()
+    return p
 
 
 class ApiError(Exception):
@@ -96,11 +115,25 @@ class ConfigUpdateRequest(BaseModel):
     updates: dict[str, Any] = Field(default_factory=dict)
 
 
-def build_app(config: dict) -> FastAPI:
+def build_app(
+    config: dict,
+    *,
+    shared_agent: Optional[NeyraAgent] = None,
+    shared_monitor: Optional[HealthMonitor] = None,
+    shared_backup_manager: Optional[BackupManager] = None,
+    reflection: Optional[ReflectionEngine] = None,
+) -> FastAPI:
     app = FastAPI(title="Neyra Internal API", version="1.0")
-    agent = NeyraAgent(config)
-    monitor = HealthMonitor(config)
-    backup_manager = BackupManager(config)
+    if shared_agent is not None:
+        agent = shared_agent
+        if shared_monitor is None or shared_backup_manager is None:
+            raise ValueError("shared_monitor and shared_backup_manager are required with shared_agent")
+        monitor = shared_monitor
+        backup_manager = shared_backup_manager
+    else:
+        agent = NeyraAgent(config)
+        monitor = HealthMonitor(config)
+        backup_manager = BackupManager(config)
     app.state.agent = agent
     app.state.monitor = monitor
     app.state.backup_manager = backup_manager
@@ -112,6 +145,8 @@ def build_app(config: dict) -> FastAPI:
 
     @app.on_event("startup")
     async def _startup() -> None:
+        if reflection is not None:
+            reflection.start_scheduler()
         monitor.start()
         await monitor.run_once()
 
@@ -197,6 +232,42 @@ def build_app(config: dict) -> FastAPI:
                 "people_records": len(agent.people_db._cache),
             },
         }
+
+    @app.get("/v1/plugins")
+    async def v1_plugins(request: Request, _: None = Depends(_auth_dep)):
+        trace_id = _trace_id(request)
+        loader = PluginLoader(_project_root())
+        return {"ok": True, "trace_id": trace_id, "data": {"plugins": loader.list_plugins()}}
+
+    @app.get("/v1/llm/balance")
+    async def v1_llm_balance(request: Request, _: None = Depends(_auth_dep)):
+        from core.llm_profile import resolve_openai_compatible_connection
+        from core.openrouter_balance import fetch_openrouter_key_usage
+
+        trace_id = _trace_id(request)
+        conn = resolve_openai_compatible_connection(config)
+        if conn.provider.lower() != "openrouter":
+            return {
+                "ok": True,
+                "trace_id": trace_id,
+                "data": {
+                    "provider": conn.provider,
+                    "openrouter": None,
+                    "hint": "Баланс OpenRouter доступен при провайдере openrouter (BACKEND / llm.provider).",
+                },
+            }
+        key = (conn.api_key or "").strip()
+        if not key or key == "ollama":
+            raise ApiError("config_error", "OpenRouter API key is not configured", 503)
+        raw = await fetch_openrouter_key_usage(key)
+        err = raw.get("_error")
+        if err:
+            if err == "missing_api_key":
+                raise ApiError("config_error", "OpenRouter API key is not configured", 503)
+            detail = raw.get("body") or raw.get("detail") or str(err)
+            raise ApiError("openrouter_error", str(detail)[:600], 502)
+        out = {k: v for k, v in raw.items() if not str(k).startswith("_")}
+        return {"ok": True, "trace_id": trace_id, "data": {"provider": "openrouter", **out}}
 
     def _safe_set(cfg: dict, path: str, value: Any) -> None:
         keys = path.split(".")
@@ -399,14 +470,23 @@ def build_app(config: dict) -> FastAPI:
                         }
                     )
 
+    dash_cfg = config.get("dashboard") or {}
+    if bool(dash_cfg.get("enabled", True)):
+        dist = _dashboard_dist_path(config)
+        if dist.is_dir() and (dist / "index.html").is_file():
+            app.mount("/", StaticFiles(directory=str(dist), html=True), name="neyra_dashboard")
+            logger.info("Serving dashboard from %s", dist)
+        else:
+            logger.warning(
+                "Dashboard enabled but no build at %s — only API (run: cd frontend && npm install && npm run build).",
+                dist,
+            )
+
     return app
 
 
 def run_internal_api(config: dict) -> None:
-    import uvicorn
+    """Точка входа плагина `api`: делегирует в ядро `core.server.run_neyra_server`."""
+    from core.server import run_neyra_server
 
-    api_cfg = config.get("internal_api") or {}
-    host = str(api_cfg.get("host") or "127.0.0.1")
-    port = int(api_cfg.get("port") or 8787)
-    app = build_app(config)
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    run_neyra_server(config)

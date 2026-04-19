@@ -1,3 +1,4 @@
+# Точка входа cli_modes: api — делегирует в core.server.run_neyra_server; HTTP/дашборд живут в ядре.
 id: internal_api
 name: Internal API
 description: REST + WebSocket gateway (FastAPI /v1).
