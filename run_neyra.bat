@@ -10,7 +10,7 @@ echo Running preflight checks...
 if not exist ".env" (
   echo [WARN] .env not found. Create it from .env.example first.
 )
-"%PY%" scripts\healthcheck.py --mode model --skip-http
+"%PY%" scripts\healthcheck.py --mode console --skip-http
 if errorlevel 1 (
   echo [WARN] Healthcheck reported issues.
   set /p CONT=Continue anyway? [y/N]:
@@ -28,15 +28,15 @@ echo 3^) Exit
 echo.
 set /p CHOICE=Select mode [1-3]: 
 
-if "%CHOICE%"=="1" goto run_model
+if "%CHOICE%"=="1" goto run_console
 if "%CHOICE%"=="2" goto run_core
 if "%CHOICE%"=="3" goto end
 echo Invalid choice.
 pause
 goto menu
 
-:run_model
-"%PY%" main.py --mode model
+:run_console
+"%PY%" main.py --mode console
 pause
 goto menu
 

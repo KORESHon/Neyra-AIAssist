@@ -19,8 +19,9 @@ Key goals:
 
 Current stable runtime:
 
-- `model` mode (console/core runtime),
-- `discord_text` interface (text + image flow).
+- **`python main.py`** — core: HTTP API, web dashboard, one `NeyraAgent`, resident plugins (e.g. Discord when enabled),
+- **`python main.py --mode console`** — terminal-only for prompt experiments,
+- `discord_text` and other interfaces ship as plugins under `interfaces/`.
 
 ## Architecture at a glance
 
@@ -28,8 +29,9 @@ Current stable runtime:
 - `core/voice/` - voice adapters and factories (cloud/local evolution path).
 - `interfaces/` - plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: `discord_text`, `internal_api`, `local_voice`, `laptop_screen`; template **`000EXAMPLE/`** (see Plugin SDK links below).
 - `scripts/` - ops helpers (health checks and maintenance utilities).
-- `main.py` - app entrypoint and mode launcher.
-- `run_neyra.bat` - Windows launcher with mode selection and preflight.
+- `main.py` — entrypoint (`core` vs `console` only).
+- `run_neyra.bat` — Windows menu (core / console / preflight).
+- `run_neyra.sh` — Linux/macOS menu (core / console / status / stop / git updates).
 
 ## Product direction
 
@@ -43,27 +45,28 @@ Neyra is moving toward a public personal-assistant platform:
 
 Long-term hardware "assistant station" form factor is tracked as a future backlog item.
 
-## Quick start (Windows)
+## Quick start
 
 1. Create and activate venv:
   - `python -m venv .venv`
-  - `.venv\Scripts\activate`
+  - Windows: `.venv\Scripts\activate`
+  - Linux/macOS: `source .venv/bin/activate`
 2. Install dependencies:
   - `pip install -r requirements.txt`
 3. Create `.env` from `.env.example` and fill secrets.
 4. Create `config.yaml` from `config.example.yaml` and adjust runtime values.
-5. Run preflight check:
-  - `.venv\Scripts\python.exe scripts\healthcheck.py`
-6. Run app:
-  - `run_neyra.bat`
-  - or direct: `.venv\Scripts\python.exe main.py --mode model`
+5. Preflight (example): `python scripts/healthcheck.py --mode console --skip-http`
+6. Run:
+  - Windows: `run_neyra.bat`
+  - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`
+  - Direct: `python main.py` (core) or `python main.py --mode console`
 
-## Run modes
+## Run modes (CLI)
 
-- `model` - console mode (default).
-- `discord` - Discord text bot.
-- `local_voice` - local voice interface stub.
-- `screen` - laptop screen interface stub.
+- **`core`** (default) — HTTP API, dashboard, resident plugins.
+- **`console`** — terminal chat only.
+
+Plugins start **with** the core from `config.yaml` and `plugin.yaml` (`lifecycle: resident`). There is no separate `--mode discord` CLI.
 
 ## Environment variables
 
@@ -73,9 +76,9 @@ Required for cloud model:
 
 - `OPENROUTER_API_KEY`
 
-Required only for Discord mode:
+Required when Discord is enabled in `config.yaml`:
 
-- `DISCORD_TOKEN`
+- `DISCORD_TOKEN` (or `discord.token` in config)
 
 Optional (future voice integrations):
 

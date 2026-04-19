@@ -17,7 +17,7 @@
 7. [Туториал: Hello World](#туториал-hello-world)
 8. [Справка: структура и манифест](#справка-структура-и-манифест)
 9. [Справка: PluginContext и run_plugin](#справка-plugincontext-и-run_plugin)
-10. [Как main.py подключает CLI](#как-mainpy-подключает-cli)
+10. [Модель процесса: ядро и консоль](#модель-процесса-ядро-и-консоль)
 11. [API загрузчика](#api-загрузчика)
 12. [Эталонные плагины в репозитории](#эталонные-плагины-в-репозитории)
 13. [Чеклист перед публикацией](#чеклист-перед-публикацией)
@@ -69,7 +69,7 @@
 | Секретов в `plugin.yaml` и в коммитах          | Только `.env` + описание имён в `.env.example`.                   |
 | Блокировки event loop без нужды                | Async / отдельный процесс для тяжёлого.                           |
 | Обхода `NeyraAgent` для **ответов ассистента** | Единый роутинг и логи (прямые HTTP к **другим** API — нормально). |
-| Занятия чужих `cli_modes`                      | Уникальные имена режимов.                                         |
+| Дублирующие непустые `cli_modes` у двух плагинов | Держите `cli_modes: []`, если метка не нужна. |
 
 
 ---
@@ -158,8 +158,7 @@ description: Минимальная демонстрация SDK
 version: "1.0.0"
 enabled: true
 lifecycle: on_demand
-cli_modes:
-  - hello
+cli_modes: []
 main_script: main.py
 ```
 
@@ -188,13 +187,17 @@ def run_plugin(ctx: PluginContext) -> None:
     asyncio.run(_run())
 ```
 
-### Шаг 4 — запуск
+### Шаг 4 — запуск / проверка
+
+Штатный путь — **ядро** (`python main.py`): плагины с `lifecycle: resident` стартуют вместе с процессом. Отдельного `python main.py --mode …` для каждого плагина больше нет.
+
+Разовая отладка по `id`:
 
 ```bash
-python main.py --mode hello
+python scripts/invoke_plugin.py hello_world
 ```
 
-Шаблон `**000EXAMPLE**` в репозитории выключен и без `cli_modes`, чтобы не пересекаться.
+Шаблон `**000EXAMPLE**` в репозитории выключен и с **`cli_modes: []`**, чтобы не пересекаться.
 
 ---
 
@@ -217,7 +220,7 @@ interfaces/000EXAMPLE/
 | `name`, `description`, `version` | Метаданные.                                          |
 | `enabled`                        | `false` — режим CLI для этого плагина не запустится. |
 | `lifecycle`                      | `resident` / `on_demand`.                            |
-| `cli_modes`                      | Имена для `python main.py --mode …`.                 |
+| `cli_modes`                      | Опционально, для будущего invoke; в штатных плагинах — `[]`. |
 | `main_script`                    | Путь к `.py` относительно папки плагина.             |
 
 
@@ -238,21 +241,19 @@ def run_plugin(ctx: PluginContext) -> None:
 
 - `**root**` — `Path` корня репозитория (где лежит `main.py`).
 - `**config**` — полный словарь глобального `config.yaml` после подстановки секретов из `.env` (через `apply_env_secrets`).
-- `**agent**` — экземпляр `NeyraAgent` или `None`. В текущем `main.py` агент передаётся **только** для режима Discord; для `--mode api`, кастомных режимов и т.д. обычно `None` — тогда создавайте `NeyraAgent(ctx.config)` внутри плагина.
+- `**agent**` — экземпляр `NeyraAgent` или `None`. Для **Discord** при запуске из ядра передаётся один общий агент; иначе создавайте `NeyraAgent(ctx.config)` внутри плагина при необходимости.
 
 Функция может **блокировать** поток (как `discord.py` `run()` или `uvicorn.run`) — это нормально для выделенного CLI-режима.
 
 ---
 
-## Как main.py подключает CLI
+## Модель процесса: ядро и консоль
 
-1. Парсится аргумент `--mode <имя>`.
-2. `PluginLoader.manifest_for_cli_mode(mode)` ищет манифест, у которого в списке `cli_modes` есть это имя (без учёта регистра в реализации — используйте нижний регистр в YAML).
-3. Если манифест не найден или у плагина `enabled: false`, процесс завершается с ошибкой.
-4. Вызывается `import_plugin_module(manifest)` — выполняется файл `main_script`.
-5. `run_plugin_entrypoint(module, ctx)` вызывает вашу функцию `run_plugin(ctx)`.
+1. **`python main.py`** (или `--mode core`) запускает **`core.server.run_neyra_server`**: FastAPI, дашборд, один `NeyraAgent`, рефлексия, health monitor, **resident**-плагины (например Discord) в фоновых потоках.
+2. **`python main.py --mode console`** — только интерактивная консоль без HTTP.
+3. Глобальные CLI-режимы под отдельные плагины **не регистрируются**; в манифестах держите **`cli_modes: []`**, если не нужна зарезервированная метка. Для ручного запуска см. **`scripts/invoke_plugin.py`**.
 
-Итого цепочка: манифест → загрузка модуля → `run_plugin(ctx)`.
+Цепочка в продакшене: процесс ядра → `PluginLoader` → `run_plugin(ctx)` для resident/on-demand.
 
 ---
 
@@ -289,7 +290,7 @@ def run_plugin(ctx: PluginContext) -> None:
 | Путь                                                   | Роль                                                                |
 | ------------------------------------------------------ | ------------------------------------------------------------------- |
 | `interfaces/discord_text/`                             | Discord; в `run_plugin` передаётся `ctx.agent` из `main.py`.        |
-| `interfaces/internal_api/`                             | HTTP/WebSocket API; свой `NeyraAgent` создаётся внутри `build_app`. |
+| `interfaces/internal_api/`                             | Маршруты FastAPI; приложение собирается в ядре (`build_app`). |
 | `interfaces/local_voice/`, `interfaces/laptop_screen/` | Заглушки под будущую реализацию.                                    |
 
 
@@ -298,7 +299,7 @@ def run_plugin(ctx: PluginContext) -> None:
 ## Чеклист перед публикацией
 
 - Секреты не в git — только переменные в `.env`, имена продублированы в `.env.example`.
-- Уникальные `id` и уникальные значения в `cli_modes` относительно других плагинов.
+- Уникальный `id`; `cli_modes` пустой или без пересечений с другими плагинами.
 - По желанию: `config.example.yaml` в папке плагина для локальных настроек без секретов.
 - Ответы ассистента через `NeyraAgent`, если не задокументировано исключение.
 
@@ -306,19 +307,19 @@ def run_plugin(ctx: PluginContext) -> None:
 
 ## Частые проблемы
 
-**«Нет плагина для режима» / `No plugin registers cli_mode`**
+**Плагин не находится**
 
-- Проверьте орфографию в `cli_modes` и что у плагина `**enabled: true**`.
-- Убедитесь, что запускаете из **корня репозитория** (там, где `main.py`).
+- Проверьте, что у плагина `**enabled: true**`, если он должен загружаться.
+- Запускайте из **корня репозитория** (где `main.py`).
 
 **Ошибки импорта (`ModuleNotFoundError`, `No module named 'core'`)**
 
-- Запускайте так: `python main.py --mode …` из корня проекта, а не из подпапки `interfaces/`.
+- Запускайте `python main.py` из корня проекта, а не из подпапки `interfaces/`.
 - Структура пакетов должна совпадать с примерами: импорты вида `from core...`, `from interfaces...`.
 
 `**ctx.agent` равен `None`**
 
-- Для режимов **кроме Discord** это нормально: в штатном `main.py` агент в контекст кладётся только для Discord.
+- Нормально, если ядро не передало агента (агент для Discord внедряется только в resident-путь Discord).
 - Создайте агент в плагине: `NeyraAgent(ctx.config)` (как в Internal API).
 
 **Предупреждение о дубликате `cli_modes`**

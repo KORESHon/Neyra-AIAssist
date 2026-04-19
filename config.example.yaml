@@ -538,8 +538,8 @@ dashboard:
   # RU: Путь к сборке Vite (index.html + assets/), относительно корня проекта.
   dist_path: "frontend/dist"
 
-  # EN: If true, `python main.py --mode api` exits when dist is missing (CI/production gate).
-  # RU: Если true — `python main.py --mode api` завершится без dist (контроль CI/прод).
+  # EN: If true, `python main.py` (core) exits when dist is missing (CI/production gate).
+  # RU: Если true — `python main.py` (ядро) завершится без dist (контроль CI/прод).
   require_build: false
 
 # ---------------------------

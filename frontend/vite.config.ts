@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Dev: API runs separately (python main.py --mode api). Proxy /v1 and OpenAPI to it.
+// Dev: run core in another terminal (python main.py), then proxy /v1 and OpenAPI to it.
 const apiTarget = process.env.VITE_API_PROXY ?? 'http://127.0.0.1:8787'
 
 export default defineConfig({

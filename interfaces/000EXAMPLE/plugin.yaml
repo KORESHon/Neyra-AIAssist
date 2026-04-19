@@ -16,8 +16,8 @@ enabled: false
 # RU: resident — может предзагружаться; on_demand — код не тянется, пока не нужен.
 # EN: resident — may preload; on_demand — code loads only when needed.
 lifecycle: on_demand
-# RU: Пусто = нет отдельного python main.py --mode …
-# EN: Empty = no dedicated python main.py --mode …
+# RU: Пусто — плагин только в составе ядра / invoke_plugin; не отдельный CLI-режим.
+# EN: Empty — plugin runs with core or scripts/invoke_plugin.py; no per-plugin CLI mode.
 cli_modes: []
 
 # RU: Точка входа относительно этой папки.
