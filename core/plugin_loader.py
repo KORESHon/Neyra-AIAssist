@@ -25,7 +25,7 @@ class PluginManifest:
     enabled: bool
     # resident: load main_script at startup; on_demand: registry only until invoke
     lifecycle: str
-    # Соответствие python main.py --mode <name>
+    # Опционально: зарезервированные имена для invoke API / совместимости (основной процесс: core|console).
     cli_modes: list[str]
     main_script: str
     plugin_dir: Path

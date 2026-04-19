@@ -2,7 +2,7 @@
 Internal API (v1): маршруты FastAPI и сборка приложения (`build_app`).
 
 Процесс поднимается из ядра — `core.server.run_neyra_server`; папка `interfaces/internal_api/`
-остаётся адаптером для `cli_modes: api` и совместимости с PluginLoader.
+остаётся модулем маршрутов и точкой `main_script` для PluginLoader.
 """
 
 from __future__ import annotations

@@ -4,12 +4,9 @@ Cyber-Core — Проект «Нейра»
 Главная точка входа.
 
 Использование:
-  python main.py                  # Ядро: HTTP API + дашборд + resident-плагины (см. core/server.py)
+  python main.py                  # Ядро (по умолчанию): HTTP API + дашборд + resident-плагины — см. core/server.py
   python main.py --mode core      # то же явно
-  python main.py --mode api       # то же (алиас исторический)
-  python main.py --mode discord   # то же (алиас; Discord — из конфига + resident, не отдельный процесс)
-  python main.py --mode local_voice | --mode screen  # то же (алиасы; заглушки on_demand — позже из дашборда)
-  python main.py --mode model     # только консоль (без HTTP-стека, для теста промптов)
+  python main.py --mode console   # только консоль (промпты, без HTTP-стека)
 
 Команды в консольном режиме:
   /reset     — сбросить краткосрочную память
@@ -120,8 +117,8 @@ HELP_TEXT = """
   /sys <команда>    — uptime | disk | memory | cpu | python
   /web <запрос>      — поиск в интернете (ddgs)
   /person <имя|id>   — досье PeopleDB
-  /launch <discord|local_voice|screen> — поднять ядро (API+дашборд+плагины) вторым процессом (`--mode core`)
-  /running           — показать запущенные интерфейсы
+  /launch            — поднять ядро вторым процессом (как `python main.py`, см. фоновый API)
+  /running           — фоновое ядро (если запускали /launch)
   /health            — health-report и self-healing проверка
   exit / quit        — выход
 
@@ -132,11 +129,8 @@ HELP_TEXT = """
 _SPAWNED_CORE: subprocess.Popen | None = None
 
 
-def launch_interface_mode(mode: str) -> tuple[bool, str]:
+def launch_background_core() -> tuple[bool, str]:
     """Из консоли поднять полное ядро отдельным процессом (тот же стек, что и `python main.py`)."""
-    mode = (mode or "").strip().lower()
-    if mode not in {"discord", "local_voice", "screen"}:
-        return False, "Неизвестный режим. Доступно: discord | local_voice | screen"
     global _SPAWNED_CORE
     if _SPAWNED_CORE is not None and _SPAWNED_CORE.poll() is None:
         return False, f"Фоновое ядро уже запущено (pid={_SPAWNED_CORE.pid}). Остановите его перед повтором."
@@ -144,10 +138,11 @@ def launch_interface_mode(mode: str) -> tuple[bool, str]:
     python_exe = str(py if py.exists() else Path(sys.executable))
     p = subprocess.Popen([python_exe, str(_PROJECT_ROOT / "main.py"), "--mode", "core"])
     _SPAWNED_CORE = p
-    return True, f"Запущено ядро в фоне (запрос: {mode}, pid={p.pid}) — API и дашборд как при `python main.py`"
+    return True, f"Запущено ядро в фоне (pid={p.pid}) — API и дашборд как при `python main.py`"
 
 
-def restart_interface_mode(mode: str) -> tuple[bool, str]:
+def restart_interface_mode(_mode: str) -> tuple[bool, str]:
+    # health monitor передаёт имя процесса; для консоли — одно фоновое ядро
     global _SPAWNED_CORE
     proc = _SPAWNED_CORE
     if proc and proc.poll() is None:
@@ -156,7 +151,7 @@ def restart_interface_mode(mode: str) -> tuple[bool, str]:
         except Exception:
             pass
     _SPAWNED_CORE = None
-    return launch_interface_mode(mode or "discord")
+    return launch_background_core()
 
 
 def _spawn_registry() -> dict[str, subprocess.Popen]:
@@ -357,9 +352,12 @@ async def run_console():
                 console.print(Panel(str(raw), title=f"Досье: {q}", border_style="cyan"))
             continue
 
-        if user_input.startswith("/launch "):
-            mode = user_input[len("/launch ") :].strip()
-            ok, msg = launch_interface_mode(mode)
+        if user_input.strip() == "/launch" or user_input.startswith("/launch "):
+            extra = user_input.replace("/launch", "", 1).strip()
+            if extra and extra.lower() != "core":
+                console.print("[yellow]Используйте: /launch (поднять ядро в фоне)[/yellow]")
+                continue
+            ok, msg = launch_background_core()
             console.print(f"[green]{msg}[/green]" if ok else f"[yellow]{msg}[/yellow]")
             continue
 
@@ -444,9 +442,9 @@ def main():
     )
     parser.add_argument(
         "--mode",
-        choices=["core", "model", "console", "discord", "api", "local_voice", "screen"],
+        choices=["core", "console"],
         default="core",
-        help="core|api|discord|… = ядро (HTTP+сайт+плагины); model|console = только консоль",
+        help="core = HTTP+дашборд+плагины; console = только консоль",
     )
     args = parser.parse_args()
 
@@ -458,11 +456,6 @@ def main():
 
     mode_map = {
         "core": run_http_stack,
-        "api": run_http_stack,
-        "discord": run_http_stack,
-        "local_voice": run_http_stack,
-        "screen": run_http_stack,
-        "model": run_console,
         "console": run_console,
     }
 

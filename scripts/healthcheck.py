@@ -81,8 +81,8 @@ def check_llm_config_and_env(cfg: dict) -> list[str]:
 
 
 def check_discord_token(mode: str, cfg: dict) -> list[str]:
-    """Для core/discord-режима: если в конфиге включён Discord — нужен токен."""
-    if mode not in ("discord", "core"):
+    """Для core: если в конфиге включён Discord — нужен токен."""
+    if mode != "core":
         return []
     disc = cfg.get("discord") if isinstance(cfg.get("discord"), dict) else {}
     if not bool(disc.get("enabled", True)):
@@ -125,9 +125,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Neyra 2.0 healthcheck")
     parser.add_argument(
         "--mode",
-        choices=["model", "discord", "core"],
-        default="model",
-        help="core/discord = проверки для полного ядра (в т.ч. Discord при discord.enabled)",
+        choices=["core", "console"],
+        default="console",
+        help="core = ядро (HTTP+плагины); console = только консоль",
     )
     parser.add_argument("--skip-http", action="store_true", help="Skip LLM /v1/models HTTP probe")
     args = parser.parse_args()

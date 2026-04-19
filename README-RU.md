@@ -19,8 +19,9 @@ Neyra строится как переиспользуемое ядро плюс
 
 Текущий стабильный runtime:
 
-- режим `model` (консоль/ядро),
-- интерфейс `discord_text` (текст + изображения).
+- **`python main.py`** — ядро: API, дашборд, один агент, resident-плагины (например Discord при включённом конфиге),
+- **`python main.py --mode console`** — только консоль для экспериментов с промптами,
+- интерфейс `discord_text` и др. — плагины в `interfaces/`.
 
 ## Архитектура (кратко)
 
@@ -29,8 +30,9 @@ Neyra строится как переиспользуемое ядро плюс
 - `interfaces/` — плагины (`interfaces/<id>/plugin.yaml` + `main.py`): discord, API, local voice, screen и шаблон **`000EXAMPLE`** (первый в списке по имени папки).
 - **Документация Plugin SDK** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md) (русский туториал), [HELP.md](interfaces/000EXAMPLE/HELP.md) (English).
 - `scripts/` — эксплуатационные скрипты (healthcheck и вспомогательные утилиты).
-- `main.py` — точка входа и запуск режимов.
-- `run_neyra.bat` — запуск на Windows с preflight-проверками.
+- `main.py` — точка входа (`core` или `console`).
+- `run_neyra.bat` — меню на Windows.
+- `run_neyra.sh` — меню на Linux/macOS (статус, остановка, git).
 
 ## Продуктовый вектор
 
@@ -44,27 +46,28 @@ Neyra развивается как персональный публичный 
 
 Форм-фактор “ИИ-станции” оставлен в future backlog и не входит в текущую реализацию.
 
-## Быстрый старт (Windows)
+## Быстрый старт
 
 1. Создай и активируй venv:
   - `python -m venv .venv`
-  - `.venv\Scripts\activate`
+  - Windows: `.venv\Scripts\activate`
+  - Linux/macOS: `source .venv/bin/activate`
 2. Установи зависимости:
   - `pip install -r requirements.txt`
 3. Создай `.env` из `.env.example` и заполни секреты.
 4. Создай `config.yaml` из `config.example.yaml`.
-5. Запусти preflight:
-  - `.venv\Scripts\python.exe scripts\healthcheck.py`
+5. Preflight (пример): `python scripts/healthcheck.py --mode console --skip-http`
 6. Запуск:
-  - `run_neyra.bat`
-  - или `.venv\Scripts\python.exe main.py --mode model`
+  - Windows: `run_neyra.bat`
+  - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`
+  - Напрямую: `python main.py` (ядро) или `python main.py --mode console`
 
-## Режимы запуска
+## Режимы CLI
 
-- `model` — основной режим (ядро/консоль).
-- `discord` — текстовый Discord-бот.
-- `local_voice` — заготовка локального голосового интерфейса.
-- `screen` — заготовка screen-интерфейса.
+- **`core`** (по умолчанию) — HTTP, дашборд, resident-плагины.
+- **`console`** — только консоль.
+
+Отдельных `--mode discord` и т.п. больше нет: плагины поднимаются вместе с ядром по конфигу.
 
 ## 💖 Поддержать проект
 

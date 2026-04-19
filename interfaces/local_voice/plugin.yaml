@@ -4,6 +4,5 @@ description: Заглушка локального голосового инте
 version: "0.1.0"
 enabled: true
 lifecycle: on_demand
-cli_modes:
-  - local_voice
+cli_modes: []
 main_script: main.py

@@ -17,7 +17,7 @@ This document is the **full English tutorial** for plugin authors: what plugins 
 7. [Tutorial: Hello World plugin](#tutorial-hello-world-plugin)
 8. [Reference: layout & manifest](#reference-layout--manifest)
 9. [Reference: `PluginContext` & `run_plugin](#reference-plugincontext--run_plugin)`
-10. [How `main.py` wires CLI modes](#how-mainpy-wires-cli-modes)
+10. [Process model: core vs console](#process-model-core-vs-console)
 11. [Loader API](#loader-api)
 12. [Reference implementations](#reference-implementations)
 13. [Checklist before sharing your plugin](#checklist-before-sharing-your-plugin)
@@ -69,7 +69,7 @@ These are **limitations of reality and architecture**, not “forbidden by polic
 | Committing secrets in `plugin.yaml` or in tracked source            | Use `.env` and document variable names in `.env.example`.                                                   |
 | Blocking the asyncio thread without reason                          | Prefer async I/O or a dedicated subprocess for heavy work.                                                  |
 | Bypassing `NeyraAgent` for **assistant** replies                    | Use `NeyraAgent` so models and logs stay centralized (raw HTTP to **other** APIs for search/music is fine). |
-| Stealing reserved `cli_modes` names (`discord`, `api`, …) for tests | Pick a unique mode name.                                                                                    |
+| Duplicate non-empty `cli_modes` entries vs another plugin (invoke labels) | Keep `cli_modes: []` unless you reserve a unique invoke name. |
 
 
 ---
@@ -164,8 +164,7 @@ description: Minimal SDK demo
 version: "1.0.0"
 enabled: true
 lifecycle: on_demand
-cli_modes:
-  - hello
+cli_modes: []
 main_script: main.py
 ```
 
@@ -196,13 +195,17 @@ def run_plugin(ctx: PluginContext) -> None:
     asyncio.run(_run())
 ```
 
-### Step 4 — Run
+### Step 4 — Run / smoke test
+
+Shipped plugins attach to the **core** process (`python main.py`, default). There is no per-plugin `python main.py --mode …` anymore.
+
+For a quick **manual** run of your plugin id (development):
 
 ```bash
-python main.py --mode hello
+python scripts/invoke_plugin.py hello_world
 ```
 
-The shipped **000EXAMPLE** template stays **enabled: false** and has no **cli_modes** so it never collides.
+The **000EXAMPLE** template stays **enabled: false** and uses **`cli_modes: []`** so it never collides with optional invoke labels.
 
 ---
 
@@ -228,7 +231,7 @@ Shipped: `discord_text/`, `internal_api/`, `local_voice/`, `laptop_screen/`.
 | `name`, `description`, `version` | Metadata.                                              |
 | `enabled`                        | If `false`, CLI mode for this plugin fails at startup. |
 | `lifecycle`                      | `resident` / `on_demand`.                              |
-| `cli_modes`                      | Names for `python main.py --mode <name>`.              |
+| `cli_modes`                      | Optional labels for future invoke / tools; use `[]` in shipped plugins. |
 | `main_script`                    | Path to entry `.py` relative to the plugin folder.     |
 
 
@@ -245,19 +248,17 @@ def run_plugin(ctx: PluginContext) -> None:
 
 - `ctx.root` — repo root.
 - `ctx.config` — full YAML after `.env` merge for **global** config.
-- `ctx.agent` — set for Discord mode only in stock `main.py`; else build `NeyraAgent(ctx.config)` if needed.
+- `ctx.agent` — set for **Discord** when the plugin is started by the core server; else build `NeyraAgent(ctx.config)` if needed.
 
 ---
 
-## How `main.py` wires CLI modes
+## Process model: core vs console
 
-1. CLI parses `--mode <name>`.
-2. `PluginLoader.manifest_for_cli_mode(mode)` finds the manifest whose `cli_modes` list contains that name (values are normalized to lowercase in manifests).
-3. If no manifest is found or `enabled` is `false`, startup exits with an error.
-4. `import_plugin_module(manifest)` loads and executes the `main_script` file.
-5. `run_plugin_entrypoint(module, ctx)` invokes your `run_plugin(ctx)`.
+1. **`python main.py`** (or `--mode core`) starts **`core.server.run_neyra_server`**: one FastAPI app, dashboard static files, one `NeyraAgent`, reflection scheduler, health monitor, and **resident** plugins (e.g. Discord) in background threads.
+2. **`python main.py --mode console`** runs the **terminal chat** only — no HTTP stack; use it to iterate on prompts.
+3. Plugins do **not** register separate global CLI modes. Keep **`cli_modes: []`** unless you need a reserved string for a future invoke API. For ad-hoc runs, use **`scripts/invoke_plugin.py <plugin_id>`**.
 
-Chain: manifest → load module → `run_plugin(ctx)`.
+Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for resident/on-demand hooks.
 
 ---
 
@@ -294,7 +295,7 @@ Chain: manifest → load module → `run_plugin(ctx)`.
 | Path                                        | Role                                      |
 | ------------------------------------------- | ----------------------------------------- |
 | `interfaces/discord_text/`                  | Discord; uses injected `ctx.agent`.       |
-| `interfaces/internal_api/`                  | FastAPI; own `NeyraAgent` in `build_app`. |
+| `interfaces/internal_api/`                  | FastAPI routes; app built in core (`build_app`). |
 | `interfaces/local_voice/`, `laptop_screen/` | Stubs.                                    |
 
 
@@ -303,7 +304,7 @@ Chain: manifest → load module → `run_plugin(ctx)`.
 ## Checklist before sharing your plugin
 
 - No secrets in git — document env var names in `.env.example`.
-- Unique `id` and `cli_modes`.
+- Unique `id`; keep `cli_modes` empty or unique per plugin.
 - Optional `config.example.yaml` for plugin-local settings.
 - Assistant replies via `NeyraAgent` unless you document an exception.
 
@@ -311,19 +312,19 @@ Chain: manifest → load module → `run_plugin(ctx)`.
 
 ## Troubleshooting
 
-**No plugin for mode / “No plugin registers cli_mode”**
+**Plugin not discovered**
 
-- Check spelling in `cli_modes` and that the plugin has `**enabled: true`**.
+- Check that the plugin has `**enabled: true**` when you expect it.
 - Run from the **repository root** (where `main.py` lives).
 
 **Import errors (`ModuleNotFoundError`, `No module named 'core'`)**
 
-- Start with `python main.py --mode …` from the project root, not from inside `interfaces/`.
+- Start with `python main.py` from the project root, not from inside `interfaces/`.
 - Imports expect the usual layout: `from core...`, `from interfaces...`.
 
 `**ctx.agent` is `None`**
 
-- Expected for modes **other than Discord** in stock `main.py` (only Discord injects an agent).
+- Expected when the core did not inject an agent (only Discord resident path injects `ctx.agent`).
 - Create one in the plugin: `NeyraAgent(ctx.config)` (same idea as `internal_api`).
 
 **Duplicate `cli_modes` warning**
