@@ -1,5 +1,7 @@
 .env
 config.yaml
+# Локальные overrides плагинов (в репо — только config.example.yaml в каждой папке)
+interfaces/**/config.yaml
 Gemini.md
 Diplom.md
 .venv/
