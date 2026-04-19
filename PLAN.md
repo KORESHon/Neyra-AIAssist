@@ -1,6 +1,6 @@
 # PLAN.md — дорожная карта Neyra
 
-**Фокус:** ядро и плагины готовы; дальше — **микро-сайт + чат в браузере** (каталог `site/` или `frontend/`), затем **демо на GitHub Pages**. ИИ-станция и тяжёлые device-сценарии — в [Future backlog](#future-backlog).
+**Фокус:** ядро и плагины готовы; **дашборд** в `frontend/` (Vite + React) подключён к Internal API; дальше — **чат в браузере**, затем **демо на GitHub Pages**. ИИ-станция и тяжёлые device-сценарии — в [Future backlog](#future-backlog).
 
 **Следующий согласованный порядок работ:**
 
@@ -25,7 +25,8 @@
 | **2.1** | Internal REST API в плагине `interfaces/internal_api/` (`api_server.py`): chat, memory, notify, health, stats, config/update, backup                                                                                                                                                                                                                                                                                                                                                                            | `python main.py --mode api`; curl/OpenAPI; Bearer опционально                |
 | **2.2** | WebSocket `/v1/ws/chat`, `/v1/ws/audio` в том же приложении                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `ws://` локально; WSS — `docs/wss-deploy.md`                                 |
 | **2.4** | Бэкап + внешнее хранилище                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `POST /v1/backup/run`                                                        |
-| **5.1** | **Plugin SDK:** `core/plugin_sdk.py` (`PluginContext`, `run_plugin_entrypoint`), `core/plugin_loader.py` (`cli_modes`, `import_plugin_module`, реестр). Интерфейсы как плагины: `interfaces/discord_text/`, `interfaces/internal_api/`, `interfaces/local_voice/`, `interfaces/laptop_screen/`, шаблон `interfaces/000EXAMPLE/` (см. HELP.md, HELP-RU.md). Контракт: `main_script` экспортирует `run_plugin(ctx)`. Связь CLI: `plugin.yaml` → `cli_modes` (например `discord`, `api`, `local_voice`, `screen`). | `PluginLoader(_PROJECT_ROOT).list_plugins()`; `python main.py --mode discord |
+| **4.1** | **Микро-сайт (дашборд):** `frontend/` — React + Vite; сборка в `frontend/dist`; FastAPI раздаёт UI с корня `/` в режиме `api` (после `/v1`). `GET /v1/plugins` — список плагинов из `PluginLoader`. Конфиг `dashboard:` (`enabled`, `dist_path`, `require_build`). Сборка: `cd frontend && npm install && npm run build`. | `npm run build`; `python main.py --mode api`; открыть `http://127.0.0.1:8787/`; dev: `npm run dev` (прокси на тот же порт). |
+| **5.1** | **Plugin SDK:** `core/plugin_sdk.py` (`PluginContext`, `run_plugin_entrypoint`), `core/plugin_loader.py` (`cli_modes`, `import_plugin_module`, реестр). Интерфейсы как плагины: `interfaces/discord_text/`, `interfaces/internal_api/`, `interfaces/local_voice/`, `interfaces/laptop_screen/`, шаблон `interfaces/000EXAMPLE/` (см. HELP.md, HELP-RU.md). Контракт: `main_script` экспортирует `run_plugin(ctx)`. Связь CLI: `plugin.yaml` → `cli_modes` (например `discord`, `api`, `local_voice`, `screen`). | `PluginLoader(_PROJECT_ROOT).list_plugins()`; `python main.py --mode discord` |
 
 
 ---
@@ -34,14 +35,19 @@
 
 ### 4 Микро-сайт + чат в браузере
 
-- Дашборд, OpenAPI/Swagger, управление плагинами.
+- **Сделано (4.1):** дашборд (health, память, плагины), ссылки на OpenAPI/Swagger/ReDoc; плагины — read-only список через API.
+- **Дальше:** полноценное управление плагинами из UI (после контракта в ядре).
 - **Вебхуки и микро-оповещения** (бывш. 2.3): настройка через UI; в ядре retry/backoff, throttling, dead-letter.
-- **Фронт** для чата с Нейрой: папка `**site/`** или `**frontend/`** (уточнится при старте реализации), работа через существующий API ядра.
+- **Фронт для чата** с Нейрой: клиент к `/v1/ws/chat` и REST, папка `frontend/`.
 
 ### GitHub Pages — демо одной страницы
 
 - Статический лендинг + встроенный или связанный демо-чат (ограничения по ключам/модели — только публичные демо-настройки).
 - Отдельная ветка или `docs/` + workflow Pages — по мере настройки репозитория.
+ Безопасное Демо на GitHub Pages (BYOK — Принеси свой ключ)
+Мы делаем красивый чат на React и заливаем его на GitHub Pages.
+
+Хитрость: У сайта нет своего бэкенда! Когда друг открывает сайт, там появляется окошко: "Введите ваш API-ключ OpenRouter, чтобы пообщаться с демо-Нейрой". Сайт шлет запросы напрямую в OpenRouter прямо из браузера друга. Твой кошелек в безопасности, сервер не нужен.
 
 ### Дополнения к SDK (по мере необходимости)
 

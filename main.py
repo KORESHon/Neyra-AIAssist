@@ -4,12 +4,12 @@ Cyber-Core — Проект «Нейра»
 Главная точка входа.
 
 Использование:
-  python main.py                  # Model-режим (консоль)
-  python main.py --mode model     # то же, что console
-  python main.py --mode discord   # Discord text-бот
-  python main.py --mode api       # Internal API (FastAPI)
-  python main.py --mode local_voice  # Заглушка local voice интерфейса
-  python main.py --mode screen       # Заглушка screen интерфейса
+  python main.py                  # Ядро: HTTP API + дашборд + resident-плагины (см. core/server.py)
+  python main.py --mode core      # то же явно
+  python main.py --mode api       # то же (алиас исторический)
+  python main.py --mode discord   # то же (алиас; Discord — из конфига + resident, не отдельный процесс)
+  python main.py --mode local_voice | --mode screen  # то же (алиасы; заглушки on_demand — позже из дашборда)
+  python main.py --mode model     # только консоль (без HTTP-стека, для теста промптов)
 
 Команды в консольном режиме:
   /reset     — сбросить краткосрочную память
@@ -120,7 +120,7 @@ HELP_TEXT = """
   /sys <команда>    — uptime | disk | memory | cpu | python
   /web <запрос>      — поиск в интернете (ddgs)
   /person <имя|id>   — досье PeopleDB
-  /launch <discord|local_voice|screen> — запустить интерфейс-плагин в фоне
+  /launch <discord|local_voice|screen> — поднять ядро (API+дашборд+плагины) вторым процессом (`--mode core`)
   /running           — показать запущенные интерфейсы
   /health            — health-report и self-healing проверка
   exit / quit        — выход
@@ -128,33 +128,41 @@ HELP_TEXT = """
   В Discord: текстовые slash-команды (reset, stats, search, web, person, ...)
 """
 
-_SPAWNED_INTERFACES: dict[str, subprocess.Popen] = {}
+# Фоновое ядро из консоли: один дочерний процесс `main.py --mode core` (HTTP + дашборд + resident-плагины).
+_SPAWNED_CORE: subprocess.Popen | None = None
 
 
 def launch_interface_mode(mode: str) -> tuple[bool, str]:
+    """Из консоли поднять полное ядро отдельным процессом (тот же стек, что и `python main.py`)."""
     mode = (mode or "").strip().lower()
     if mode not in {"discord", "local_voice", "screen"}:
         return False, "Неизвестный режим. Доступно: discord | local_voice | screen"
-    proc = _SPAWNED_INTERFACES.get(mode)
-    if proc and proc.poll() is None:
-        return False, f"Интерфейс {mode} уже запущен (pid={proc.pid})"
+    global _SPAWNED_CORE
+    if _SPAWNED_CORE is not None and _SPAWNED_CORE.poll() is None:
+        return False, f"Фоновое ядро уже запущено (pid={_SPAWNED_CORE.pid}). Остановите его перед повтором."
     py = Path(".venv/Scripts/python.exe")
     python_exe = str(py if py.exists() else Path(sys.executable))
-    p = subprocess.Popen([python_exe, str(_PROJECT_ROOT / "main.py"), "--mode", mode])
-    _SPAWNED_INTERFACES[mode] = p
-    return True, f"Запущен интерфейс {mode} (pid={p.pid})"
+    p = subprocess.Popen([python_exe, str(_PROJECT_ROOT / "main.py"), "--mode", "core"])
+    _SPAWNED_CORE = p
+    return True, f"Запущено ядро в фоне (запрос: {mode}, pid={p.pid}) — API и дашборд как при `python main.py`"
 
 
 def restart_interface_mode(mode: str) -> tuple[bool, str]:
-    mode = (mode or "").strip().lower()
-    proc = _SPAWNED_INTERFACES.get(mode)
+    global _SPAWNED_CORE
+    proc = _SPAWNED_CORE
     if proc and proc.poll() is None:
         try:
             proc.terminate()
         except Exception:
             pass
-    _SPAWNED_INTERFACES.pop(mode, None)
-    return launch_interface_mode(mode)
+    _SPAWNED_CORE = None
+    return launch_interface_mode(mode or "discord")
+
+
+def _spawn_registry() -> dict[str, subprocess.Popen]:
+    if _SPAWNED_CORE is not None and _SPAWNED_CORE.poll() is None:
+        return {"core": _SPAWNED_CORE}
+    return {}
 
 
 # ─── Консольный режим ─────────────────────────────────────────────────────────
@@ -222,7 +230,7 @@ async def run_console():
     reflection.start_scheduler()
     health_monitor = HealthMonitor(
         config,
-        process_registry=lambda: dict(_SPAWNED_INTERFACES),
+        process_registry=_spawn_registry,
         restart_callback=restart_interface_mode,
     )
     health_monitor.start()
@@ -357,10 +365,10 @@ async def run_console():
 
         if user_input == "/running":
             alive = []
-            for m, p in _SPAWNED_INTERFACES.items():
+            for m, p in _spawn_registry().items():
                 if p.poll() is None:
                     alive.append(f"{m} (pid={p.pid})")
-            console.print(Panel("\n".join(alive) if alive else "Нет активных интерфейсов.", title="Интерфейсы"))
+            console.print(Panel("\n".join(alive) if alive else "Нет фонового ядра.", title="Фоновые процессы"))
             continue
 
         if user_input == "/health":
@@ -418,62 +426,13 @@ async def run_console():
         # TODO: воспроизводить sounds через soundpad когда будет готов
 
 
-# ─── Discord режим ────────────────────────────────────────────────────────────
+# ─── Ядро (HTTP + дашборд + resident-плагины) ─────────────────────────────────
 
-async def _run_registered_plugin(mode: str, *, agent=None) -> None:
-    """Запускает плагин с полем cli_modes, содержащим mode (см. interfaces/*/plugin.yaml)."""
-    from core.plugin_loader import PluginLoader
-    from core.plugin_sdk import PluginContext, run_plugin_entrypoint
+async def run_http_stack():
+    """Ядро Нейры: FastAPI + дашборд + один NeyraAgent; см. core.server.run_neyra_server."""
+    from core.server import run_neyra_server
 
-    loader = PluginLoader(_PROJECT_ROOT)
-    manifest = loader.manifest_for_cli_mode(mode)
-    if not manifest:
-        logger.error("Нет плагина для --mode %s (проверьте cli_modes в plugin.yaml).", mode)
-        sys.exit(1)
-    if not manifest.enabled:
-        logger.error("Плагин %s отключён (enabled: false в plugin.yaml).", manifest.id)
-        sys.exit(1)
-    mod = loader.import_plugin_module(manifest)
-    ctx = PluginContext(root=_PROJECT_ROOT, config=config, agent=agent)
-    loop = asyncio.get_event_loop()
-
-    def _entry() -> None:
-        run_plugin_entrypoint(mod, ctx)
-
-    await loop.run_in_executor(None, _entry)
-
-
-async def run_discord():
-    """Запускает плагин Discord text-бот."""
-    from core.agent import NeyraAgent
-    from core.health_monitor import HealthMonitor
-    from rich.console import Console
-
-    console = Console()
-    console.print(BANNER, style="bold cyan")
-    console.print("Режим: [bold magenta]Discord[/bold magenta]")
-
-    agent = NeyraAgent(config)
-    health_monitor = HealthMonitor(config)
-    health_monitor.start()
-    await health_monitor.run_once()
-
-    await _run_registered_plugin("discord", agent=agent)
-
-
-async def run_local_voice():
-    """Плагин local_voice (заглушка)."""
-    await _run_registered_plugin("local_voice", agent=None)
-
-
-async def run_screen():
-    """Плагин laptop_screen (заглушка)."""
-    await _run_registered_plugin("screen", agent=None)
-
-
-async def run_api():
-    """Плагин Internal API (FastAPI)."""
-    await _run_registered_plugin("api", agent=None)
+    await asyncio.to_thread(run_neyra_server, config)
 
 
 # ─── Точка входа ─────────────────────────────────────────────────────────────
@@ -485,9 +444,9 @@ def main():
     )
     parser.add_argument(
         "--mode",
-        choices=["model", "console", "discord", "api", "local_voice", "screen"],
-        default="model",
-        help="Режим запуска (по умолчанию: model)",
+        choices=["core", "model", "console", "discord", "api", "local_voice", "screen"],
+        default="core",
+        help="core|api|discord|… = ядро (HTTP+сайт+плагины); model|console = только консоль",
     )
     args = parser.parse_args()
 
@@ -498,12 +457,13 @@ def main():
     logger.info(f"Старт | mode={args.mode} | backend={BACKEND}")
 
     mode_map = {
+        "core": run_http_stack,
+        "api": run_http_stack,
+        "discord": run_http_stack,
+        "local_voice": run_http_stack,
+        "screen": run_http_stack,
         "model": run_console,
         "console": run_console,
-        "discord": run_discord,
-        "api": run_api,
-        "local_voice": run_local_voice,
-        "screen": run_screen,
     }
 
     try:

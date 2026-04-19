@@ -2,6 +2,12 @@
 # Neyra — Public config example (safe template)
 # Нейра — Публичный пример конфига (безопасный шаблон)
 # ============================================================
+#
+# EN: Default `python main.py` runs the core HTTP stack (see core/server.py):
+#     API + dashboard + one NeyraAgent + resident plugins (e.g. Discord when enabled).
+# RU: По умолчанию `python main.py` поднимает ядро (core/server.py): API, дашборд,
+#     один агент и resident-плагины (например Discord при включённом конфиге).
+#
 # EN: Copy this file to config.yaml and customize values for your environment.
 # RU: Скопируй этот файл в config.yaml и поменяй значения под своё окружение.
 #
@@ -487,6 +493,9 @@ health_monitor:
 # Internal API / Внутреннее API
 # ---------------------------
 internal_api:
+  # EN: Also exposes GET /v1/llm/balance (OpenRouter key usage) when provider is openrouter.
+  # RU: Также GET /v1/llm/balance (usage ключа OpenRouter), если провайдер — openrouter.
+  #
   # EN: Bind host for /v1 endpoints.
   # RU: Хост для запуска /v1 эндпоинтов.
   host: "127.0.0.1"
@@ -515,6 +524,23 @@ internal_api:
   # EN: Log verbosity level: DEBUG | INFO | WARNING | ERROR.
   # RU: Уровень логирования: DEBUG | INFO | WARNING | ERROR.
   level: "INFO"
+
+# ---------------------------
+# Web dashboard (Vite React → frontend/dist)
+# Дашборд (Vite React → frontend/dist)
+# ---------------------------
+dashboard:
+  # EN: Serve built static UI at / when dist exists (same port as internal_api).
+  # RU: Раздавать собранный UI по / при наличии dist (тот же порт, что internal_api).
+  enabled: true
+
+  # EN: Path to Vite output (index.html + assets/), relative to project root.
+  # RU: Путь к сборке Vite (index.html + assets/), относительно корня проекта.
+  dist_path: "frontend/dist"
+
+  # EN: If true, `python main.py --mode api` exits when dist is missing (CI/production gate).
+  # RU: Если true — `python main.py --mode api` завершится без dist (контроль CI/прод).
+  require_build: false
 
 # ---------------------------
 # Backup / Restore / External Storage

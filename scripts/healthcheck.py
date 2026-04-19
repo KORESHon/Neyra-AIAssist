@@ -80,11 +80,16 @@ def check_llm_config_and_env(cfg: dict) -> list[str]:
     return errs
 
 
-def check_discord_token(mode: str) -> list[str]:
-    if mode != "discord":
+def check_discord_token(mode: str, cfg: dict) -> list[str]:
+    """Для core/discord-режима: если в конфиге включён Discord — нужен токен."""
+    if mode not in ("discord", "core"):
         return []
-    if not (os.environ.get("DISCORD_TOKEN") or "").strip():
-        return ["DISCORD_TOKEN is not set (required for discord mode)"]
+    disc = cfg.get("discord") if isinstance(cfg.get("discord"), dict) else {}
+    if not bool(disc.get("enabled", True)):
+        return []
+    token = (str(disc.get("token") or "").strip() or os.environ.get("DISCORD_TOKEN") or "").strip()
+    if not token:
+        return ["Discord enabled but no token (set discord.token in config or DISCORD_TOKEN in .env)"]
     return []
 
 
@@ -118,7 +123,12 @@ def check_llm_models_probe(cfg: dict) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Neyra 2.0 healthcheck")
-    parser.add_argument("--mode", choices=["model", "discord"], default="model")
+    parser.add_argument(
+        "--mode",
+        choices=["model", "discord", "core"],
+        default="model",
+        help="core/discord = проверки для полного ядра (в т.ч. Discord при discord.enabled)",
+    )
     parser.add_argument("--skip-http", action="store_true", help="Skip LLM /v1/models HTTP probe")
     args = parser.parse_args()
 
@@ -132,7 +142,7 @@ def main() -> int:
     errors: list[str] = []
     errors.extend(check_files(root))
     errors.extend(check_llm_config_and_env(cfg))
-    errors.extend(check_discord_token(args.mode))
+    errors.extend(check_discord_token(args.mode, cfg))
     if not args.skip_http:
         errors.extend(check_llm_models_probe(cfg))
 

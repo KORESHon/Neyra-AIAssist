@@ -22,19 +22,15 @@ cls
 echo ==========================================
 echo   Neyra 2.0 Launcher
 echo ==========================================
-echo 1^) Model mode (console)
-echo 2^) Discord text bot
-echo 3^) Local voice agent (stub)
-echo 4^) Laptop screen agent (stub)
-echo 5^) Exit
+echo 1^) Console (model) — только чат в терминале, без HTTP
+echo 2^) Core — API + dashboard + resident-плагины (Discord и др. из config)
+echo 3^) Exit
 echo.
-set /p CHOICE=Select mode [1-5]: 
+set /p CHOICE=Select mode [1-3]: 
 
 if "%CHOICE%"=="1" goto run_model
-if "%CHOICE%"=="2" goto run_discord
-if "%CHOICE%"=="3" goto run_voice
-if "%CHOICE%"=="4" goto run_screen
-if "%CHOICE%"=="5" goto end
+if "%CHOICE%"=="2" goto run_core
+if "%CHOICE%"=="3" goto end
 echo Invalid choice.
 pause
 goto menu
@@ -44,24 +40,14 @@ goto menu
 pause
 goto menu
 
-:run_discord
-"%PY%" scripts\healthcheck.py --mode discord --skip-http
+:run_core
+"%PY%" scripts\healthcheck.py --mode core --skip-http
 if errorlevel 1 (
-  echo [WARN] Discord preflight failed.
+  echo [WARN] Core preflight failed.
   pause
   goto menu
 )
-"%PY%" main.py --mode discord
-pause
-goto menu
-
-:run_voice
-"%PY%" main.py --mode local_voice
-pause
-goto menu
-
-:run_screen
-"%PY%" main.py --mode screen
+"%PY%" main.py --mode core
 pause
 goto menu
 

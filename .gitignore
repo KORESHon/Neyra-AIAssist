@@ -53,6 +53,7 @@ sounds/src/*.m4v
 # Build / packaging
 build/
 dist/
+frontend/node_modules/
 *.egg-info/
 
 
