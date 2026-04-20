@@ -1,8 +1,8 @@
 id: local_voice
 name: Local Voice Agent
 description: Заглушка локального голосового интерфейса (будущая реализация).
-version: "0.1.0"
-enabled: true
+version: 0.1.0
+enabled: false
 lifecycle: on_demand
 cli_modes: []
 main_script: main.py
