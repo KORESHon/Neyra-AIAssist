@@ -119,6 +119,7 @@ Recommendation:
 - `README.md` - public product/technical overview (English).
 - `README-RU.md` - public product/technical overview (Russian).
 - `PLAN.md` - roadmap (when tracked in the repo).
+- `docs/README.md` - full documentation portal (architecture, setup, API, ops, usage, plugins).
 - **Plugin SDK (tutorial & reference)** — [HELP.md (English)](interfaces/000EXAMPLE/HELP.md) · [HELP-RU.md (Русский)](interfaces/000EXAMPLE/HELP-RU.md).
 
 ## Notes
