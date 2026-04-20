@@ -17,8 +17,11 @@ function headers(): HeadersInit {
   return h
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const r = await fetch(path, { headers: headers() })
+function jsonHeaders(): HeadersInit {
+  return { ...headers(), 'Content-Type': 'application/json' }
+}
+
+async function parseApiResponse<T>(r: Response): Promise<T> {
   const j = (await r.json()) as T & { ok?: boolean; error?: { message?: string } }
   if (!r.ok) {
     const msg = (j as { error?: { message?: string } }).error?.message ?? r.statusText
@@ -29,4 +32,29 @@ export async function apiGet<T>(path: string): Promise<T> {
     throw new Error(msg)
   }
   return j as T
+}
+
+export async function apiGet<T>(path: string): Promise<T> {
+  const r = await fetch(path, { headers: headers() })
+  return parseApiResponse<T>(r)
+}
+
+export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body) })
+  return parseApiResponse<T>(r)
+}
+
+export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify(body) })
+  return parseApiResponse<T>(r)
+}
+
+export async function apiPut<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, { method: 'PUT', headers: jsonHeaders(), body: JSON.stringify(body) })
+  return parseApiResponse<T>(r)
+}
+
+export async function apiDelete<T>(path: string): Promise<T> {
+  const r = await fetch(path, { method: 'DELETE', headers: headers() })
+  return parseApiResponse<T>(r)
 }
