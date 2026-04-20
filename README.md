@@ -1,6 +1,6 @@
 # Neyra - AIAssist
 
-![AI Assisted](https://img.shields.io/badge/AI_Assisted-Code_Generation-000000?style=for-the-badge&logo=openai&logoColor=white)
+AI Assisted
 
 **Repository:** [github.com/KORESHon/Neyra-AIAssist](https://github.com/KORESHon/Neyra-AIAssist)
 
@@ -19,15 +19,15 @@ Key goals:
 
 Current stable runtime:
 
-- **`python main.py`** — core: HTTP API, web dashboard, one `NeyraAgent`, resident plugins (e.g. Discord when enabled),
-- **`python main.py --mode console`** — terminal-only for prompt experiments,
+- `**python main.py`** — core: HTTP API, web dashboard, one `NeyraAgent`, resident plugins (e.g. Discord when enabled),
+- `**python main.py --mode console**` — terminal-only for prompt experiments,
 - `discord_text` and other interfaces ship as plugins under `interfaces/`.
 
 ## Architecture at a glance
 
 - `core/` - model, memory, reflection, tools, secrets loader.
 - `core/voice/` - voice adapters and factories (cloud/local evolution path).
-- `interfaces/` - plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: `discord_text`, `internal_api`, `local_voice`, `laptop_screen`; template **`000EXAMPLE/`** (see Plugin SDK links below).
+- `interfaces/` - plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: `discord_text`, `internal_api`, `local_voice`, `laptop_screen`; template `**000EXAMPLE/**` (see Plugin SDK links below).
 - `scripts/` - ops helpers (health checks and maintenance utilities).
 - `main.py` — entrypoint (`core` vs `console` only).
 - `run_neyra.bat` — Windows menu (core / console / preflight).
@@ -63,10 +63,10 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
 
 ## Run modes (CLI)
 
-- **`core`** (default) — HTTP API, dashboard, resident plugins.
-- **`console`** — terminal chat only.
+- `**core**` (default) — HTTP API, dashboard, resident plugins.
+- `**console**` — terminal chat only.
 
-Plugins start **with** the core from root `config.yaml`, optional per-plugin `interfaces/<id>/config.yaml`, and **`plugin.yaml`** (enable/disable and lifecycle only there). There is no separate `--mode discord` CLI.
+Plugins start **with** the core from root `config.yaml`, optional per-plugin `interfaces/<id>/config.yaml`, and `**plugin.yaml`** (enable/disable and lifecycle only there). There is no separate `--mode discord` CLI.
 
 ## Environment variables
 

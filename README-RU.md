@@ -1,6 +1,6 @@
 # Neyra - AIAssist
 
-![AI Assisted](https://img.shields.io/badge/AI_Assisted-Code_Generation-000000?style=for-the-badge&logo=openai&logoColor=white)
+AI Assisted
 
 **Репозиторий:** [github.com/KORESHon/Neyra-AIAssist](https://github.com/KORESHon/Neyra-AIAssist)
 
@@ -19,15 +19,15 @@ Neyra строится как переиспользуемое ядро плюс
 
 Текущий стабильный runtime:
 
-- **`python main.py`** — ядро: API, дашборд, один агент, resident-плагины (например Discord при включённом конфиге),
-- **`python main.py --mode console`** — только консоль для экспериментов с промптами,
+- `**python main.py`** — ядро: API, дашборд, один агент, resident-плагины (например Discord при включённом конфиге),
+- `**python main.py --mode console`** — только консоль для экспериментов с промптами,
 - интерфейс `discord_text` и др. — плагины в `interfaces/`.
 
 ## Архитектура (кратко)
 
 - `core/` — модель, память, рефлексия, инструменты, загрузка секретов.
 - `core/voice/` — voice-адаптеры и будущие фабрики STT/TTS.
-- `interfaces/` — плагины (`plugin.yaml` + `main.py` + опционально `config.yaml`): discord, API, local voice, screen и шаблон **`000EXAMPLE`** (первый в списке по имени папки).
+- `interfaces/` — плагины (`plugin.yaml` + `main.py` + опционально `config.yaml`): discord, API, local voice, screen и шаблон `**000EXAMPLE**` (первый в списке по имени папки).
 - **Документация Plugin SDK** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md) (русский туториал), [HELP.md](interfaces/000EXAMPLE/HELP.md) (English).
 - `scripts/` — эксплуатационные скрипты (healthcheck и вспомогательные утилиты).
 - `main.py` — точка входа (`core` или `console`).
@@ -65,8 +65,8 @@ Neyra развивается как персональный публичный 
 
 ## Режимы CLI
 
-- **`core`** (по умолчанию) — HTTP, дашборд, resident-плагины.
-- **`console`** — только консоль.
+- `**core`** (по умолчанию) — HTTP, дашборд, resident-плагины.
+- `**console`** — только консоль.
 
 Отдельных `--mode discord` и т.п. больше нет: плагины поднимаются вместе с ядром по конфигу.
 
@@ -101,4 +101,3 @@ Neyra развивается как персональный публичный 
 - `PLAN.md` — дорожная карта (если ведёте в репозитории).
 - `docs/README.md` — полный портал документации (архитектура, настройка, API, эксплуатация, плагины).
 - **Как писать плагины** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md), [HELP.md](interfaces/000EXAMPLE/HELP.md).
-
