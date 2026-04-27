@@ -45,10 +45,7 @@ def _start_resident_plugin_threads(config: dict, root: Path, agent: NeyraAgent) 
             logger.exception("Failed to load resident plugin %s: %s", manifest.id, e)
             continue
 
-        if manifest.id == "discord_text":
-            ctx = PluginContext(root=root, config=config, agent=agent)
-        else:
-            ctx = PluginContext(root=root, config=config, agent=None)
+        ctx = PluginContext(root=root, config=config, agent=agent)
 
         mid = manifest.id
 

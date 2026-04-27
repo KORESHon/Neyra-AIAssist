@@ -40,11 +40,22 @@ from core.event_bus import (
 from core.identity import UnifiedIdentityMapper
 
 logger = logging.getLogger("neyra.agent")
+
+DEPRECATED_OPENROUTER_MODELS: dict[str, str] = {
+    "openrouter/elephant-alpha": "inclusionai/ling-2.6-flash:free",
+}
 EMPTY_REPLY_PLACEHOLDER = "Затупила на секунду. Повтори коротко, пожалуйста."
 
 
 class NeyraAgent:
-    """Основной агент Нейры."""
+    """Основной агент Нейры.
+
+    This class orchestrates LLM calls, memory subsystems, tools, and event
+    publishing for all runtime interfaces (console, API, Discord plugin).
+
+    Args:
+        config: Merged runtime configuration dictionary.
+    """
 
     def __init__(self, config: dict):
         self.config = config
@@ -152,11 +163,18 @@ class NeyraAgent:
             "unclosed_blocks": 0,
             "leak_detected": 0,
         }
-        reflection_model = str(
+        raw_reflection_model = str(
             cfg.get("reflection_model")
             or self.async_reflection_cfg.get("model")
             or primary_model
         ).strip()
+        reflection_model = DEPRECATED_OPENROUTER_MODELS.get(raw_reflection_model, raw_reflection_model)
+        if reflection_model != raw_reflection_model:
+            logger.warning(
+                "Reflection model '%s' is deprecated, using '%s' instead.",
+                raw_reflection_model,
+                reflection_model,
+            )
         reflection_timeout = float(
             cfg.get(
                 "reflection_timeout_seconds",
@@ -206,7 +224,14 @@ class NeyraAgent:
             str(self.async_reflection_cfg.get("model") or ""),
         )
         if self.async_reflection_enabled:
-            think_model = str(self.async_reflection_cfg.get("model") or "").strip()
+            raw_think_model = str(self.async_reflection_cfg.get("model") or "").strip()
+            think_model = DEPRECATED_OPENROUTER_MODELS.get(raw_think_model, raw_think_model)
+            if think_model != raw_think_model:
+                logger.warning(
+                    "Async reflection model '%s' is deprecated, using '%s' instead.",
+                    raw_think_model,
+                    think_model,
+                )
             if think_model:
                 hdr_think = dict(conn.default_headers)
                 hdr_think["X-Title"] = "Neyra Async Reflection"

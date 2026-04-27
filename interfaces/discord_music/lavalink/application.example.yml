@@ -1,0 +1,121 @@
+server:
+  port: 2333
+  address: 0.0.0.0
+  http2:
+    enabled: false
+
+lavalink:
+  pluginsDir: "./plugins"
+  plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.0"
+      snapshot: false
+    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
+      snapshot: false
+  server:
+    password: "CHANGE_ME"
+    sources:
+      youtube: false
+      bandcamp: false
+      soundcloud: true
+      twitch: false
+      vimeo: false
+      nico: false
+      http: true
+      local: true
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+    nonAllocatingFrameBuffer: false
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    opusEncodingQuality: 10
+    resamplingQuality: MEDIUM
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    playerUpdateInterval: 5
+    gc-warnings: true
+    timeouts:
+      connectTimeoutMs: 4000
+      connectionRequestTimeoutMs: 4000
+      socketTimeoutMs: 4000
+
+plugins:
+  youtube:
+    enabled: true
+    oauth:
+      enabled: true
+      refreshToken: ""
+      skipInitialization: false
+      useYoutubeTvOAuth: true
+    clients:
+      - WEB
+      - WEBEMBEDDED
+      - TVHTML5EMBEDDED
+  lavasrc:
+    providers:
+      - "ytsearch:%QUERY%"
+      - "ytmsearch:%QUERY%"
+      - "spsearch:%QUERY%"
+      - "amsearch:%QUERY%"
+      - "dzsearch:%QUERY%"
+    sources:
+      spotify: false
+      applemusic: false
+      deezer: false
+      yandexmusic: false
+      flowerytts: false
+      youtube: false
+      vkmusic: false
+      tidal: false
+      qobuz: false
+      jiosaavn: false
+    spotify:
+      clientId: ""
+      clientSecret: ""
+      countryCode: "RU"
+      playlistLoadLimit: 6
+      albumLoadLimit: 6
+    applemusic:
+      mediaAPIToken: ""
+      countryCode: "RU"
+      playlistLoadLimit: 6
+      albumLoadLimit: 6
+
+metrics:
+  prometheus:
+    enabled: false
+    endpoint: /metrics
+
+sentry:
+  dsn: ""
+  environment: "local"
+
+logging:
+  file:
+    path: ./logs/
+  level:
+    root: INFO
+    lavalink: DEBUG
+    com.sedmelluq.discord.lavaplayer: DEBUG
+    dev.lavalink.youtube: DEBUG
+    com.github.topi314.lavasrc: DEBUG
+  request:
+    enabled: true
+    includeClientInfo: true
+    includeHeaders: false
+    includeQueryString: true
+    includePayload: false
+    maxPayloadLength: 4096
+    beforeRequest: false
+  logback:
+    rollingpolicy:
+      max-file-size: 512MB
+      max-history: 14

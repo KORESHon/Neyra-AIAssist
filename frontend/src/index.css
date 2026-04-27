@@ -1,15 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
-  --bg: #0f1117;
-  --surface: #161a22;
-  --border: #2a3140;
-  --text: #e6e9ef;
-  --muted: #8b93a7;
-  --accent: #7dd3fc;
-  --danger: #f87171;
   --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
-  color: var(--text);
-  background: var(--bg);
-  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  color: hsl(210 40% 96%);
+  background: hsl(222 47% 7%);
+  font-family: Inter, system-ui, 'Segoe UI', Roboto, sans-serif;
 }
 
 * {
@@ -18,7 +15,7 @@
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: hsl(222 47% 7%);
 }
 
 #root {
@@ -245,6 +242,10 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #0b0d12;
+}
+
+.docs-md-wrap {
+  min-height: 72vh;
 }
 
 .form-grid {

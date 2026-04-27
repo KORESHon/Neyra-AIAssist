@@ -26,6 +26,9 @@ memory/thoughts.log
 memory/people_db/
 memory/neyra_diary.jsonl
 logs/
+interfaces/discord_music/lavalink/application.yml
+interfaces/discord_music/lavalink/logs/
+interfaces/discord_music/lavalink/lavalink.log
 *.wav
 *.mp3
 sounds/*.wav

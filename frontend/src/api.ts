@@ -39,6 +39,14 @@ export async function apiGet<T>(path: string): Promise<T> {
   return parseApiResponse<T>(r)
 }
 
+export async function apiGetText(path: string): Promise<string> {
+  const r = await fetch(path, { headers: headers() })
+  if (!r.ok) {
+    throw new Error(r.statusText || `HTTP ${r.status}`)
+  }
+  return r.text()
+}
+
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(path, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body) })
   return parseApiResponse<T>(r)

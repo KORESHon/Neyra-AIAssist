@@ -118,7 +118,7 @@ openrouter:
 
   # EN: Dedicated model for reflection tasks.
   # RU: Отдельная модель для рефлексии.
-  reflection_model: "openrouter/elephant-alpha"
+  reflection_model: "qwen/qwen3-next-80b-a3b-instruct:free"
 
   # EN: HTTP timeout for regular OpenRouter calls.
   # RU: HTTP timeout для обычных вызовов OpenRouter.

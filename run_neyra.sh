@@ -1,159 +1,170 @@
 #!/usr/bin/env bash
-# Neyra launcher for Linux/macOS (Git Bash on Windows OK). Usage: ./run_neyra.sh
-set -euo pipefail
+# Neyra launcher for Linux/macOS.
+set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 if [[ -x "${ROOT}/.venv/bin/python" ]]; then
   PY="${ROOT}/.venv/bin/python"
-elif [[ -f "${ROOT}/.venv/Scripts/python.exe" ]]; then
+elif [[ -x "${ROOT}/.venv/Scripts/python.exe" ]]; then
   PY="${ROOT}/.venv/Scripts/python.exe"
-else
+elif command -v python3 >/dev/null 2>&1; then
   PY="python3"
+elif command -v python >/dev/null 2>&1; then
+  PY="python"
+else
+  echo "[ERROR] Python is not installed or not in PATH."
+  echo "Install Python 3.10+ and rerun this launcher."
+  exit 1
 fi
 
-neyra_port() {
-  "${PY}" -c "
-from pathlib import Path
-import yaml
-p = Path('config.yaml')
-if not p.is_file():
-    print(8787)
-    raise SystemExit(0)
-d = yaml.safe_load(p.read_text(encoding='utf-8')) or {}
-api = d.get('internal_api') or {}
-print(int(api.get('port') or 8787))
-" 2>/dev/null || echo "8787"
-}
+PIP="${PY} -m pip"
 
-neyra_backend() {
-  "${PY}" -c "
-from pathlib import Path
-import yaml
-p = Path('config.yaml')
-if not p.is_file():
-    print('(no config.yaml)')
-    raise SystemExit(0)
-d = yaml.safe_load(p.read_text(encoding='utf-8')) or {}
-print(str(d.get('BACKEND', 'openrouter')))
-" 2>/dev/null || echo "?"
-}
-
-neyra_status() {
-  echo "=== Neyra — статус ==="
-  echo "Каталог: ${ROOT}"
-  echo "Python:  ${PY}"
-  echo "BACKEND: $(neyra_backend)"
-  local port
-  port="$(neyra_port)"
-  echo "Порт API (из config.yaml): ${port}"
-  echo "--- процессы main.py этого репозитория ---"
-  if command -v pgrep >/dev/null 2>&1; then
-    if pgrep -f "${ROOT}/main[.]py" >/dev/null 2>&1; then
-      pgrep -af "${ROOT}/main[.]py" 2>/dev/null || true
-    else
-      echo "(нет совпадений по ${ROOT}/main.py)"
-    fi
-  else
-    echo "(установите procps для pgrep или смотрите ps вручную)"
-  fi
-  echo "--- прослушивание порта ${port} ---"
-  if command -v ss >/dev/null 2>&1; then
-    ss -tlnp 2>/dev/null | grep -E ":${port}\\s" || echo "(ничего не слушает ${port} или нужны права)"
-  elif command -v lsof >/dev/null 2>&1; then
-    lsof -i ":${port}" -sTCP:LISTEN 2>/dev/null || echo "(нет LISTEN на ${port})"
-  else
-    echo "(нет ss/lsof — пропуск проверки порта)"
-  fi
-  echo "========================"
-}
-
-neyra_stop() {
-  echo "Остановка процессов Neyra для этого клона (совпадение: ${ROOT}/main.py)..."
-  if ! command -v pgrep >/dev/null 2>&1; then
-    echo "Нужен pgrep (пакет procps). Остановите процессы вручную."
-    return 1
-  fi
-  local pids
-  pids="$(pgrep -f "${ROOT}/main[.]py" 2>/dev/null || true)"
-  if [[ -z "${pids}" ]]; then
-    echo "Нет запущенных процессов по шаблону."
+start_lavalink_background() {
+  local jar="${ROOT}/interfaces/discord_music/lavalink/Lavalink.jar"
+  local logf="${ROOT}/interfaces/discord_music/lavalink/lavalink.log"
+  if [[ ! -f "${jar}" ]]; then
+    echo "[WARN] Lavalink.jar not found: ${jar}"
     return 0
   fi
-  echo "PID: ${pids}"
-  read -r -p "Отправить SIGTERM этим PID? [y/N] " a
-  if [[ ! "${a}" =~ ^[yY]$ ]]; then
-    echo "Отменено."
+  if command -v pgrep >/dev/null 2>&1 && pgrep -f "Lavalink.jar" >/dev/null 2>&1; then
+    echo "Lavalink already running."
     return 0
   fi
-  kill ${pids} 2>/dev/null || true
-  sleep 1
-  pids="$(pgrep -f "${ROOT}/main[.]py" 2>/dev/null || true)"
-  if [[ -n "${pids}" ]]; then
-    read -r -p "Процессы живы. SIGKILL? [y/N] " b
-    if [[ "${b}" =~ ^[yY]$ ]]; then
-      kill -9 ${pids} 2>/dev/null || true
-    fi
-  fi
-  echo "Готово."
+  echo "Starting Lavalink in background..."
+  (
+    cd "${ROOT}/interfaces/discord_music/lavalink" || exit 1
+    nohup java -Dfile.encoding=UTF-8 -jar Lavalink.jar > "${logf}" 2>&1 &
+  )
+  sleep 2
 }
 
-neyra_updates() {
-  echo "=== Проверка обновлений (git) ==="
-  if ! command -v git >/dev/null 2>&1; then
-    echo "git не найден."
-    return 1
-  fi
-  git -C "${ROOT}" fetch origin 2>/dev/null || { echo "git fetch не удался (сеть / remote)."; return 1; }
-  git -C "${ROOT}" status -sb
-  echo "--- коммиты на origin, которых нет локально (если есть upstream) ---"
-  if git -C "${ROOT}" rev-parse --verify @{u} >/dev/null 2>&1; then
-    git -C "${ROOT}" log --oneline HEAD..@{u} 2>/dev/null | head -15 || true
+print_header() {
+  echo
+  echo "=========================================="
+  echo "  Neyra 2.0 Launcher (Unix)"
+  echo "=========================================="
+  echo "Python: $("${PY}" -c 'import sys; print(sys.executable)')"
+  if [[ -x "${ROOT}/.venv/bin/python" || -x "${ROOT}/.venv/Scripts/python.exe" ]]; then
+    echo "Virtualenv: detected (.venv)"
   else
-    echo "(upstream не настроен; смотрите git remote -v и git branch -vv)"
+    echo "Virtualenv: not found (using global interpreter)"
   fi
-  echo "Обновить: git pull (из активной ветки)."
-  echo "================================"
+  echo
 }
 
-run_preflight_console() {
-  "${PY}" "${ROOT}/scripts/healthcheck.py" --mode console --skip-http || return 1
+check_system_deps() {
+  echo "[1/3] Checking system dependencies..."
+  local missing=()
+  command -v git >/dev/null 2>&1 || missing+=("git")
+  command -v ffmpeg >/dev/null 2>&1 || missing+=("ffmpeg")
+  if ((${#missing[@]} > 0)); then
+    echo "[WARN] Missing system tools: ${missing[*]}"
+    echo "       git is recommended for updates, ffmpeg is recommended for media workflows."
+  else
+    echo "[OK] System dependencies are installed."
+  fi
+  echo
 }
 
-run_preflight_core() {
-  "${PY}" "${ROOT}/scripts/healthcheck.py" --mode core --skip-http || return 1
+check_python_deps() {
+  echo "[2/3] Checking Python dependencies in the active interpreter..."
+  local missing=()
+  local modules=(
+    yaml dotenv requests fastapi uvicorn discord wavelink PIL
+    langchain langchain_openai chromadb sentence_transformers apscheduler ddgs
+  )
+  local m
+  for m in "${modules[@]}"; do
+    if ! "${PY}" -c "import ${m}" >/dev/null 2>&1; then
+      missing+=("${m}")
+    fi
+  done
+
+  if ((${#missing[@]} > 0)); then
+    echo "[WARN] Missing Python modules: ${missing[*]}"
+    read -r -p "Install missing dependencies from requirements.txt now? [y/N]: " yn
+    if [[ ! "${yn}" =~ ^[yY]$ ]]; then
+      echo "[ERROR] Cannot continue with missing dependencies."
+      return 1
+    fi
+    if ! ${PIP} install -r requirements.txt; then
+      echo "[ERROR] Dependency installation failed."
+      return 1
+    fi
+    missing=()
+    for m in "${modules[@]}"; do
+      if ! "${PY}" -c "import ${m}" >/dev/null 2>&1; then
+        missing+=("${m}")
+      fi
+    done
+    if ((${#missing[@]} > 0)); then
+      echo "[ERROR] Still missing modules after install: ${missing[*]}"
+      return 1
+    fi
+    echo "[OK] All Python dependencies are installed."
+  else
+    echo "[OK] All Python dependencies are installed."
+  fi
+  echo
 }
+
+run_initial_healthcheck() {
+  echo "[3/3] Running healthcheck..."
+  if ! "${PY}" scripts/healthcheck.py --mode console --skip-http; then
+    read -r -p "Healthcheck reported issues. Continue anyway? [y/N]: " yn
+    [[ "${yn}" =~ ^[yY]$ ]] || return 1
+  fi
+  return 0
+}
+
+run_preflight() {
+  print_header
+  check_system_deps
+  check_python_deps || return 1
+  run_initial_healthcheck || return 1
+  return 0
+}
+
+run_preflight || exit 1
 
 while true; do
-  echo ""
-  echo "========== Neyra =========="
-  echo "1) Ядро (core) — API, дашборд, плагины"
-  echo "2) Консоль (console) — только чат в терминале"
-  echo "3) Статус (процессы, порт)"
-  echo "4) Остановить Neyra (этот репозиторий)"
-  echo "5) Проверить обновления (git fetch + статус)"
-  echo "6) Выход"
-  read -r -p "Выбор [1-6]: " choice
+  echo
+  echo "=========================================="
+  echo "   Neyra 2.0 Launcher"
+  echo "=========================================="
+  echo "1) Console (model) - terminal chat only, no HTTP"
+  echo "2) Core - API + dashboard + resident plugins"
+  echo "3) Re-run dependency checks"
+  echo "4) Exit"
+  read -r -p "Select mode [1-4]: " choice
+
   case "${choice}" in
     1)
-      if ! run_preflight_core; then
-        read -r -p "Preflight не прошёл. Продолжить? [y/N] " c
-        [[ "${c}" =~ ^[yY]$ ]] || continue
-      fi
-      "${PY}" "${ROOT}/main.py" --mode core
+      "${PY}" main.py --mode console || true
+      read -r -p "Console mode exited. Press Enter to continue..."
       ;;
     2)
-      if ! run_preflight_console; then
-        read -r -p "Preflight не прошёл. Продолжить? [y/N] " c
-        [[ "${c}" =~ ^[yY]$ ]] || continue
+      if ! "${PY}" scripts/healthcheck.py --mode core --skip-http; then
+        read -r -p "Core healthcheck failed. Continue anyway? [y/N]: " yn
+        [[ "${yn}" =~ ^[yY]$ ]] || continue
       fi
-      "${PY}" "${ROOT}/main.py" --mode console
+      start_lavalink_background
+      "${PY}" main.py --mode core || true
+      read -r -p "Core mode exited. Press Enter to continue..."
       ;;
-    3) neyra_status ;;
-    4) neyra_stop ;;
-    5) neyra_updates ;;
-    6) exit 0 ;;
-    *) echo "Неверный выбор" ;;
+    3)
+      run_preflight || {
+        echo "[ERROR] Preflight checks failed."
+        read -r -p "Press Enter to continue..."
+      }
+      ;;
+    4)
+      exit 0
+      ;;
+    *)
+      echo "Invalid choice."
+      ;;
   esac
 done

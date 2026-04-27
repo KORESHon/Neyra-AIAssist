@@ -33,6 +33,12 @@ class PluginManifest:
 
 
 class PluginLoader:
+    """Discover, inspect and load plugin modules from `interfaces/*`.
+
+    Args:
+        root: Repository root path.
+    """
+
     def __init__(self, root: Path):
         self.root = Path(root)
         self.interfaces_dir = self.root / "interfaces"

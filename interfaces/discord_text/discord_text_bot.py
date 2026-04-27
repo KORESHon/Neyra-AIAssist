@@ -12,17 +12,32 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import json
 import logging
 import os
+from pathlib import Path
 import re
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import discord
 from discord import app_commands
 from discord.app_commands import Choice
 
-from core.event_bus import NOTIFY_DISCORD_MESSAGE_SENT, CoreEvent
+from core.event_bus import (
+    MUSIC_CLEAR,
+    MUSIC_PAUSE,
+    MUSIC_PLAY,
+    MUSIC_QUEUE,
+    MUSIC_RESUME,
+    MUSIC_RESULT,
+    MUSIC_SKIP,
+    MUSIC_STOP,
+    NOTIFY_DISCORD_MESSAGE_SENT,
+    CoreEvent,
+)
+from core.plugin_loader import PluginLoader
+from core.plugin_sdk import PluginContext, run_plugin_entrypoint
 
 if TYPE_CHECKING:
     from core.agent import NeyraAgent
@@ -32,6 +47,66 @@ logger = logging.getLogger("neyra.discord")
 
 MAX_MSG_LEN = 1900
 THINKING_DOT = "▌"
+QUEUE_PAGE_SIZE = 10
+
+
+def _queue_page_embed(current: str, items: list[str], page: int, page_size: int = QUEUE_PAGE_SIZE) -> discord.Embed:
+    total = len(items)
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = max(0, min(page, pages - 1))
+    start = page * page_size
+    end = min(start + page_size, total)
+    page_items = items[start:end]
+    embed = discord.Embed(title="Neyra Music Queue", color=0x5865F2)
+    embed.add_field(name="Сейчас играет", value=current or "Ничего не играет", inline=False)
+    if page_items:
+        lines = [f"{start + idx + 1}. {title}" for idx, title in enumerate(page_items)]
+        embed.add_field(name="Очередь", value="\n".join(lines), inline=False)
+    else:
+        embed.add_field(name="Очередь", value="Очередь пуста.", inline=False)
+    embed.add_field(name="Треков в очереди", value=str(total), inline=True)
+    embed.set_footer(text=f"Страница {page + 1}/{pages}")
+    return embed
+
+
+class QueuePagerView(discord.ui.View):
+    def __init__(self, current: str, items: list[str], author_id: int, page_size: int = QUEUE_PAGE_SIZE):
+        super().__init__(timeout=180)
+        self.current = current
+        self.items = items
+        self.page_size = page_size
+        self.page = 0
+        self.author_id = author_id
+
+    def _pages(self) -> int:
+        total = len(self.items)
+        return max(1, (total + self.page_size - 1) // self.page_size)
+
+    async def _redraw(self, interaction: discord.Interaction) -> None:
+        emb = _queue_page_embed(self.current, self.items, self.page, self.page_size)
+        await interaction.response.edit_message(embed=emb, view=self)
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("Only requester can switch queue pages.", ephemeral=True)
+            return
+        self.page = (self.page - 1) % self._pages()
+        await self._redraw(interaction)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("Only requester can switch queue pages.", ephemeral=True)
+            return
+        self.page = (self.page + 1) % self._pages()
+        await self._redraw(interaction)
+
+
+def _music_status_embed(title: str, description: str, color: int = 0x5865F2) -> discord.Embed:
+    emb = discord.Embed(title=title, description=description, color=color)
+    emb.set_footer(text="Neyra Music")
+    return emb
 
 
 class NeyraDiscordTextBot(discord.Client):
@@ -58,8 +133,127 @@ class NeyraDiscordTextBot(discord.Client):
         self.stream_output_mode: str = str(disc_cfg.get("stream_output_mode", "stream")).strip().lower()
         self._cooldown: float = float(disc_cfg.get("cooldown_seconds", 3.0))
         self._last_response: dict[int, float] = {}
+        self._project_root = Path(__file__).resolve().parents[2]
+        self._music_waiters: dict[str, asyncio.Future] = {}
+        self._music_timeout_s: float = float(disc_cfg.get("music_result_timeout_seconds", 25.0))
+
+        self.agent.event_bus.subscribe(MUSIC_RESULT, self._on_music_result)
+
+    @staticmethod
+    def _candidate_music_intent(text: str) -> Optional[dict[str, str]]:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        lowered = raw.lower()
+        if re.search(r"\b(читы|чит|hack|hax|aimbot)\b", lowered):
+            return None
+        direct = [
+            (MUSIC_PAUSE, r"\b(пауза|pause|приостанови)\b"),
+            (MUSIC_RESUME, r"\b(продолжи|resume|возобнови)\b"),
+            (MUSIC_SKIP, r"\b(скип|skip|следующ|пропусти)\b"),
+            (MUSIC_STOP, r"\b(стоп|stop|выключи музыку|останови музыку)\b"),
+            (MUSIC_CLEAR, r"\b(очисти очередь|clear queue|clear)\b"),
+            (MUSIC_QUEUE, r"\b(очередь|queue|что играет|что в очереди)\b"),
+        ]
+        for action, pattern in direct:
+            if re.search(pattern, lowered):
+                return {"intent": "music_control", "action": action, "query": ""}
+
+        has_music_verb = bool(re.search(r"\b(включи|вруби|поставь|play|music|музыку|трек|track)\b", lowered))
+        has_url = bool(re.search(r"https?://\S+", raw))
+        if not has_music_verb and not has_url:
+            return None
+        q = re.sub(r"^(эй\s+нейра|нейра|please|пожалуйста)[,:\s-]*", "", raw, flags=re.IGNORECASE).strip()
+        q = re.sub(r"^(включи|вруби|поставь|play|music|музыка)\s+", "", q, flags=re.IGNORECASE).strip()
+        return {"intent": "music_control", "action": MUSIC_PLAY, "query": q}
+
+    async def _confirm_music_intent(self, text: str, candidate: dict[str, str]) -> Optional[dict[str, str]]:
+        # Non-play actions should stay deterministic and fast.
+        if str(candidate.get("action") or "") != MUSIC_PLAY:
+            return candidate
+        # Stage-B semantic confirmation via LLM JSON output.
+        if not getattr(self.agent, "llm_primary", None):
+            return candidate
+        prompt = (
+            "Classify user text as music control intent.\n"
+            "Return ONLY JSON: {\"is_music\":bool,\"action\":string,\"query\":string,\"confidence\":float}.\n"
+            f"Allowed action: {MUSIC_PLAY},{MUSIC_PAUSE},{MUSIC_RESUME},{MUSIC_SKIP},{MUSIC_STOP},{MUSIC_CLEAR},{MUSIC_QUEUE}.\n"
+            f"Candidate={json.dumps(candidate, ensure_ascii=False)}\n"
+            f"Text={text}"
+        )
+        try:
+            response = await self.agent.llm_primary.ainvoke(prompt)
+            content = str(getattr(response, "content", "") or "")
+            match = re.search(r"\{[\s\S]*\}", content)
+            if not match:
+                return candidate
+            data = json.loads(match.group(0))
+            if not data.get("is_music"):
+                return None
+            confidence = float(data.get("confidence", 0.0))
+            if confidence < 0.65:
+                return None
+            action = str(data.get("action") or candidate.get("action") or MUSIC_PLAY).strip()
+            query = str(data.get("query") or candidate.get("query") or "").strip()
+            return {"intent": "music_control", "action": action, "query": query}
+        except Exception:
+            return candidate
+
+    def _on_music_result(self, event: CoreEvent) -> None:
+        payload = event.payload or {}
+        request_id = str(payload.get("request_id") or "")
+        if not request_id:
+            return
+        fut = self._music_waiters.get(request_id)
+        if fut and not fut.done():
+            fut.set_result(payload)
+
+    def _invoke_music_plugin(self, payload: dict[str, Any]) -> dict:
+        loader = PluginLoader(self._project_root)
+        manifest = None
+        for m in loader.discover_manifests():
+            if m.id == "discord_music":
+                manifest = m
+                break
+        if manifest is None:
+            return {"ok": False, "error": "discord_music plugin not found"}
+        if not manifest.enabled:
+            return {"ok": False, "error": "discord_music plugin is disabled"}
+        mod = loader.import_plugin_module(manifest)
+        ctx = PluginContext(root=self._project_root, config=self.config, agent=self.agent)
+        inv = getattr(mod, "invoke_plugin", None)
+        if callable(inv):
+            return inv(payload, ctx)
+        run_plugin_entrypoint(mod, ctx)
+        return {"ok": True, "mode": "run_plugin"}
+
+    async def _publish_music_with_fallback(self, payload: dict[str, Any]) -> dict:
+        request_id = str(payload.get("request_id") or "")
+        loop = asyncio.get_running_loop()
+        waiter = loop.create_future()
+        if request_id:
+            self._music_waiters[request_id] = waiter
+        self.agent.event_bus.publish(CoreEvent(str(payload.get("action") or MUSIC_PLAY), "interfaces.discord_text", payload))
+        try:
+            result_payload = await asyncio.wait_for(waiter, timeout=self._music_timeout_s)
+            return {"ok": True, "mode": "event", "payload": result_payload}
+        except asyncio.TimeoutError:
+            # If resident consumer is already subscribed, avoid duplicate invoke path.
+            action = str(payload.get("action") or MUSIC_PLAY)
+            counts = self.agent.event_bus.handler_counts()
+            by_type = counts.get("by_type") if isinstance(counts, dict) else {}
+            subscribed = int((by_type or {}).get(action, 0)) > 0
+            if subscribed:
+                # Consumer can still be processing (node failover / track search).
+                return {"ok": True, "mode": "pending", "payload": {"action": action, "status": "pending"}}
+            return await asyncio.to_thread(self._invoke_music_plugin, payload)
+        finally:
+            if request_id:
+                self._music_waiters.pop(request_id, None)
 
     async def on_ready(self):
+        # Shared runtime handle for resident plugins (e.g. discord_music).
+        self.agent.discord_client = self
         await self.change_presence(
             activity=discord.Activity(type=discord.ActivityType.listening, name="текстовые сообщения")
         )
@@ -246,6 +440,124 @@ class NeyraDiscordTextBot(discord.Client):
         content = content.strip() or "*молчишь*"
         if vision_imgs and content == "*молчишь*":
             content = "Что на изображении? Коротко по-русски."
+
+        candidate = self._candidate_music_intent(content)
+        if candidate:
+            resolved = await self._confirm_music_intent(content, candidate)
+        else:
+            resolved = None
+
+        if resolved:
+            request_id = f"{message.id}:{int(time.time() * 1000)}"
+            guild_id = str(message.guild.id) if message.guild else ""
+            action = str(resolved.get("action") or MUSIC_PLAY)
+            query = str(resolved.get("query") or "").strip()
+            randomize = action == MUSIC_PLAY and bool(
+                re.search(r"\b(любой|рандом|случайн)\b", content, flags=re.IGNORECASE)
+            )
+            voice_channel_id = ""
+            try:
+                if message.author.voice and message.author.voice.channel:
+                    voice_channel_id = str(message.author.voice.channel.id)
+            except Exception:
+                voice_channel_id = ""
+            payload = {
+                "action": action,
+                "query": query,
+                "requester_id": str(message.author.id),
+                "text_channel_id": str(message.channel.id),
+                "voice_channel_id": voice_channel_id,
+                "guild_id": guild_id,
+                "request_id": request_id,
+                "idempotency_key": f"{message.id}:{guild_id}:{message.author.id}:{action}",
+                "source_message_id": str(message.id),
+                "ts": time.time(),
+                "randomize": randomize,
+                "random_top_k": 5,
+                "use_brain": False,
+            }
+            result = await self._publish_music_with_fallback(payload)
+            if result.get("ok"):
+                mode = str(result.get("mode") or "")
+                res_payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+                res_inner = res_payload.get("result") if isinstance(res_payload, dict) else {}
+                res_inner = res_inner if isinstance(res_inner, dict) else {}
+                status = str(res_inner.get("status") or "")
+                if status == "failed":
+                    err = str(res_inner.get("error") or "unknown error")
+                    await message.reply(
+                        embed=_music_status_embed("Ошибка музыки", f"Не удалось выполнить команду: {err}", color=0xED4245),
+                        mention_author=False,
+                    )
+                    return
+                if action == MUSIC_QUEUE:
+                    current = str(res_inner.get("current") or "").strip()
+                    queue_items = res_inner.get("queue") if isinstance(res_inner.get("queue"), list) else []
+                    queue_items = [str(x) for x in queue_items]
+                    emb = _queue_page_embed(current, queue_items, 0, QUEUE_PAGE_SIZE)
+                    view = QueuePagerView(current, queue_items, author_id=message.author.id, page_size=QUEUE_PAGE_SIZE)
+                    await message.reply(embed=emb, view=view, mention_author=False)
+                    return
+                if mode == "pending":
+                    await message.reply(
+                        embed=_music_status_embed("Музыка", "Обрабатываю запрос..."),
+                        mention_author=False,
+                    )
+                    return
+                elif action == MUSIC_PLAY:
+                    track = str(res_inner.get("track") or "").strip()
+                    author = str(res_inner.get("author") or "").strip()
+                    candidates = res_inner.get("candidates") if isinstance(res_inner.get("candidates"), list) else []
+                    if track and author:
+                        base = f"{author} - {track}"
+                    else:
+                        base = track or "unknown track"
+                    if status == "queued":
+                        title = "Добавлено в очередь"
+                        desc = f"**{base}**"
+                    else:
+                        title = "Сейчас играет"
+                        desc = f"**{base}**"
+                    if candidates:
+                        found = "\n".join([f"- {str(x)}" for x in candidates[:5]])
+                        desc += f"\n\nНайдено в топе:\n{found}"
+                    await message.reply(
+                        embed=_music_status_embed(title, desc),
+                        mention_author=False,
+                    )
+                    return
+                elif action == MUSIC_SKIP:
+                    next_title = str(res_inner.get("next") or "").strip()
+                    desc = "Пропустила текущий трек."
+                    if next_title:
+                        desc += f"\nСейчас играет: **{next_title}**"
+                    await message.reply(embed=_music_status_embed("Скип", desc), mention_author=False)
+                    return
+                elif action == MUSIC_STOP:
+                    await message.reply(embed=_music_status_embed("Стоп", "Воспроизведение остановлено."), mention_author=False)
+                    return
+                elif action == MUSIC_PAUSE:
+                    await message.reply(embed=_music_status_embed("Пауза", "Поставила на паузу."), mention_author=False)
+                    return
+                elif action == MUSIC_RESUME:
+                    await message.reply(embed=_music_status_embed("Продолжить", "Продолжила воспроизведение."), mention_author=False)
+                    return
+                elif action == MUSIC_CLEAR:
+                    await message.reply(embed=_music_status_embed("Очередь", "Очередь очищена."), mention_author=False)
+                    return
+                else:
+                    await message.reply(embed=_music_status_embed("Музыка", "Сделано."), mention_author=False)
+                    return
+            else:
+                await message.reply(
+                    embed=_music_status_embed(
+                        "Ошибка музыки",
+                        f"Музыкальный плагин недоступен: {result.get('error', 'unknown error')}",
+                        color=0xED4245,
+                    ),
+                    mention_author=False,
+                )
+            return
 
         asyncio.create_task(
             self._run_chat_stream(

@@ -1,0 +1,793 @@
+"""Resident Discord music plugin with event-driven orchestration."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+import re
+import time
+from typing import Any, Optional
+from urllib.parse import urlparse
+
+try:
+    import discord
+except Exception:  # pragma: no cover
+    discord = None
+
+from core.event_bus import (
+    MUSIC_CLEAR,
+    MUSIC_PAUSE,
+    MUSIC_PLAY,
+    MUSIC_QUEUE,
+    MUSIC_RESUME,
+    MUSIC_RESULT,
+    MUSIC_SKIP,
+    MUSIC_STOP,
+    CoreEvent,
+)
+
+logger = logging.getLogger("neyra.discord_music")
+
+DEFAULT_NODES = [
+    {"identifier": "local-lavalink", "uri": "http://127.0.0.1:2333", "password": "youshallnotpass"},
+]
+
+
+def _format_ms(ms: int) -> str:
+    total = max(0, int(ms // 1000))
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def _truncate(s: str, n: int = 60) -> str:
+    text = (s or "").strip()
+    if len(text) <= n:
+        return text
+    return text[: n - 1] + "…"
+
+
+def _normalize_play_query(raw: str) -> str:
+    q = (raw or "").strip()
+    if not q:
+        return ""
+    # Remove command noise so Lavalink search gets a clean artist/title query.
+    noise_patterns = (
+        r"^(вруби|включи|поставь|play)\s+",
+        r"^(любой|какой[- ]?нибудь)\s+",
+        r"^(трек|треков|песню|музыку)\s+",
+    )
+    for pat in noise_patterns:
+        q = re.sub(pat, "", q, flags=re.IGNORECASE).strip()
+    q = q.strip(" .,!?:;\"'")
+    return q
+
+
+async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> list[Any]:
+    """Use strict YouTube source to avoid LavaSrc provider rewrite."""
+    try:
+        source = getattr(getattr(wavelink_mod, "TrackSource", None), "YouTube", None)
+        if source is not None:
+            tracks = await asyncio.wait_for(
+                wavelink_mod.Playable.search(query, source=source, node=node),
+                timeout=7.0,
+            )
+            return list(tracks or [])
+        tracks = await asyncio.wait_for(wavelink_mod.Playable.search(query, node=node), timeout=7.0)
+        return list(tracks or [])
+    except Exception as ex:  # pragma: no cover
+        logger.warning("discord_music youtube search failed | query=%s error=%s", query, ex)
+        return []
+
+
+class MusicTrack:
+    def __init__(
+        self,
+        title: str,
+        query: str,
+        url: str = "",
+        length_ms: int = 0,
+        requested_by: str = "",
+        requested_at: float | None = None,
+    ) -> None:
+        self.title = title
+        self.query = query
+        self.url = url
+        self.length_ms = int(length_ms)
+        self.requested_by = requested_by
+        self.requested_at = float(requested_at if requested_at is not None else time.time())
+
+
+class LavalinkPoolAdapter:
+    """Thin adapter around wavelink pool with graceful fallback."""
+
+    def __init__(self, nodes: list[dict[str, Any]]) -> None:
+        self.nodes = nodes
+        self.connected = False
+        self.last_error = ""
+        self._wavelink = None
+        self.ranked_nodes: list[dict[str, Any]] = []
+        self._tested = False
+        self._connect_lock = asyncio.Lock()
+        self._node_by_id: dict[str, dict[str, Any]] = {
+            str(n.get("identifier") or ""): n for n in nodes if isinstance(n, dict)
+        }
+        self._node_backoff_until: dict[str, float] = {}
+
+    @staticmethod
+    async def _probe_node_latency_ms(uri: str, timeout: float = 2.5) -> float:
+        parsed = urlparse(uri)
+        host = parsed.hostname
+        port = parsed.port
+        if not host or not port:
+            return float("inf")
+        t0 = time.perf_counter()
+        try:
+            conn = asyncio.open_connection(host, port)
+            reader, writer = await asyncio.wait_for(conn, timeout=timeout)
+            writer.close()
+            await writer.wait_closed()
+            _ = reader
+            return (time.perf_counter() - t0) * 1000.0
+        except Exception:
+            return float("inf")
+
+    async def preflight_nodes(self) -> list[dict[str, Any]]:
+        if self._tested:
+            return self.ranked_nodes or list(self.nodes)
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for node in self.nodes:
+            uri = str(node.get("uri") or "")
+            latency = await self._probe_node_latency_ms(uri)
+            if latency == float("inf"):
+                logger.warning(
+                    "discord_music node unavailable at startup: %s (%s)",
+                    node.get("identifier", "node"),
+                    uri,
+                )
+                continue
+            scored.append((latency, node))
+            logger.info(
+                "discord_music node probe | id=%s latency_ms=%.1f uri=%s",
+                node.get("identifier", "node"),
+                latency,
+                uri,
+            )
+        scored.sort(key=lambda x: x[0])
+        self.ranked_nodes = [x[1] for x in scored]
+        self._tested = True
+        if not self.ranked_nodes:
+            self.last_error = "startup node preflight failed for all nodes"
+        else:
+            logger.info(
+                "discord_music ranked nodes: %s",
+                [str(n.get("identifier") or "node") for n in self.ranked_nodes],
+            )
+        return self.ranked_nodes
+
+    async def connect(self, client: Any | None = None) -> int:
+        async with self._connect_lock:
+            if self._wavelink is not None:
+                try:
+                    pool_nodes = getattr(self._wavelink.Pool, "nodes", {}) or {}
+                    connected_now = sum(
+                        1 for n in pool_nodes.values() if str(getattr(getattr(n, "status", None), "name", "")).upper() == "CONNECTED"
+                    )
+                    if connected_now > 0:
+                        self.connected = True
+                        return connected_now
+                except Exception:
+                    pass
+        try:
+            import wavelink  # type: ignore
+
+            self._wavelink = wavelink
+        except Exception as ex:  # pragma: no cover
+            self.last_error = f"wavelink unavailable: {ex}"
+            logger.warning("discord_music: %s", self.last_error)
+            self.connected = False
+            return 0
+
+        ranked = await self.preflight_nodes()
+        if not ranked:
+            self.connected = False
+            self.last_error = "no ranked lavalink nodes after preflight"
+            return 0
+        # Connect only the best node at startup; others connect on failover.
+        node = await self.ensure_node_connected(client=client, node_cfg=ranked[0])
+        if node is None:
+            self.connected = False
+            return 0
+        try:
+            pool_nodes = getattr(self._wavelink.Pool, "nodes", {}) or {}
+            connected_now = sum(
+                1 for n in pool_nodes.values() if str(getattr(getattr(n, "status", None), "name", "")).upper() == "CONNECTED"
+            )
+            self.connected = connected_now > 0
+            if self.connected:
+                logger.info("discord_music: connected to %s lavalink node(s)", connected_now)
+                self.last_error = ""
+                return connected_now
+        except Exception:
+            pass
+        self.connected = False
+        return 0
+
+    @staticmethod
+    def _node_is_connected(node: Any) -> bool:
+        return str(getattr(getattr(node, "status", None), "name", "")).upper() == "CONNECTED"
+
+    async def ensure_node_connected(self, client: Any | None, node_cfg: dict[str, Any]) -> Any | None:
+        if self._wavelink is None:
+            try:
+                import wavelink  # type: ignore
+
+                self._wavelink = wavelink
+            except Exception as ex:  # pragma: no cover
+                self.last_error = f"wavelink unavailable: {ex}"
+                return None
+
+        identifier = str(node_cfg.get("identifier") or "")
+        if not identifier:
+            return None
+        try:
+            pool_nodes = getattr(self._wavelink.Pool, "nodes", {}) or {}
+            if identifier in pool_nodes:
+                node = pool_nodes[identifier]
+                if self._node_is_connected(node):
+                    return node
+        except Exception:
+            pass
+
+        try:
+            node_obj = self._wavelink.Node(
+                identifier=identifier,
+                uri=str(node_cfg.get("uri") or ""),
+                password=str(node_cfg.get("password") or ""),
+            )
+            await self._wavelink.Pool.connect(nodes=[node_obj], client=client)
+            node = None
+            # Wait briefly for websocket handshake to reach CONNECTED.
+            for _ in range(30):
+                pool_nodes = getattr(self._wavelink.Pool, "nodes", {}) or {}
+                node = pool_nodes.get(identifier)
+                if node is not None and self._node_is_connected(node):
+                    self.connected = True
+                    return node
+                await asyncio.sleep(0.1)
+            self.last_error = f"node {identifier} is not connected yet"
+            return None
+        except Exception as ex:  # pragma: no cover
+            self.last_error = str(ex)
+            logger.warning("discord_music node connect failed | node=%s error=%s", identifier, ex)
+            return None
+
+    def preferred_connected_nodes(self) -> list[Any]:
+        if self._wavelink is None:
+            return []
+        pool_nodes = getattr(self._wavelink.Pool, "nodes", {}) or {}
+        ordered: list[Any] = []
+        for n in (self.ranked_nodes or self.nodes):
+            ident = str(n.get("identifier") or "")
+            node = pool_nodes.get(ident)
+            if node is not None:
+                ordered.append(node)
+        if ordered:
+            return ordered
+        return list(pool_nodes.values())
+
+    def ranked_node_configs(self) -> list[dict[str, Any]]:
+        ranked = self.ranked_nodes or self.nodes
+        return [n for n in ranked if isinstance(n, dict)]
+
+    def mark_node_failed(self, identifier: str, cooldown_s: float = 30.0) -> None:
+        if not identifier:
+            return
+        self._node_backoff_until[identifier] = time.time() + max(1.0, float(cooldown_s))
+
+    def is_node_available(self, identifier: str) -> bool:
+        until = float(self._node_backoff_until.get(identifier, 0.0))
+        return time.time() >= until
+
+
+class MusicService:
+    """Music orchestration service (queue/state + action handlers)."""
+
+    def __init__(self, adapter: LavalinkPoolAdapter) -> None:
+        self.adapter = adapter
+        self.queue_by_guild: dict[str, list[MusicTrack]] = {}
+        self.current_by_guild: dict[str, Optional[MusicTrack]] = {}
+        self.paused_by_guild: dict[str, bool] = {}
+        self.recent_requests: dict[str, float] = {}
+        self.last_random_pick_by_guild: dict[str, str] = {}
+
+    def _is_duplicate(self, key: str) -> bool:
+        now = time.time()
+        ts = self.recent_requests.get(key, 0.0)
+        self.recent_requests[key] = now
+        return now - ts < 5.0
+
+    def _push(self, guild_id: str, track: MusicTrack) -> None:
+        self.queue_by_guild.setdefault(guild_id, []).append(track)
+
+    def _pop_next(self, guild_id: str) -> Optional[MusicTrack]:
+        q = self.queue_by_guild.get(guild_id) or []
+        if not q:
+            return None
+        return q.pop(0)
+
+    def handle(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        guild_id = str(payload.get("guild_id") or "")
+        request_id = str(payload.get("request_id") or "")
+        idem = str(payload.get("idempotency_key") or "")
+        if idem and self._is_duplicate(idem):
+            return {"ok": True, "status": "duplicate_ignored", "request_id": request_id}
+
+        if action == MUSIC_PLAY:
+            query = str(payload.get("query") or "").strip()
+            if not query:
+                return {"ok": False, "status": "failed", "error": "empty query", "request_id": request_id}
+            t = MusicTrack(
+                title=_truncate(query),
+                query=query,
+                requested_by=str(payload.get("requester_id") or ""),
+            )
+            if not self.current_by_guild.get(guild_id):
+                self.current_by_guild[guild_id] = t
+                self.paused_by_guild[guild_id] = False
+                return {"ok": True, "status": "started", "request_id": request_id, "track": t.title}
+            self._push(guild_id, t)
+            return {"ok": True, "status": "queued", "request_id": request_id, "track": t.title}
+
+        if action == MUSIC_PAUSE:
+            self.paused_by_guild[guild_id] = True
+            return {"ok": True, "status": "paused", "request_id": request_id}
+        if action == MUSIC_RESUME:
+            self.paused_by_guild[guild_id] = False
+            return {"ok": True, "status": "resumed", "request_id": request_id}
+        if action == MUSIC_SKIP:
+            nxt = self._pop_next(guild_id)
+            self.current_by_guild[guild_id] = nxt
+            return {"ok": True, "status": "skipped", "next": nxt.title if nxt else "", "request_id": request_id}
+        if action == MUSIC_STOP:
+            self.current_by_guild[guild_id] = None
+            self.queue_by_guild[guild_id] = []
+            self.paused_by_guild[guild_id] = False
+            return {"ok": True, "status": "stopped", "request_id": request_id}
+        if action == MUSIC_CLEAR:
+            self.queue_by_guild[guild_id] = []
+            return {"ok": True, "status": "cleared", "request_id": request_id}
+        if action == MUSIC_QUEUE:
+            queue_titles = [x.title for x in self.queue_by_guild.get(guild_id, [])]
+            cur = self.current_by_guild.get(guild_id)
+            return {
+                "ok": True,
+                "status": "queue",
+                "request_id": request_id,
+                "current": cur.title if cur else "",
+                "queue": queue_titles,
+            }
+        return {"ok": False, "status": "failed", "error": f"unknown action {action}", "request_id": request_id}
+
+    def build_embed_payload(self, guild_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        # Lightweight payload so producer-side can render message if needed.
+        cur = self.current_by_guild.get(guild_id)
+        queue = self.queue_by_guild.get(guild_id, [])
+        return {
+            "title": "Neyra Music",
+            "state": result.get("status", ""),
+            "current": cur.title if cur else "—",
+            "queue_size": len(queue),
+            "queue_preview": [_truncate(x.title, 40) for x in queue[:5]],
+            "duration": _format_ms(cur.length_ms) if cur else "00:00",
+        }
+
+
+async def _enhance_query_with_agent_brain(ctx, query: str) -> str:
+    return (query or "").strip()
+
+
+if discord is not None:
+
+    class MusicControlView(discord.ui.View):
+        """Lightweight controls adapted for Neyra service."""
+
+        def __init__(self, service: MusicService, guild_id: str, requester_id: str):
+            super().__init__(timeout=180)
+            self.service = service
+            self.guild_id = guild_id
+            self.requester_id = requester_id
+
+        async def _act(self, interaction: discord.Interaction, action: str) -> None:
+            payload = {"guild_id": self.guild_id, "requester_id": self.requester_id, "action": action}
+            res = self.service.handle(action, payload)
+            await interaction.response.send_message(f"Music: {res.get('status', 'ok')}", ephemeral=True)
+
+        @discord.ui.button(label="Pause", style=discord.ButtonStyle.secondary)
+        async def pause_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
+            await self._act(interaction, MUSIC_PAUSE)
+
+        @discord.ui.button(label="Resume", style=discord.ButtonStyle.success)
+        async def resume_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
+            await self._act(interaction, MUSIC_RESUME)
+
+        @discord.ui.button(label="Skip", style=discord.ButtonStyle.primary)
+        async def skip_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
+            await self._act(interaction, MUSIC_SKIP)
+
+        @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger)
+        async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
+            await self._act(interaction, MUSIC_STOP)
+
+
+def build_music_embed(embed_payload: dict[str, Any]):
+    if discord is None:
+        return None
+    emb = discord.Embed(title=str(embed_payload.get("title") or "Neyra Music"))
+    emb.add_field(name="State", value=str(embed_payload.get("state") or "unknown"), inline=True)
+    emb.add_field(name="Current", value=str(embed_payload.get("current") or "—"), inline=False)
+    emb.add_field(name="Duration", value=str(embed_payload.get("duration") or "00:00"), inline=True)
+    preview = embed_payload.get("queue_preview") or []
+    emb.add_field(name="Queue", value="\n".join(preview) if preview else "Empty", inline=False)
+    return emb
+
+
+def _nodes_from_ctx(ctx) -> list[dict[str, Any]]:
+    cfg = ((ctx.config.get("plugins") or {}).get("discord_music") or {})
+    nodes = cfg.get("nodes")
+    if isinstance(nodes, list) and nodes:
+        return [x for x in nodes if isinstance(x, dict)]
+    return DEFAULT_NODES
+
+
+def _ctx_service(ctx) -> MusicService:
+    if getattr(ctx, "_discord_music_service", None):
+        return ctx._discord_music_service
+    adapter = LavalinkPoolAdapter(_nodes_from_ctx(ctx))
+    service = MusicService(adapter)
+    ctx._discord_music_service = service
+    return service
+
+
+def _resolve_bot(ctx):
+    agent = getattr(ctx, "agent", None)
+    if agent is None:
+        return None
+    return getattr(agent, "discord_client", None)
+
+
+def _attach_track_end_listener(ctx) -> None:
+    bot = _resolve_bot(ctx)
+    if bot is None:
+        return
+    if getattr(ctx, "_discord_music_track_end_listener_added", False):
+        return
+
+    async def _on_wavelink_track_end(payload) -> None:
+        try:
+            player = getattr(payload, "player", None)
+            if player is None:
+                return
+            reason = str(getattr(payload, "reason", "") or "").lower()
+            if reason and reason not in ("finished", "stopped", "replaced", "load_failed", "cleanup"):
+                return
+            try:
+                if len(player.queue) > 0:
+                    nxt = player.queue.get()
+                    if nxt is not None:
+                        await player.play(nxt)
+                        logger.info("discord_music track_end -> next queued track started")
+                        return
+            except Exception as ex:
+                logger.warning("discord_music track_end queue advance failed: %s", ex)
+            try:
+                await player.stop(force=True)
+            except Exception:
+                pass
+            logger.info("discord_music track_end -> queue empty, playback stopped")
+        except Exception as ex:  # pragma: no cover
+            logger.warning("discord_music track_end listener failed: %s", ex)
+
+    # discord.Client in this project does not expose add_listener like commands.Bot.
+    # Assigning handler to event method name is enough for dispatching.
+    setattr(bot, "on_wavelink_track_end", _on_wavelink_track_end)
+    ctx._discord_music_track_end_listener_added = True
+    logger.info("discord_music attached on_wavelink_track_end listener")
+
+
+async def _handle_action_async(ctx, service: MusicService, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    bot = _resolve_bot(ctx)
+    if bot is None:
+        return {"ok": False, "status": "failed", "error": "discord client is unavailable"}
+    if not service.adapter.connected:
+        connected = await service.adapter.connect(client=bot)
+        if connected <= 0:
+            return {
+                "ok": False,
+                "status": "failed",
+                "error": f"lavalink is unavailable ({service.adapter.last_error or 'no nodes connected'})",
+            }
+
+    guild_id = int(str(payload.get("guild_id") or "0") or 0)
+    if guild_id <= 0:
+        return {"ok": False, "status": "failed", "error": "guild_id is required"}
+
+    voice_channel_id = int(str(payload.get("voice_channel_id") or "0") or 0)
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return {"ok": False, "status": "failed", "error": f"guild {guild_id} not found"}
+
+    voice_channel = guild.get_channel(voice_channel_id) if voice_channel_id else None
+    if voice_channel is None:
+        requester_id = int(str(payload.get("requester_id") or "0") or 0)
+        member = guild.get_member(requester_id) if requester_id else None
+        if member and member.voice and member.voice.channel:
+            voice_channel = member.voice.channel
+    if voice_channel is None:
+        return {"ok": False, "status": "failed", "error": "join a voice channel first"}
+
+    try:
+        import wavelink  # type: ignore
+    except Exception as ex:  # pragma: no cover
+        return {"ok": False, "status": "failed", "error": f"wavelink unavailable: {ex}"}
+
+    logger.info(
+        "discord_music request | action=%s guild=%s voice_channel=%s query=%s",
+        action,
+        guild_id,
+        getattr(voice_channel, "id", "unknown"),
+        str(payload.get("query") or ""),
+    )
+    last_error = "unknown"
+    for cfg in service.adapter.ranked_node_configs():
+        try:
+            cfg_id = str(cfg.get("identifier") or "")
+            if not service.adapter.is_node_available(cfg_id):
+                continue
+            player = guild.voice_client
+            node = await service.adapter.ensure_node_connected(client=bot, node_cfg=cfg)
+            if node is None:
+                last_error = service.adapter.last_error or "node connect failed"
+                service.adapter.mark_node_failed(cfg_id, cooldown_s=20.0)
+                continue
+            if isinstance(player, wavelink.Player):
+                try:
+                    current_node = getattr(player, "node", None)
+                    current_id = str(getattr(current_node, "identifier", "") or "")
+                    if current_id != cfg_id:
+                        await player.switch_node(node)
+                except Exception as switch_ex:
+                    last_error = str(switch_ex)
+                    service.adapter.mark_node_failed(cfg_id, cooldown_s=25.0)
+                    logger.warning("discord_music node switch failed | node=%s error=%s", cfg_id, switch_ex)
+                    continue
+            else:
+                player = await voice_channel.connect(cls=wavelink.Player, self_deaf=True, timeout=8.0)
+
+            if action == MUSIC_PAUSE:
+                await player.pause(True)
+                return {"ok": True, "status": "paused", "request_id": str(payload.get("request_id") or "")}
+            if action == MUSIC_RESUME:
+                await player.pause(False)
+                return {"ok": True, "status": "resumed", "request_id": str(payload.get("request_id") or "")}
+            if action == MUSIC_STOP:
+                await player.stop(force=True)
+                return {"ok": True, "status": "stopped", "request_id": str(payload.get("request_id") or "")}
+            if action == MUSIC_SKIP:
+                await player.skip(force=True)
+                next_title = ""
+                try:
+                    if not bool(getattr(player, "playing", False)) and len(player.queue) > 0:
+                        nxt = player.queue.get()
+                        if nxt is not None:
+                            await player.play(nxt)
+                            next_title = str(getattr(nxt, "title", "") or "")
+                except Exception:
+                    pass
+                return {
+                    "ok": True,
+                    "status": "skipped",
+                    "next": next_title,
+                    "request_id": str(payload.get("request_id") or ""),
+                }
+            if action == MUSIC_CLEAR:
+                try:
+                    player.queue.clear()
+                except Exception:
+                    pass
+                return {"ok": True, "status": "cleared", "request_id": str(payload.get("request_id") or "")}
+            if action == MUSIC_QUEUE:
+                current_title = str(getattr(getattr(player, "current", None), "title", "") or "")
+                queue_titles: list[str] = []
+                try:
+                    queue_titles = [
+                        f"{str(getattr(t, 'author', '') or 'Unknown')} - {str(getattr(t, 'title', '') or '')}".strip()
+                        for t in list(player.queue)
+                    ]
+                except Exception:
+                    queue_titles = []
+                return {
+                    "ok": True,
+                    "status": "queue",
+                    "request_id": str(payload.get("request_id") or ""),
+                    "current": current_title,
+                    "queue": queue_titles,
+                    "queue_total": len(queue_titles),
+                }
+
+            # PLAY
+            local_result = service.handle(action, payload)
+            query = _normalize_play_query(str(payload.get("query") or "").strip())
+            if not query:
+                return local_result
+            tracks = await _search_tracks_youtube(wavelink, query, node)
+            if not tracks:
+                last_error = f"nothing found for '{query}'"
+                continue
+            is_random = bool(payload.get("randomize"))
+            top_k = int(payload.get("random_top_k") or 5)
+            top_k = max(1, min(top_k, 10))
+            pool = list(tracks)[:top_k]
+            if is_random and pool:
+                last_pick = service.last_random_pick_by_guild.get(str(guild_id), "")
+                candidates_for_pick = [
+                    t for t in pool if str(getattr(t, "identifier", "") or str(getattr(t, "title", ""))) != last_pick
+                ]
+                pick_source = candidates_for_pick or pool
+                track = random.choice(pick_source)
+                service.last_random_pick_by_guild[str(guild_id)] = str(
+                    getattr(track, "identifier", "") or str(getattr(track, "title", ""))
+                )
+            else:
+                track = tracks[0]
+            candidates = [
+                f"{str(getattr(t, 'author', '') or 'Unknown')} - {str(getattr(t, 'title', '') or '')}".strip()
+                for t in pool
+            ]
+            if bool(getattr(player, "playing", False)):
+                await player.queue.put_wait(track)
+                return {
+                    "ok": True,
+                    "status": "queued",
+                    "track": str(getattr(track, "title", query)),
+                    "author": str(getattr(track, "author", "") or "Unknown"),
+                    "source": str(getattr(track, "source", "")),
+                    "node": str(getattr(node, "identifier", "")),
+                    "request_id": str(payload.get("request_id") or ""),
+                    "candidates": candidates,
+                }
+            await player.play(track, replace=False)
+            return {
+                "ok": True,
+                "status": "started",
+                "track": str(getattr(track, "title", query)),
+                "author": str(getattr(track, "author", "") or "Unknown"),
+                "source": str(getattr(track, "source", "")),
+                "node": str(getattr(node, "identifier", "")),
+                "request_id": str(payload.get("request_id") or ""),
+                "candidates": candidates,
+            }
+        except Exception as ex:  # pragma: no cover
+            last_error = str(ex)
+            service.adapter.mark_node_failed(str(cfg.get("identifier") or ""), cooldown_s=30.0)
+            logger.warning(
+                "discord_music node failover | node=%s error=%s",
+                str(cfg.get("identifier") or "unknown"),
+                ex,
+            )
+            continue
+
+    return {"ok": False, "status": "failed", "error": last_error}
+
+
+def _build_result_event(source: str, payload: dict[str, Any], result: dict[str, Any], embed_payload: dict[str, Any]) -> CoreEvent:
+    data = {
+        "request_id": payload.get("request_id", ""),
+        "action": payload.get("action", ""),
+        "guild_id": payload.get("guild_id", ""),
+        "text_channel_id": payload.get("text_channel_id", ""),
+        "requester_id": payload.get("requester_id", ""),
+        "result": result,
+        "embed": embed_payload,
+        "ts": time.time(),
+    }
+    return CoreEvent(MUSIC_RESULT, source, data)
+
+
+def invoke_plugin(payload: dict[str, Any], ctx) -> dict[str, Any]:
+    """Fallback on-demand entrypoint used by producer and API."""
+    service = _ctx_service(ctx)
+    action = str(payload.get("action") or MUSIC_PLAY)
+    bot = _resolve_bot(ctx)
+    if bot is not None and getattr(bot, "loop", None):
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                _handle_action_async(ctx, service, action, payload),
+                bot.loop,
+            )
+            result = fut.result(timeout=20)
+        except Exception as ex:  # pragma: no cover
+            logger.error("discord_music invoke async fallback failed: %s", ex)
+            result = {"ok": False, "status": "failed", "error": str(ex)}
+    else:
+        result = service.handle(action, payload)
+    guild_id = str(payload.get("guild_id") or "")
+    embed_payload = service.build_embed_payload(guild_id, result)
+    if getattr(ctx, "agent", None):
+        ctx.agent.event_bus.publish(
+            _build_result_event("interfaces.discord_music.invoke", payload, result, embed_payload)
+        )
+    return {"ok": bool(result.get("ok")), "result": result, "embed": embed_payload}
+
+
+def _event_handler(ctx, action: str):
+    def _handler(event) -> None:
+        if event.event_type != action:
+            return
+        payload = dict(event.payload or {})
+        payload.setdefault("action", action)
+        service = _ctx_service(ctx)
+        bot = _resolve_bot(ctx)
+        if bot is None or not getattr(bot, "loop", None):
+            result = {"ok": False, "status": "failed", "error": "discord client loop unavailable"}
+            guild_id = str(payload.get("guild_id") or "")
+            embed_payload = service.build_embed_payload(guild_id, result)
+            ctx.agent.event_bus.publish(
+                _build_result_event("interfaces.discord_music.event", payload, result, embed_payload)
+            )
+            return
+
+        async def _run() -> None:
+            try:
+                result = await _handle_action_async(ctx, service, action, payload)
+                guild_id = str(payload.get("guild_id") or "")
+                embed_payload = service.build_embed_payload(guild_id, result)
+                ctx.agent.event_bus.publish(
+                    _build_result_event("interfaces.discord_music.event", payload, result, embed_payload)
+                )
+                logger.info("discord_music handled %s => %s", action, result.get("status"))
+            except Exception as ex:  # pragma: no cover
+                logger.exception("discord_music async handler failed for %s: %s", action, ex)
+
+        bot.loop.call_soon_threadsafe(lambda: asyncio.create_task(_run()))
+
+    return _handler
+
+
+def run_plugin(ctx) -> None:
+    """Resident bootstrap: connect node pool and subscribe to MUSIC_* events."""
+    if not getattr(ctx, "agent", None):
+        logger.warning("discord_music resident mode requires agent context")
+        return
+
+    _ctx_service(ctx)
+
+    def _startup_node_preflight() -> None:
+        for _ in range(120):
+            bot = _resolve_bot(ctx)
+            if bot is not None and getattr(bot, "loop", None) and bot.is_ready():
+                async def _init_nodes() -> None:
+                    service = _ctx_service(ctx)
+                    _attach_track_end_listener(ctx)
+                    await service.adapter.preflight_nodes()
+                    connected = await service.adapter.connect(client=bot)
+                    if connected <= 0:
+                        logger.error(
+                            "discord_music startup connect failed: %s",
+                            service.adapter.last_error or "no connected nodes",
+                        )
+                bot.loop.call_soon_threadsafe(lambda: asyncio.create_task(_init_nodes()))
+                return
+            time.sleep(0.5)
+        logger.warning("discord_music startup node preflight skipped: discord client not ready in time")
+
+    import threading
+    threading.Thread(target=_startup_node_preflight, name="neyra-music-node-preflight", daemon=True).start()
+
+    for ev in (MUSIC_PLAY, MUSIC_PAUSE, MUSIC_RESUME, MUSIC_SKIP, MUSIC_QUEUE, MUSIC_STOP, MUSIC_CLEAR):
+        ctx.agent.event_bus.subscribe(ev, _event_handler(ctx, ev))
+    logger.info("discord_music resident subscribed to MUSIC_* events (lazy lavalink connect)")

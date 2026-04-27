@@ -23,6 +23,14 @@ MEMORY_LONG_TERM_WRITE = "memory.long_term_write"
 MEMORY_SHORT_TERM_UPDATE = "memory.short_term_update"
 MEMORY_JOURNAL_UPDATED = "memory.journal_updated"
 NOTIFY_DISCORD_MESSAGE_SENT = "notify.discord_message_sent"
+MUSIC_PLAY = "music.play"
+MUSIC_PAUSE = "music.pause"
+MUSIC_RESUME = "music.resume"
+MUSIC_SKIP = "music.skip"
+MUSIC_QUEUE = "music.queue"
+MUSIC_STOP = "music.stop"
+MUSIC_CLEAR = "music.clear"
+MUSIC_RESULT = "music.result"
 
 CoreHandler = Callable[["CoreEvent"], None]
 
@@ -38,7 +46,14 @@ class CoreEvent:
 
 
 class EventBus:
-    """Синхронная шина: копия списка обработчиков под локом, вызов снаружи лока."""
+    """Synchronous in-process event bus.
+
+    The bus keeps handler lists under a lock, then executes handlers outside
+    the lock to avoid deadlocks and to isolate subscriber failures.
+
+    Subscribers must implement their own synchronization for heavy shared-state
+    writes.
+    """
 
     __slots__ = ("_lock", "_by_type", "_wildcard")
 

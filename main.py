@@ -36,10 +36,11 @@ load_dotenv_file(_PROJECT_ROOT)
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 # ─────────────────────────────────────────────────────────────────────────────
 
-import asyncio
 import argparse
+import asyncio
 import logging
 import subprocess
+from typing import Any
 
 import yaml
 
@@ -50,7 +51,7 @@ from core.plugin_config import merge_plugin_configs
 CONFIG_PATH = _PROJECT_ROOT / "config.yaml"
 
 
-def load_config() -> dict:
+def load_config() -> dict[str, Any]:
     if not CONFIG_PATH.exists():
         print(f"[FATAL] Конфиг не найден: {CONFIG_PATH}")
         sys.exit(1)
@@ -165,7 +166,7 @@ def _spawn_registry() -> dict[str, subprocess.Popen]:
 
 # ─── Консольный режим ─────────────────────────────────────────────────────────
 
-async def run_console():
+async def run_console() -> None:
     """Интерактивный консольный режим с реальным агентом."""
     from rich.console import Console
     from rich.panel import Panel
@@ -430,7 +431,7 @@ async def run_console():
 
 # ─── Ядро (HTTP + дашборд + resident-плагины) ─────────────────────────────────
 
-async def run_http_stack():
+async def run_http_stack() -> None:
     """Ядро Нейры: FastAPI + дашборд + один NeyraAgent; см. core.server.run_neyra_server."""
     from core.server import run_neyra_server
 
@@ -439,7 +440,7 @@ async def run_http_stack():
 
 # ─── Точка входа ─────────────────────────────────────────────────────────────
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Cyber-Core — Ассистент «Нейра»",
         formatter_class=argparse.RawDescriptionHelpFormatter,

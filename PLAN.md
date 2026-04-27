@@ -56,4 +56,3 @@
 - Desktop and mobile-lite clients.
 - AI-station device mode.
 - Open-core extension model.
-

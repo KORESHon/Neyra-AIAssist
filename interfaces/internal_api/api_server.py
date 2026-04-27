@@ -18,7 +18,7 @@ from typing import Any, Optional
 import httpx
 import yaml
 from fastapi import Depends, FastAPI, Header, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -704,6 +704,26 @@ def build_app(
             raise ApiError("openrouter_error", str(detail)[:600], 502)
         out = {k: v for k, v in raw.items() if not str(k).startswith("_")}
         return {"ok": True, "trace_id": trace_id, "data": {"provider": "openrouter", **out}}
+
+    @app.get("/v1/docs/markdown/{doc_id}", response_class=PlainTextResponse)
+    async def v1_docs_markdown(doc_id: str, request: Request, _: None = Depends(_auth_dep)):
+        trace_id = _trace_id(request)
+        rid = (doc_id or "").strip().lower()
+        mapping = {
+            "readme-ru": root / "README-RU.md",
+            "readme-en": root / "README.md",
+            "help-ru": root / "interfaces" / "000EXAMPLE" / "HELP-RU.md",
+            "help-en": root / "interfaces" / "000EXAMPLE" / "HELP.md",
+            "docs-ru-index": root / "docs" / "ru" / "README.md",
+            "docs-en-index": root / "docs" / "en" / "README.md",
+        }
+        target = mapping.get(rid)
+        if target is None or not target.is_file():
+            raise ApiError("not_found", f"Unknown markdown doc: {doc_id}", 404)
+        text = target.read_text(encoding="utf-8")
+        response = PlainTextResponse(content=text)
+        response.headers["x-trace-id"] = trace_id
+        return response
 
     def _safe_set(cfg: dict, path: str, value: Any) -> None:
         keys = path.split(".")
