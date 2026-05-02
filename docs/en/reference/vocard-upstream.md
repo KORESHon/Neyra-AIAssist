@@ -1,11 +1,28 @@
+<!-- co-authored-cursor-badge -->
+[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
+
+<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+
+---
+
+# Vocard (upstream reference)
+
+Neyra borrows UI and Lavalink patterns from the **Vocard** Discord music bot ecosystem. The `interfaces/Vocard-main/` tree is upstream-style reference code, **not** the Neyra Discord plugin entrypoint.
+
+Below is the upstream project README (attribution).
+
+---
+
 <a href="https://discord.gg/wRCgB7vBQv">
     <img src="https://img.shields.io/discord/811542332678996008?color=7289DA&label=Support&logo=discord&style=for-the-badge" alt="Discord">
 </a>
 
 # Vocard Bot
+
 Vocard is a highly customizable Discord music bot, designed to deliver a user-friendly experience. It offers support for a wide range of streaming platforms including Youtube, Soundcloud, Spotify, Twitch, and more.
 
 ## Features
+
 * Fast song loading
 * Works with slash and message commands
 * Lightweight design
@@ -22,15 +39,18 @@ Vocard is a highly customizable Discord music bot, designed to deliver a user-fr
 * [Premium dashboard](https://github.com/ChocoMeow/Vocard-Dashboard)
 
 ## Screenshot
+
 ![features](https://github.com/user-attachments/assets/2a1baf75-d1c8-41d1-a66f-7011e96d5feb)
 
 ## Requirements
+
 * [Python 3.11+](https://www.python.org/downloads/)
 * [Lavalink Server (Requires 4.0.0+)](https://github.com/freyacodes/Lavalink)
 
 ## Setup
+
 Please see the [Setup Page](https://docs.vocard.xyz/latest/bot/setup) in the docs to run this bot yourself!
 
 ## Need Help?
-Join the [Vocard Support Discord](https://discord.gg/wRCgB7vBQv) for help or questions.
 
+Join the [Vocard Support Discord](https://discord.gg/wRCgB7vBQv) for help or questions.

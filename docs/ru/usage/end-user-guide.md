@@ -1,7 +1,14 @@
+<!-- co-authored-cursor-badge -->
+[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
+
+<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+
+---
+
 # Гайд конечного пользователя
 
 - Запустите `python main.py`.
-- Откройте веб-панель: `http://127.0.0.1:8787/`.
-- Для чата используйте Discord-плагин или API `/v1/chat`.
-- Проверяйте состояние в разделе Dashboard.
-- Для доступа к защищённому API задайте Bearer токен в настройках панели.
+- Откройте веб-дашборд: `http://127.0.0.1:8787/` (SPA на React + Vite + Tailwind).
+- Для чата используйте плагин Discord (`interfaces/discord`) или HTTP `POST /v1/chat`.
+- Состояние ядра, память и плагины — в разделе **Dashboard**; webhooks и токен API — в **Webhooks** / **Settings**.
+- Для защищённых маршрутов `/v1` укажите Bearer token в панели (как в `internal_api.token` в `config.yaml`).

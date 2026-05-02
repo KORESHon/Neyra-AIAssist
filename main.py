@@ -138,8 +138,11 @@ def launch_background_core() -> tuple[bool, str]:
     global _SPAWNED_CORE
     if _SPAWNED_CORE is not None and _SPAWNED_CORE.poll() is None:
         return False, f"Фоновое ядро уже запущено (pid={_SPAWNED_CORE.pid}). Остановите его перед повтором."
-    py = Path(".venv/Scripts/python.exe")
-    python_exe = str(py if py.exists() else Path(sys.executable))
+    py = next(
+        (p for p in (Path(".venv_win/Scripts/python.exe"), Path(".venv/Scripts/python.exe")) if p.exists()),
+        None,
+    )
+    python_exe = str(py if py is not None else Path(sys.executable))
     p = subprocess.Popen([python_exe, str(_PROJECT_ROOT / "main.py"), "--mode", "core"])
     _SPAWNED_CORE = p
     return True, f"Запущено ядро в фоне (pid={p.pid}) — API и дашборд как при `python main.py`"

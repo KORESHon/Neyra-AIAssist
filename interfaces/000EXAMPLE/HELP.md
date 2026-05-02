@@ -1,3 +1,10 @@
+<!-- co-authored-cursor-badge -->
+[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
+
+<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+
+---
+
 # Neyra Plugin SDK — Tutorial & Reference (English)
 
 **Russian (same full scope, separate file):** [HELP-RU.md](HELP-RU.md)
@@ -220,7 +227,7 @@ interfaces/000EXAMPLE/
     main.py
 ```
 
-Shipped: `discord_text/`, `internal_api/`, `local_voice/`, `laptop_screen/`.
+Shipped: `discord/` (unified text + music), `internal_api/`, `local_voice/`, `laptop_screen/`.
 
 ### `plugin.yaml` fields
 
@@ -294,7 +301,7 @@ Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for 
 
 | Path                                        | Role                                      |
 | ------------------------------------------- | ----------------------------------------- |
-| `interfaces/discord_text/`                  | Discord; uses injected `ctx.agent`.       |
+| `interfaces/discord/`                       | Discord (text + music); uses injected `ctx.agent`. |
 | `interfaces/internal_api/`                  | FastAPI routes; app built in core (`build_app`). |
 | `interfaces/local_voice/`, `laptop_screen/` | Stubs.                                    |
 
@@ -338,4 +345,3 @@ Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for 
 **Plugin does not show up in discovery**
 
 - Path must be exactly `interfaces/<folder>/plugin.yaml` (one level under `interfaces/`).
-

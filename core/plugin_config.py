@@ -14,7 +14,7 @@ logger = logging.getLogger("neyra.plugin_config")
 def merge_plugin_configs(config: dict[str, Any], root: Path) -> None:
     """
     Для каждого interfaces/<id>/config.yaml:
-    - discord_text → ключ `discord` (поверх корневого config.yaml)
+    - discord → ключ `discord` (поверх корневого config.yaml)
     - internal_api → секции `internal_api` и `dashboard` в корне (см. config.example.yaml в папке плагина)
     - остальные id → config.plugins[id]
     """
@@ -38,7 +38,7 @@ def merge_plugin_configs(config: dict[str, Any], root: Path) -> None:
             logger.warning("Skip plugin config %s: root must be a mapping", cfg_file)
             continue
         pid = plugin_dir.name
-        if pid == "discord_text":
+        if pid == "discord":
             prev = config.get("discord")
             prev_d: dict[str, Any] = prev if isinstance(prev, dict) else {}
             config["discord"] = {**prev_d, **raw}

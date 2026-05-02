@@ -1,3 +1,10 @@
+<!-- co-authored-cursor-badge -->
+[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
+
+<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+
+---
+
 # Troubleshooting
 
 ## API не отвечает
@@ -8,7 +15,7 @@
 - Либо задайте корректный Bearer, либо очистите `INTERNAL_API_TOKEN`.
 
 ## Discord plugin не стартует
-- Проверьте `interfaces/discord_text/plugin.yaml` (`enabled: true`).
+- Проверьте `interfaces/discord/plugin.yaml` (`enabled: true`).
 - Проверьте `DISCORD_TOKEN` в `.env`.
 
 ## Ошибки вебхуков

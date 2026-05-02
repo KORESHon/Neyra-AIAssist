@@ -1,0 +1,513 @@
+# Neyra Windows launcher (UTF-8). Called from run_neyra.bat — avoids cmd.exe encoding/parenthesis bugs.
+#Requires -Version 5.1
+$ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$Host.UI.RawUI.WindowTitle = "Neyra · control deck"
+
+function Enable-VtIfPossible {
+    try {
+        $sig = @'
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetStdHandle(int n);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(System.IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(System.IntPtr h, uint m);
+'@
+        $t = Add-Type -PassThru -Name "Con" -Namespace "N" -MemberDefinition $sig
+        $h = [N.Con]::GetStdHandle(-11)
+        [uint32]$m = 0
+        [void][N.Con]::GetConsoleMode($h, [ref]$m)
+        [void][N.Con]::SetConsoleMode($h, $m -bor 4)
+    } catch { }
+}
+
+function Write-NeyraBanner {
+    Write-Host ""
+    $m = "Magenta"
+    $c = "Cyan"
+    Write-Host "  ███╗   ██╗███████╗██╗   ██╗██████╗  █████╗ " -ForegroundColor $m
+    Write-Host "  ██╔██╗ ██║██╔════╝╚██╗ ██╔╝██╔══██╗██╔══██╗" -ForegroundColor $m
+    Write-Host "  ██║╚██╗██║█████╗   ╚████╔╝ ██████╔╝███████║" -ForegroundColor $m
+    Write-Host "  ██║ ╚████║██╔══╝    ╚██╔╝  ██╔══██╗██╔══██║" -ForegroundColor $m
+    Write-Host "  ██║  ╚███║███████╗   ██║   ██║  ██║██║  ██║" -ForegroundColor $m
+    Write-Host "  ╚═╝   ╚══╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝" -ForegroundColor $m
+    Write-Host "           // neural stack · local-first" -ForegroundColor $c
+    Write-Host ""
+}
+
+function Write-Ok($msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
+function Write-Err($msg) { Write-Host "[ERR] $msg" -ForegroundColor Red }
+function Write-Hi($msg) { Write-Host $msg -ForegroundColor Cyan }
+
+function Get-JavaMajorVersion {
+    if (-not (Get-Command java -ErrorAction SilentlyContinue)) { return $null }
+    $out = (& cmd /c "java -version 2>&1" | Select-Object -First 1)
+    if (-not $out) { return $null }
+    if ($out -match '"(?<v>[\d\.]+)') {
+        $v = $Matches['v']
+        if ($v.StartsWith("1.")) {
+            return [int]($v.Split(".")[1])
+        }
+        return [int]($v.Split(".")[0])
+    }
+    return $null
+}
+
+function Show-SystemDepsManualLinks {
+    Write-Hi "Git: https://git-scm.com/"
+    Write-Hi "FFmpeg: https://ffmpeg.org/download.html"
+    Write-Hi "Java 17 (для Lavalink): https://adoptium.net/temurin/releases/?version=17"
+    Write-Hi "Node.js (для frontend): https://nodejs.org/"
+    Write-Hi "Python 3.10+: https://www.python.org/downloads/"
+}
+
+function Get-NodeMajorVersion {
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $null }
+    $v = (& node -v 2>$null)
+    if ($v -match '^v(?<maj>\d+)') { return [int]$Matches['maj'] }
+    return $null
+}
+
+function Test-PythonRuntime310 {
+    param([string]$Exe)
+    if (-not $Exe) { return $false }
+    $exeEscaped = $Exe.Replace('"', '""')
+    # /v:off — иначе в путях вида Z:\!Others\!... cmd.exe съедает ! как delayed expansion
+    & cmd /v:off /c "`"$exeEscaped`" -c ""import sys; raise SystemExit(0 if sys.version_info>=(3,10) else 1)"" >nul 2>nul"
+    return $LASTEXITCODE -eq 0
+}
+
+function Sync-PathFromEnvironment {
+    $machine = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $user = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($machine -and $user) {
+        $env:Path = "$machine;$user"
+    } elseif ($machine) { $env:Path = $machine }
+    elseif ($user) { $env:Path = $user }
+}
+
+function Resolve-LauncherPython {
+    param([string]$RepoRoot)
+    # Native Windows: отдельный venv от Linux/WSL (.venv в репо — для Unix; .venv_win — для Windows).
+    $venvWin = Join-Path $RepoRoot '.venv_win\Scripts\python.exe'
+    $venvLegacy = Join-Path $RepoRoot '.venv\Scripts\python.exe'
+    if ((Test-Path -LiteralPath $venvWin) -and (Test-PythonRuntime310 -Exe $venvWin)) { return $venvWin }
+    if ((Test-Path -LiteralPath $venvLegacy) -and (Test-PythonRuntime310 -Exe $venvLegacy)) { return $venvLegacy }
+    foreach ($name in @('python', 'python3')) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if (-not $cmd) { continue }
+        $src = $cmd.Source
+        if (Test-PythonRuntime310 -Exe $src) { return $src }
+    }
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        $oldEa = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $out = & py -3 -c "import sys; print(sys.executable)" 2>$null
+        } finally {
+            $ErrorActionPreference = $oldEa
+        }
+        if ($LASTEXITCODE -eq 0 -and $out -and (Test-PythonRuntime310 -Exe $out.Trim())) {
+            return $out.Trim()
+        }
+    }
+    return $null
+}
+
+function Get-PythonInterpreterLabel {
+    param([string]$ExePath)
+    if (-not $ExePath) { return 'неизвестно' }
+    $n = $ExePath -replace '\\', '/'
+    if ($n -match '(?i)/\.venv_win/scripts/python\.exe$') { return 'локальный .venv_win (Windows)' }
+    if ($n -match '(?i)/\.venv/scripts/python\.exe$') { return 'локальный .venv legacy (Windows, лучше .venv_win)' }
+    if ($n -match '(?i)/\.venv/bin/python[0-9.]*$') { return 'локальный .venv (Unix/WSL)' }
+    return 'глобальный / PATH / py (не venv репозитория)'
+}
+
+function Invoke-SystemDepsAutoInstall {
+    param([string[]]$Missing)
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Warn "winget не найден — авто-установка недоступна."
+        return
+    }
+    foreach ($dep in $Missing) {
+        switch ($dep) {
+            "git" {
+                Write-Hi "Устанавливаю Git через winget..."
+                & winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements
+            }
+            "ffmpeg" {
+                Write-Hi "Устанавливаю FFmpeg через winget..."
+                & winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements
+            }
+            "java" {
+                Write-Hi "Устанавливаю Java 17 JRE через winget..."
+                & winget install --id EclipseAdoptium.Temurin.17.JRE -e --accept-source-agreements --accept-package-agreements
+            }
+            "nodejs" {
+                Write-Hi "Устанавливаю Node.js (LTS) через winget..."
+                & winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
+            }
+            "npm" {
+                Write-Hi "Ставлю Node.js (включает npm), если npm отдельно не найден..."
+                & winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
+            }
+            "python" {
+                Write-Hi "Устанавливаю Python 3.12 через winget..."
+                & winget install --id Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements
+            }
+        }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "Не удалось установить: $dep"
+        }
+    }
+}
+
+function Invoke-FrontendNpmHeal {
+    $fr = Join-Path $Root 'frontend'
+    $pkg = Join-Path $fr 'package.json'
+    if (-not (Test-Path $pkg)) { return }
+    Write-Hi "Проверяю frontend (npm)..."
+    if (-not (Get-Command node -ErrorAction SilentlyContinue) -or -not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Write-Warn "Node.js/npm не в PATH — пропускаю frontend (см. системные зависимости)."
+        return
+    }
+    $nm = Join-Path $fr 'node_modules'
+    if (-not (Test-Path $nm)) {
+        Write-Warn "frontend/node_modules отсутствует."
+        $yn = Read-Host "Запустить npm ci в frontend/? [y/N]"
+        if ($yn -match '^[yY]') {
+            Push-Location $fr
+            try {
+                & npm ci
+                if ($LASTEXITCODE -ne 0) { & npm install }
+            } finally {
+                Pop-Location
+            }
+            if ($LASTEXITCODE -ne 0) { Write-Warn "npm ci/install завершился с ошибкой." }
+            else { Write-Ok "Зависимости frontend установлены." }
+        }
+    } else {
+        Write-Ok "frontend/node_modules на месте."
+    }
+}
+
+function Ensure-ProjectVenv {
+    $venvPy = Join-Path $Root '.venv_win\Scripts\python.exe'
+    if (-not (Test-Path $venvPy)) {
+        Write-Warn "Создаю локальное .venv_win для безопасной установки Python-зависимостей (отдельно от Linux .venv)..."
+        $venvPath = Join-Path $Root '.venv_win'
+        $venvEc = (Invoke-PythonModule -m venv $venvPath)
+        if ($venvEc -ne 0) {
+            Write-Err "Не удалось создать .venv_win (проверь python-venv/pip)."
+            return $false
+        }
+    }
+    $script:Py = $venvPy
+    $script:Pip = "$($script:Py) -m pip"
+    $pipUp = (Invoke-PythonModule -m pip install --upgrade pip)
+    if ($pipUp -ne 0) {
+        Write-Warn "Не удалось обновить pip в .venv_win — продолжаю."
+    }
+    Write-Ok "Переключилась на .venv_win: $script:Py"
+    return $true
+}
+
+$Root = Split-Path -Parent $PSScriptRoot
+Set-Location $Root
+
+Enable-VtIfPossible
+
+$Py = Resolve-LauncherPython -RepoRoot $Root
+if (-not $Py) {
+    Write-Err "Python 3.10+ не найден. Установи с python.org или через winget (Python.Python.3.12)."
+    Show-SystemDepsManualLinks
+    Read-Host "Enter для выхода"
+    exit 1
+}
+
+$Pip = "$Py -m pip"
+$LlHome = Join-Path $Root "interfaces\discord\lavalink"
+
+$modules = @(
+    "yaml", "dotenv", "requests", "httpx", "fastapi", "uvicorn", "discord", "wavelink", "PIL",
+    "langchain", "langchain_openai", "langchain_community", "chromadb", "sentence_transformers", "apscheduler", "ddgs", "nacl"
+)
+
+function Test-PythonMod($name) {
+    # При $ErrorActionPreference=Stop stderr от python.exe (Traceback при failed import) может ронять скрипт.
+    $exeEscaped = $Py.Replace('"', '""')
+    & cmd /v:off /c "`"$exeEscaped`" -c ""import $name"" >nul 2>nul"
+    return $LASTEXITCODE -eq 0
+}
+
+function Invoke-PythonModule {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
+    $oldEa = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Py @Args
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldEa
+    }
+}
+
+function Invoke-Preflight {
+    Write-NeyraBanner
+    Write-Hi "Инициализация системных модулей... сканирую окружение, босс."
+    Write-Host ""
+
+    Write-Hi "Проверка: git, ffmpeg, Java, Node.js, npm, Python 3.10+..."
+    $miss = @()
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { $miss += "git" }
+    if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { $miss += "ffmpeg" }
+    if (-not (Get-Command java -ErrorAction SilentlyContinue)) { $miss += "java" }
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { $miss += "nodejs" }
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { $miss += "npm" }
+    if (-not (Test-PythonRuntime310 -Exe $Py)) { $miss += "python" }
+
+    if ($miss.Count -gt 0) {
+        Write-Warn "Отсутствуют или не подходят зависимости: $($miss -join ', ')"
+        $sysInstall = Read-Host "Попытаться установить/починить автоматически? [y/N]"
+        if ($sysInstall -match '^[yY]') {
+            Invoke-SystemDepsAutoInstall -Missing $miss
+            Sync-PathFromEnvironment
+            $newPy = Resolve-LauncherPython -RepoRoot $Root
+            if ($newPy) {
+                $script:Py = $newPy
+                $script:Pip = "$($script:Py) -m pip"
+            }
+        }
+
+        $miss2 = @()
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) { $miss2 += "git" }
+        if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { $miss2 += "ffmpeg" }
+        if (-not (Get-Command java -ErrorAction SilentlyContinue)) { $miss2 += "java" }
+        if (-not (Get-Command node -ErrorAction SilentlyContinue)) { $miss2 += "nodejs" }
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { $miss2 += "npm" }
+        if (-not (Test-PythonRuntime310 -Exe $Py)) { $miss2 += "python" }
+        if ($miss2.Count -gt 0) {
+            Write-Warn "Все еще проблемы: $($miss2 -join ', ')"
+            Show-SystemDepsManualLinks
+        } elseif ($miss.Count -gt 0) {
+            Write-Ok "Системный стек установлен / исправлен."
+        }
+    } else {
+        Write-Ok "Системные утилиты и Python в порядке."
+    }
+
+    if (-not (Test-PythonRuntime310 -Exe $Py)) {
+        Write-Err "Нужен Python 3.10+ (сейчас: $Py). Перезапусти терминал после установки или проверь PATH."
+        Show-SystemDepsManualLinks
+        Read-Host "Enter для выхода"
+        exit 1
+    }
+
+    $javaMajor = Get-JavaMajorVersion
+    if ($null -ne $javaMajor) {
+        if ($javaMajor -lt 11) {
+            Write-Warn "Найдена Java $javaMajor. Для Lavalink v4 нужна Java 11+, рекомендуется 17."
+            Show-SystemDepsManualLinks
+        } elseif ($javaMajor -lt 17) {
+            Write-Warn "Найдена Java $javaMajor. Работать может, но рекомендуется Java 17."
+        } else {
+            Write-Ok "Java версии $javaMajor — отлично для Lavalink."
+        }
+    }
+
+    $nodeMajor = Get-NodeMajorVersion
+    if ($null -ne $nodeMajor) {
+        if ($nodeMajor -lt 18) {
+            Write-Warn "Node.js major=${nodeMajor}: для Vite 8 (frontend) обычно нужен Node 18+."
+        } else {
+            Write-Ok "Node.js major=${nodeMajor} — подходит для dev/build фронтенда."
+        }
+    }
+    Write-Host ""
+
+    $venvBinPy = Join-Path $Root '.venv\bin\python'
+    $venvWinPy = Join-Path $Root '.venv_win\Scripts\python.exe'
+    if ($env:OS -like '*Windows*') {
+        if ((Test-Path -LiteralPath $venvBinPy) -and -not (Test-Path -LiteralPath $venvWinPy)) {
+            Write-Warn "Есть Linux/WSL venv (.venv\bin) — для native Windows нужен отдельный каталог. Создай: py -3 -m venv .venv_win"
+        }
+    }
+    Write-Ok "Интерпретатор Python: $Py — $(Get-PythonInterpreterLabel -ExePath $Py)"
+
+    Write-Hi "Проверяю Python-модули..."
+    $bad = @()
+    foreach ($m in $modules) {
+        if (-not (Test-PythonMod $m)) { $bad += $m }
+    }
+    if ($bad.Count -gt 0) {
+        Write-Warn "Не хватает: $($bad -join ' ')"
+        $yn = Read-Host "Нейра: поставить зависимости из requirements.txt сейчас? [y/N]"
+        if ($yn -match '^[yY]') {
+            $reqFile = Join-Path $Root "requirements.txt"
+            Write-Hi "pip install (может занять время, лог в консоли)..."
+            $pipEc = (Invoke-PythonModule -m pip install -r $reqFile)
+            if ($pipEc -ne 0) {
+                $pipLog = Join-Path $env:TEMP ("neyra-pip-{0}.log" -f [guid]::NewGuid().ToString('n'))
+                $pyq = $Py.Replace('"', '""')
+                $reqq = $reqFile.Replace('"', '""')
+                cmd /v:off /c "`"$pyq`" -m pip install -r `"$reqq`" > `"$pipLog`" 2>&1" | Out-Null
+                $joined = ''
+                if (Test-Path -LiteralPath $pipLog) {
+                    $joined = Get-Content -LiteralPath $pipLog -Raw -ErrorAction SilentlyContinue
+                }
+                if ($joined -match "externally-managed-environment|PEP 668") {
+                    Write-Warn "PEP 668 / externally managed окружение. Перехожу на локальный .venv_win..."
+                    if (-not (Ensure-ProjectVenv)) {
+                        Write-Err "Не удалось авто-починить Python-окружение."
+                        Read-Host "Enter для выхода"
+                        exit 1
+                    }
+                    $pipEc2 = (Invoke-PythonModule -m pip install -r $reqFile)
+                    if ($pipEc2 -ne 0) {
+                        Write-Err "pip install в .venv_win провалился."
+                        Read-Host "Enter для выхода"
+                        exit 1
+                    }
+                } else {
+                    Write-Err "pip install провалился."
+                    if ($joined) { Write-Host $joined }
+                    Read-Host "Enter для выхода"
+                    exit 1
+                }
+            }
+            $bad2 = @()
+            foreach ($m in $modules) {
+                if (-not (Test-PythonMod $m)) { $bad2 += $m }
+            }
+            if ($bad2.Count -gt 0) {
+                Write-Err "После установки всё ещё не хватает: $($bad2 -join ' ')"
+                Read-Host "Enter для выхода"
+                exit 1
+            }
+            Write-Ok "Зависимости подтянуты."
+        } else {
+            Write-Err "Без модулей я не запущу ядро."
+            Read-Host "Enter для выхода"
+            exit 1
+        }
+    } else {
+        Write-Ok "Все нужные модули на борту."
+    }
+    Write-Host ""
+
+    Invoke-FrontendNpmHeal
+
+    Write-Host ""
+    Write-Hi "Healthcheck (console)..."
+    & $Py (Join-Path $Root "scripts\healthcheck.py") --mode console --skip-http
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Healthcheck ругнулся — можно продолжить, но я предупредила."
+        $c = Read-Host "Продолжить всё равно? [y/N]"
+        if ($c -notmatch '^[yY]') { exit 0 }
+    } else {
+        Write-Ok "Healthcheck: ок."
+    }
+
+    Write-Hi "Нейра готова к запуску. Что будем делать дальше, босс?"
+    Write-Host ""
+}
+
+function Ensure-LavalinkConfig {
+    $yml = Join-Path $LlHome "application.yml"
+    $ex = Join-Path $LlHome "application.example.yml"
+    if (-not (Test-Path $yml) -and (Test-Path $ex)) {
+        Copy-Item $ex $yml -Force
+        Write-Ok "Создала application.yml из примера."
+    }
+}
+
+function Start-LavalinkIfPossible {
+    $jar = Join-Path $LlHome "Lavalink.jar"
+    if (-not (Test-Path $jar)) {
+        Write-Warn "Lavalink.jar не найден. Пункт 4 меню или: $Py scripts\fetch_lavalink.py"
+        return
+    }
+    Ensure-LavalinkConfig
+    $sz = (Get-Item $jar).Length
+    if ($sz -lt 1048576) {
+        Write-Warn "JAR слишком маленький ($sz B) — похоже на LFS pointer. Пункт 4."
+        return
+    }
+    $procs = Get-CimInstance Win32_Process -Filter "Name='java.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*Lavalink.jar*' }
+    if ($procs) {
+        Write-Ok "Lavalink уже в фоне."
+        return
+    }
+    $lavCfg = Join-Path $LlHome 'application.yml'
+    & $Py (Join-Path $Root 'scripts\fetch_lavalink_plugins.py') --config $lavCfg --latest-youtube
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Плагины Lavalink не готовы (часто Git LFS pointer). Пункт 4 меню или: $Py scripts\fetch_lavalink_plugins.py"
+        return
+    }
+    Start-Process -FilePath "java" -ArgumentList @("-Dfile.encoding=UTF-8", "-jar", "Lavalink.jar") `
+        -WorkingDirectory $LlHome -WindowStyle Minimized
+    Start-Sleep -Seconds 2
+    Write-Ok "Lavalink стартовал (или уже был онлайн)."
+}
+
+Invoke-Preflight
+
+while ($true) {
+    Write-NeyraBanner
+    Write-Hi "--- главное меню ---"
+    Write-Host "  1) Консоль — только диалог с моделью [без HTTP]"
+    Write-Host "  2) Полное ядро — API, dashboard, плагины (спрошу про Lavalink)"
+    Write-Host "  3) Только Lavalink — фоновый процесс"
+    Write-Host "  4) Починить Lavalink.jar + плагины — fetch_lavalink*.py"
+    Write-Host "  5) Повторить проверки зависимостей"
+    Write-Host "  6) Выход"
+    Write-Host ""
+    $choice = Read-Host "Твой выбор [1-6]"
+
+    switch ($choice) {
+        "1" {
+            Write-Ok "Запускаю консольный режим. Удачного диалога."
+            & $Py (Join-Path $Root "main.py") --mode console
+            Write-Hi "Консоль завершилась. Возвращаюсь в меню."
+        }
+        "2" {
+            Write-Hi "Прогоняю healthcheck для core..."
+            & $Py (Join-Path $Root "scripts\healthcheck.py") --mode core --skip-http
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "Healthcheck core не идеален — всё равно стартовать?"
+                $cc = Read-Host "Продолжить? [y/N]"
+                if ($cc -notmatch '^[yY]') { continue }
+            }
+            Write-Host ""
+            $la = Read-Host "Запустить Lavalink автоматически перед ядром? [y/N]"
+            if ($la -match '^[yY]') { Start-LavalinkIfPossible }
+            else { Write-Hi "Ок, Lavalink не трогаю — поднимай сам (п.3) или оставь уже запущенный." }
+            Write-Ok "Стартую ядро: main.py --mode core"
+            & $Py (Join-Path $Root "main.py") --mode core
+            Write-Hi "Ядро остановилось. Окно можно закрыть или выбрать режим снова."
+        }
+        "3" {
+            Write-Hi "Поднимаю Lavalink отдельно..."
+            Start-LavalinkIfPossible
+        }
+        "4" {
+            Write-Hi "Качаю Lavalink.jar и JAR-плагины..."
+            & $Py (Join-Path $Root "scripts\fetch_lavalink.py")
+            if ($LASTEXITCODE -ne 0) { Write-Err "fetch_lavalink.py завершился с ошибкой." }
+            else {
+                & $Py (Join-Path $Root "scripts\fetch_lavalink_plugins.py") --config (Join-Path $Root "interfaces\discord\lavalink\application.yml") --latest-youtube
+                if ($LASTEXITCODE -ne 0) { Write-Err "fetch_lavalink_plugins.py завершился с ошибкой." }
+                else { Write-Ok "Готово. Можно пункт 3 или 2." }
+            }
+        }
+        "5" { Invoke-Preflight }
+        "6" {
+            Write-Hi "Увидимся, босс."
+            exit 0
+        }
+        Default {
+            Write-Warn "Такого пункта нет. Попробуй ещё раз."
+        }
+    }
+}

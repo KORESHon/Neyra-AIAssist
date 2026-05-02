@@ -1,5 +1,0 @@
-# Optional local config for discord_music plugin -> merged as plugins.discord_music
-nodes:
-  - identifier: "local-lavalink"
-    uri: "http://127.0.0.1:2333"
-    password: "youshallnotpass"

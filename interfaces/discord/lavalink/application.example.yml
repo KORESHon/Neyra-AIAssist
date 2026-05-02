@@ -5,6 +5,8 @@ server:
     enabled: false
 
 lavalink:
+  # plugins/*.jar в git часто — Git LFS pointer → Lavalink падает с ZipException. Починка: python scripts/fetch_lavalink_plugins.py
+  # youtube-plugin: версию держим в sync с https://github.com/lavalink-devs/youtube-source/releases/latest (на момент правки latest = 1.18.0)
   pluginsDir: "./plugins"
   plugins:
     - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.0"
@@ -50,15 +52,23 @@ lavalink:
 plugins:
   youtube:
     enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    # Порядок клиентов: сначала клиенты без «тяжёлого» WEB cipher (меньше ошибок вида Must find sig function...),
+    # WEB/WEBEMBEDDED — запасные. В 1.18.0 TVHTML5EMBEDDED удалён upstream → используй TVHTML5_SIMPLY.
     oauth:
       enabled: true
       refreshToken: ""
       skipInitialization: false
       useYoutubeTvOAuth: true
     clients:
+      - MUSIC
+      - ANDROID_VR
+      - ANDROID_MUSIC
+      - TVHTML5_SIMPLY
       - WEB
       - WEBEMBEDDED
-      - TVHTML5EMBEDDED
   lavasrc:
     providers:
       - "ytsearch:%QUERY%"

@@ -60,7 +60,7 @@ def main() -> int:
     apply_env_secrets(cfg)
 
     agent = None
-    if manifest.id == "discord_text":
+    if manifest.id == "discord":
         from core.agent import NeyraAgent
 
         agent = NeyraAgent(cfg)

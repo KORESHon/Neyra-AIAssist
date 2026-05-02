@@ -1,10 +1,10 @@
 """
-Текстовый Discord-бот Нейры (без voice/STT/TTS).
+Discord-интерфейс Нейры: диалог в тексте/картинках (без STT/TTS) и музыка (Lavalink).
 
-Задача интерфейса:
-- принимать текст и картинки из Discord;
-- вызывать core.agent;
-- отправлять ответ в текстовый канал.
+Задача:
+- принимать сообщения и вложения;
+- стримить ответы агента;
+- обрабатывать музыкальные интенты и эмбеды очереди.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import functools
 import json
 import logging
 import os
-from pathlib import Path
+from datetime import datetime, timezone
 import re
 import time
 from typing import TYPE_CHECKING, Any, Optional
@@ -36,8 +36,6 @@ from core.event_bus import (
     NOTIFY_DISCORD_MESSAGE_SENT,
     CoreEvent,
 )
-from core.plugin_loader import PluginLoader
-from core.plugin_sdk import PluginContext, run_plugin_entrypoint
 
 if TYPE_CHECKING:
     from core.agent import NeyraAgent
@@ -48,6 +46,33 @@ logger = logging.getLogger("neyra.discord")
 MAX_MSG_LEN = 1900
 THINKING_DOT = "▌"
 QUEUE_PAGE_SIZE = 10
+# Discord embed field value limit; keep headroom for ellipsis
+EMBED_FIELD_SAFE = 1000
+
+COL_BRAND = 0x5865F2
+COL_OK = 0x57F287
+COL_ERR = 0xED4245
+COL_WARN = 0xFEE75C
+
+
+def _clip_field(text: str, limit: int = EMBED_FIELD_SAFE) -> str:
+    t = (text or "").strip()
+    if len(t) <= limit:
+        return t or "—"
+    return t[: max(0, limit - 1)] + "…"
+
+
+def _normalize_music_handler_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Event path uses payload.result; invoke_plugin returns top-level result."""
+    pl = result.get("payload")
+    if isinstance(pl, dict):
+        inner = pl.get("result")
+        if isinstance(inner, dict):
+            return inner
+    r = result.get("result")
+    if isinstance(r, dict):
+        return r
+    return {}
 
 
 def _queue_page_embed(current: str, items: list[str], page: int, page_size: int = QUEUE_PAGE_SIZE) -> discord.Embed:
@@ -57,15 +82,25 @@ def _queue_page_embed(current: str, items: list[str], page: int, page_size: int 
     start = page * page_size
     end = min(start + page_size, total)
     page_items = items[start:end]
-    embed = discord.Embed(title="Neyra Music Queue", color=0x5865F2)
-    embed.add_field(name="Сейчас играет", value=current or "Ничего не играет", inline=False)
+    embed = discord.Embed(
+        title="Очередь воспроизведения",
+        description="Нейра · музыкальный плеер",
+        color=COL_BRAND,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="▶ Сейчас",
+        value=_clip_field(current or "ничего не играет", EMBED_FIELD_SAFE),
+        inline=False,
+    )
     if page_items:
-        lines = [f"{start + idx + 1}. {title}" for idx, title in enumerate(page_items)]
-        embed.add_field(name="Очередь", value="\n".join(lines), inline=False)
+        lines = [f"`{start + idx + 1}.` {_clip_field(str(title), 180)}" for idx, title in enumerate(page_items)]
+        q_body = _clip_field("\n".join(lines), EMBED_FIELD_SAFE)
+        embed.add_field(name="В очереди", value=q_body, inline=False)
     else:
-        embed.add_field(name="Очередь", value="Очередь пуста.", inline=False)
-    embed.add_field(name="Треков в очереди", value=str(total), inline=True)
-    embed.set_footer(text=f"Страница {page + 1}/{pages}")
+        embed.add_field(name="В очереди", value="Пусто.", inline=False)
+    embed.add_field(name="Всего в очереди", value=str(total), inline=True)
+    embed.set_footer(text=f"Страница {page + 1} из {pages} · листайте кнопками ниже")
     return embed
 
 
@@ -84,12 +119,18 @@ class QueuePagerView(discord.ui.View):
 
     async def _redraw(self, interaction: discord.Interaction) -> None:
         emb = _queue_page_embed(self.current, self.items, self.page, self.page_size)
-        await interaction.response.edit_message(embed=emb, view=self)
+        try:
+            await interaction.response.edit_message(embed=emb, view=self)
+        except discord.HTTPException:
+            try:
+                await interaction.response.send_message("Не удалось обновить сообщение.", ephemeral=True)
+            except Exception:
+                pass
 
     @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
     async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message("Only requester can switch queue pages.", ephemeral=True)
+            await interaction.response.send_message("Только автор запроса может листать очередь.", ephemeral=True)
             return
         self.page = (self.page - 1) % self._pages()
         await self._redraw(interaction)
@@ -97,19 +138,30 @@ class QueuePagerView(discord.ui.View):
     @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message("Only requester can switch queue pages.", ephemeral=True)
+            await interaction.response.send_message("Только автор запроса может листать очередь.", ephemeral=True)
             return
         self.page = (self.page + 1) % self._pages()
         await self._redraw(interaction)
 
 
-def _music_status_embed(title: str, description: str, color: int = 0x5865F2) -> discord.Embed:
-    emb = discord.Embed(title=title, description=description, color=color)
-    emb.set_footer(text="Neyra Music")
+def _music_status_embed(
+    title: str,
+    description: str,
+    *,
+    color: int = COL_BRAND,
+    footer: str = "Нейра · Discord",
+) -> discord.Embed:
+    emb = discord.Embed(
+        title=title,
+        description=_clip_field(description, 3800),
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    emb.set_footer(text=footer)
     return emb
 
 
-class NeyraDiscordTextBot(discord.Client):
+class NeyraDiscordBot(discord.Client):
     def __init__(
         self,
         agent: "NeyraAgent",
@@ -133,7 +185,6 @@ class NeyraDiscordTextBot(discord.Client):
         self.stream_output_mode: str = str(disc_cfg.get("stream_output_mode", "stream")).strip().lower()
         self._cooldown: float = float(disc_cfg.get("cooldown_seconds", 3.0))
         self._last_response: dict[int, float] = {}
-        self._project_root = Path(__file__).resolve().parents[2]
         self._music_waiters: dict[str, asyncio.Future] = {}
         self._music_timeout_s: float = float(disc_cfg.get("music_result_timeout_seconds", 25.0))
 
@@ -208,37 +259,18 @@ class NeyraDiscordTextBot(discord.Client):
         if fut and not fut.done():
             fut.set_result(payload)
 
-    def _invoke_music_plugin(self, payload: dict[str, Any]) -> dict:
-        loader = PluginLoader(self._project_root)
-        manifest = None
-        for m in loader.discover_manifests():
-            if m.id == "discord_music":
-                manifest = m
-                break
-        if manifest is None:
-            return {"ok": False, "error": "discord_music plugin not found"}
-        if not manifest.enabled:
-            return {"ok": False, "error": "discord_music plugin is disabled"}
-        mod = loader.import_plugin_module(manifest)
-        ctx = PluginContext(root=self._project_root, config=self.config, agent=self.agent)
-        inv = getattr(mod, "invoke_plugin", None)
-        if callable(inv):
-            return inv(payload, ctx)
-        run_plugin_entrypoint(mod, ctx)
-        return {"ok": True, "mode": "run_plugin"}
-
     async def _publish_music_with_fallback(self, payload: dict[str, Any]) -> dict:
         request_id = str(payload.get("request_id") or "")
         loop = asyncio.get_running_loop()
         waiter = loop.create_future()
         if request_id:
             self._music_waiters[request_id] = waiter
-        self.agent.event_bus.publish(CoreEvent(str(payload.get("action") or MUSIC_PLAY), "interfaces.discord_text", payload))
+        self.agent.event_bus.publish(CoreEvent(str(payload.get("action") or MUSIC_PLAY), "interfaces.discord", payload))
         try:
             result_payload = await asyncio.wait_for(waiter, timeout=self._music_timeout_s)
             return {"ok": True, "mode": "event", "payload": result_payload}
         except asyncio.TimeoutError:
-            # If resident consumer is already subscribed, avoid duplicate invoke path.
+            # Stage A contract: discord text/music interact via Event Bus only.
             action = str(payload.get("action") or MUSIC_PLAY)
             counts = self.agent.event_bus.handler_counts()
             by_type = counts.get("by_type") if isinstance(counts, dict) else {}
@@ -246,18 +278,22 @@ class NeyraDiscordTextBot(discord.Client):
             if subscribed:
                 # Consumer can still be processing (node failover / track search).
                 return {"ok": True, "mode": "pending", "payload": {"action": action, "status": "pending"}}
-            return await asyncio.to_thread(self._invoke_music_plugin, payload)
+            return {
+                "ok": False,
+                "mode": "event_timeout",
+                "error": f"music consumer is not subscribed for action={action}",
+            }
         finally:
             if request_id:
                 self._music_waiters.pop(request_id, None)
 
     async def on_ready(self):
-        # Shared runtime handle for resident plugins (e.g. discord_music).
+        # Shared runtime handle for in-process music + other Discord-adjacent plugins.
         self.agent.discord_client = self
         await self.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.listening, name="текстовые сообщения")
+            activity=discord.Activity(type=discord.ActivityType.listening, name="текст и музыка · Нейра")
         )
-        logger.info("Discord Text Online: %s (ID: %s)", self.user, self.user.id if self.user else "?")
+        logger.info("Discord online: %s (ID: %s)", self.user, self.user.id if self.user else "?")
         if self.active_channel_ids:
             logger.info("Активные каналы: %s", self.active_channel_ids)
         else:
@@ -479,14 +515,16 @@ class NeyraDiscordTextBot(discord.Client):
             result = await self._publish_music_with_fallback(payload)
             if result.get("ok"):
                 mode = str(result.get("mode") or "")
-                res_payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
-                res_inner = res_payload.get("result") if isinstance(res_payload, dict) else {}
-                res_inner = res_inner if isinstance(res_inner, dict) else {}
+                res_inner = _normalize_music_handler_result(result)
                 status = str(res_inner.get("status") or "")
                 if status == "failed":
                     err = str(res_inner.get("error") or "unknown error")
                     await message.reply(
-                        embed=_music_status_embed("Ошибка музыки", f"Не удалось выполнить команду: {err}", color=0xED4245),
+                        embed=_music_status_embed(
+                            "Не получилось",
+                            f"Команда не выполнена.\n```{_clip_field(err, 900)}```",
+                            color=COL_ERR,
+                        ),
                         mention_author=False,
                     )
                     return
@@ -500,7 +538,12 @@ class NeyraDiscordTextBot(discord.Client):
                     return
                 if mode == "pending":
                     await message.reply(
-                        embed=_music_status_embed("Музыка", "Обрабатываю запрос..."),
+                        embed=_music_status_embed(
+                            "Долго думаю",
+                            "Поиск трека или подключение к Lavalink заняли больше обычного. "
+                            "Пока обработка идёт в фоне — если ответа не будет, повтори команду через несколько секунд.",
+                            color=COL_WARN,
+                        ),
                         mention_author=False,
                     )
                     return
@@ -509,51 +552,79 @@ class NeyraDiscordTextBot(discord.Client):
                     author = str(res_inner.get("author") or "").strip()
                     candidates = res_inner.get("candidates") if isinstance(res_inner.get("candidates"), list) else []
                     if track and author:
-                        base = f"{author} - {track}"
+                        base = f"**{author}** — **{track}**"
                     else:
-                        base = track or "unknown track"
+                        base = f"**{_clip_field(track or 'неизвестный трек', 500)}**"
                     if status == "queued":
-                        title = "Добавлено в очередь"
-                        desc = f"**{base}**"
+                        title = "В очереди"
+                        desc = base
+                        col = COL_BRAND
+                    elif status in ("started",):
+                        title = "Играет"
+                        desc = base
+                        col = COL_OK
                     else:
-                        title = "Сейчас играет"
-                        desc = f"**{base}**"
+                        title = "Музыка"
+                        desc = base or "Готово."
+                        col = COL_BRAND
                     if candidates:
-                        found = "\n".join([f"- {str(x)}" for x in candidates[:5]])
-                        desc += f"\n\nНайдено в топе:\n{found}"
+                        found = "\n".join([f"・ {_clip_field(str(x), 120)}" for x in candidates[:5]])
+                        desc += f"\n\n**Варианты поиска:**\n{found}"
                     await message.reply(
-                        embed=_music_status_embed(title, desc),
+                        embed=_music_status_embed(title, _clip_field(desc, 3800), color=col),
                         mention_author=False,
                     )
                     return
                 elif action == MUSIC_SKIP:
                     next_title = str(res_inner.get("next") or "").strip()
-                    desc = "Пропустила текущий трек."
+                    desc = "Текущий трек пропущен."
                     if next_title:
-                        desc += f"\nСейчас играет: **{next_title}**"
-                    await message.reply(embed=_music_status_embed("Скип", desc), mention_author=False)
+                        desc += f"\n\nДальше: **{_clip_field(next_title, 400)}**"
+                    await message.reply(
+                        embed=_music_status_embed("Пропуск", desc, color=COL_OK),
+                        mention_author=False,
+                    )
                     return
                 elif action == MUSIC_STOP:
-                    await message.reply(embed=_music_status_embed("Стоп", "Воспроизведение остановлено."), mention_author=False)
+                    await message.reply(
+                        embed=_music_status_embed("Стоп", "Воспроизведение остановлено.", color=COL_BRAND),
+                        mention_author=False,
+                    )
                     return
                 elif action == MUSIC_PAUSE:
-                    await message.reply(embed=_music_status_embed("Пауза", "Поставила на паузу."), mention_author=False)
+                    await message.reply(
+                        embed=_music_status_embed("Пауза", "Плеер на паузе.", color=COL_WARN),
+                        mention_author=False,
+                    )
                     return
                 elif action == MUSIC_RESUME:
-                    await message.reply(embed=_music_status_embed("Продолжить", "Продолжила воспроизведение."), mention_author=False)
+                    await message.reply(
+                        embed=_music_status_embed("Продолжить", "Сняла с паузы.", color=COL_OK),
+                        mention_author=False,
+                    )
                     return
                 elif action == MUSIC_CLEAR:
-                    await message.reply(embed=_music_status_embed("Очередь", "Очередь очищена."), mention_author=False)
+                    await message.reply(
+                        embed=_music_status_embed("Очередь", "Очередь очищена.", color=COL_BRAND),
+                        mention_author=False,
+                    )
                     return
                 else:
-                    await message.reply(embed=_music_status_embed("Музыка", "Сделано."), mention_author=False)
+                    await message.reply(
+                        embed=_music_status_embed("Музыка", "Команда выполнена.", color=COL_OK),
+                        mention_author=False,
+                    )
                     return
             else:
+                fail = str(result.get("error") or "").strip()
+                if not fail:
+                    inner = _normalize_music_handler_result(result)
+                    fail = str(inner.get("error") or inner.get("status") or "unknown error")
                 await message.reply(
                     embed=_music_status_embed(
-                        "Ошибка музыки",
-                        f"Музыкальный плагин недоступен: {result.get('error', 'unknown error')}",
-                        color=0xED4245,
+                        "Музыка недоступна",
+                        f"```{_clip_field(fail, 900)}```",
+                        color=COL_ERR,
                     ),
                     mention_author=False,
                 )
@@ -717,7 +788,7 @@ def _split_message(text: str) -> list[str]:
     return parts
 
 
-def run_discord_text_bot(agent: "NeyraAgent", config: dict) -> None:
+def run_discord_bot(agent: "NeyraAgent", config: dict) -> None:
     disc_cfg = config.get("discord", {})
     token = (os.environ.get("DISCORD_TOKEN") or "").strip() or (disc_cfg.get("token") or "").strip()
     if not token:
@@ -725,6 +796,6 @@ def run_discord_text_bot(agent: "NeyraAgent", config: dict) -> None:
 
     from core.reflection import ReflectionEngine
 
-    bot = NeyraDiscordTextBot(agent, config, reflection=ReflectionEngine(config, agent))
-    logger.info("Запускаю Discord text-бот...")
+    bot = NeyraDiscordBot(agent, config, reflection=ReflectionEngine(config, agent))
+    logger.info("Запускаю Discord-бот (текст + музыка)...")
     bot.run(token, log_handler=None)

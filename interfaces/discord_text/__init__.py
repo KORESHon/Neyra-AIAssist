@@ -1,1 +1,0 @@
-"""Плагин: Discord text interface."""

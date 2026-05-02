@@ -1,4 +1,4 @@
-"""Resident Discord music plugin with event-driven orchestration."""
+"""Discord music module (Lavalink/wavelink): resident subscriber + invoke fallback."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from core.event_bus import (
     CoreEvent,
 )
 
-logger = logging.getLogger("neyra.discord_music")
+logger = logging.getLogger("neyra.discord.music")
 
 DEFAULT_NODES = [
     {"identifier": "local-lavalink", "uri": "http://127.0.0.1:2333", "password": "youshallnotpass"},
@@ -80,7 +80,7 @@ async def _search_tracks_youtube(wavelink_mod: Any, query: str, node: Any) -> li
         tracks = await asyncio.wait_for(wavelink_mod.Playable.search(query, node=node), timeout=7.0)
         return list(tracks or [])
     except Exception as ex:  # pragma: no cover
-        logger.warning("discord_music youtube search failed | query=%s error=%s", query, ex)
+        logger.warning("discord.music youtube search failed | query=%s error=%s", query, ex)
         return []
 
 
@@ -145,14 +145,14 @@ class LavalinkPoolAdapter:
             latency = await self._probe_node_latency_ms(uri)
             if latency == float("inf"):
                 logger.warning(
-                    "discord_music node unavailable at startup: %s (%s)",
+                    "discord.music node unavailable at startup: %s (%s)",
                     node.get("identifier", "node"),
                     uri,
                 )
                 continue
             scored.append((latency, node))
             logger.info(
-                "discord_music node probe | id=%s latency_ms=%.1f uri=%s",
+                "discord.music node probe | id=%s latency_ms=%.1f uri=%s",
                 node.get("identifier", "node"),
                 latency,
                 uri,
@@ -164,7 +164,7 @@ class LavalinkPoolAdapter:
             self.last_error = "startup node preflight failed for all nodes"
         else:
             logger.info(
-                "discord_music ranked nodes: %s",
+                "discord.music ranked nodes: %s",
                 [str(n.get("identifier") or "node") for n in self.ranked_nodes],
             )
         return self.ranked_nodes
@@ -188,7 +188,7 @@ class LavalinkPoolAdapter:
             self._wavelink = wavelink
         except Exception as ex:  # pragma: no cover
             self.last_error = f"wavelink unavailable: {ex}"
-            logger.warning("discord_music: %s", self.last_error)
+            logger.warning("discord.music: %s", self.last_error)
             self.connected = False
             return 0
 
@@ -209,7 +209,7 @@ class LavalinkPoolAdapter:
             )
             self.connected = connected_now > 0
             if self.connected:
-                logger.info("discord_music: connected to %s lavalink node(s)", connected_now)
+                logger.info("discord.music: connected to %s lavalink node(s)", connected_now)
                 self.last_error = ""
                 return connected_now
         except Exception:
@@ -263,7 +263,7 @@ class LavalinkPoolAdapter:
             return None
         except Exception as ex:  # pragma: no cover
             self.last_error = str(ex)
-            logger.warning("discord_music node connect failed | node=%s error=%s", identifier, ex)
+            logger.warning("discord.music node connect failed | node=%s error=%s", identifier, ex)
             return None
 
     def preferred_connected_nodes(self) -> list[Any]:
@@ -378,7 +378,7 @@ class MusicService:
         cur = self.current_by_guild.get(guild_id)
         queue = self.queue_by_guild.get(guild_id, [])
         return {
-            "title": "Neyra Music",
+            "title": "Нейра · музыка",
             "state": result.get("status", ""),
             "current": cur.title if cur else "—",
             "queue_size": len(queue),
@@ -405,21 +405,21 @@ if discord is not None:
         async def _act(self, interaction: discord.Interaction, action: str) -> None:
             payload = {"guild_id": self.guild_id, "requester_id": self.requester_id, "action": action}
             res = self.service.handle(action, payload)
-            await interaction.response.send_message(f"Music: {res.get('status', 'ok')}", ephemeral=True)
+            await interaction.response.send_message(f"Музыка: {res.get('status', 'ok')}", ephemeral=True)
 
-        @discord.ui.button(label="Pause", style=discord.ButtonStyle.secondary)
+        @discord.ui.button(label="Пауза", style=discord.ButtonStyle.secondary)
         async def pause_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
             await self._act(interaction, MUSIC_PAUSE)
 
-        @discord.ui.button(label="Resume", style=discord.ButtonStyle.success)
+        @discord.ui.button(label="Продолжить", style=discord.ButtonStyle.success)
         async def resume_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
             await self._act(interaction, MUSIC_RESUME)
 
-        @discord.ui.button(label="Skip", style=discord.ButtonStyle.primary)
+        @discord.ui.button(label="Пропустить", style=discord.ButtonStyle.primary)
         async def skip_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
             await self._act(interaction, MUSIC_SKIP)
 
-        @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger)
+        @discord.ui.button(label="Стоп", style=discord.ButtonStyle.danger)
         async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # type: ignore[override]
             await self._act(interaction, MUSIC_STOP)
 
@@ -437,19 +437,26 @@ def build_music_embed(embed_payload: dict[str, Any]):
 
 
 def _nodes_from_ctx(ctx) -> list[dict[str, Any]]:
-    cfg = ((ctx.config.get("plugins") or {}).get("discord_music") or {})
-    nodes = cfg.get("nodes")
+    d = ctx.config.get("discord")
+    if isinstance(d, dict):
+        m = d.get("music")
+        if isinstance(m, dict):
+            nodes = m.get("nodes")
+            if isinstance(nodes, list) and nodes:
+                return [x for x in nodes if isinstance(x, dict)]
+    legacy = ((ctx.config.get("plugins") or {}).get("discord_music") or {})
+    nodes = legacy.get("nodes")
     if isinstance(nodes, list) and nodes:
         return [x for x in nodes if isinstance(x, dict)]
     return DEFAULT_NODES
 
 
 def _ctx_service(ctx) -> MusicService:
-    if getattr(ctx, "_discord_music_service", None):
-        return ctx._discord_music_service
+    if getattr(ctx, "_discord_plugin_music_service", None):
+        return ctx._discord_plugin_music_service
     adapter = LavalinkPoolAdapter(_nodes_from_ctx(ctx))
     service = MusicService(adapter)
-    ctx._discord_music_service = service
+    ctx._discord_plugin_music_service = service
     return service
 
 
@@ -464,7 +471,7 @@ def _attach_track_end_listener(ctx) -> None:
     bot = _resolve_bot(ctx)
     if bot is None:
         return
-    if getattr(ctx, "_discord_music_track_end_listener_added", False):
+    if getattr(ctx, "_discord_plugin_track_end_listener_added", False):
         return
 
     async def _on_wavelink_track_end(payload) -> None:
@@ -480,23 +487,23 @@ def _attach_track_end_listener(ctx) -> None:
                     nxt = player.queue.get()
                     if nxt is not None:
                         await player.play(nxt)
-                        logger.info("discord_music track_end -> next queued track started")
+                        logger.info("discord.music track_end -> next queued track started")
                         return
             except Exception as ex:
-                logger.warning("discord_music track_end queue advance failed: %s", ex)
+                logger.warning("discord.music track_end queue advance failed: %s", ex)
             try:
                 await player.stop(force=True)
             except Exception:
                 pass
-            logger.info("discord_music track_end -> queue empty, playback stopped")
+            logger.info("discord.music track_end -> queue empty, playback stopped")
         except Exception as ex:  # pragma: no cover
-            logger.warning("discord_music track_end listener failed: %s", ex)
+            logger.warning("discord.music track_end listener failed: %s", ex)
 
     # discord.Client in this project does not expose add_listener like commands.Bot.
     # Assigning handler to event method name is enough for dispatching.
     setattr(bot, "on_wavelink_track_end", _on_wavelink_track_end)
-    ctx._discord_music_track_end_listener_added = True
-    logger.info("discord_music attached on_wavelink_track_end listener")
+    ctx._discord_plugin_track_end_listener_added = True
+    logger.info("discord.music attached on_wavelink_track_end listener")
 
 
 async def _handle_action_async(ctx, service: MusicService, action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -536,7 +543,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
         return {"ok": False, "status": "failed", "error": f"wavelink unavailable: {ex}"}
 
     logger.info(
-        "discord_music request | action=%s guild=%s voice_channel=%s query=%s",
+        "discord.music request | action=%s guild=%s voice_channel=%s query=%s",
         action,
         guild_id,
         getattr(voice_channel, "id", "unknown"),
@@ -563,7 +570,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
                 except Exception as switch_ex:
                     last_error = str(switch_ex)
                     service.adapter.mark_node_failed(cfg_id, cooldown_s=25.0)
-                    logger.warning("discord_music node switch failed | node=%s error=%s", cfg_id, switch_ex)
+                    logger.warning("discord.music node switch failed | node=%s error=%s", cfg_id, switch_ex)
                     continue
             else:
                 player = await voice_channel.connect(cls=wavelink.Player, self_deaf=True, timeout=8.0)
@@ -675,7 +682,7 @@ async def _handle_action_async(ctx, service: MusicService, action: str, payload:
             last_error = str(ex)
             service.adapter.mark_node_failed(str(cfg.get("identifier") or ""), cooldown_s=30.0)
             logger.warning(
-                "discord_music node failover | node=%s error=%s",
+                "discord.music node failover | node=%s error=%s",
                 str(cfg.get("identifier") or "unknown"),
                 ex,
             )
@@ -711,7 +718,7 @@ def invoke_plugin(payload: dict[str, Any], ctx) -> dict[str, Any]:
             )
             result = fut.result(timeout=20)
         except Exception as ex:  # pragma: no cover
-            logger.error("discord_music invoke async fallback failed: %s", ex)
+            logger.error("discord.music invoke async fallback failed: %s", ex)
             result = {"ok": False, "status": "failed", "error": str(ex)}
     else:
         result = service.handle(action, payload)
@@ -719,7 +726,7 @@ def invoke_plugin(payload: dict[str, Any], ctx) -> dict[str, Any]:
     embed_payload = service.build_embed_payload(guild_id, result)
     if getattr(ctx, "agent", None):
         ctx.agent.event_bus.publish(
-            _build_result_event("interfaces.discord_music.invoke", payload, result, embed_payload)
+            _build_result_event("interfaces.discord.music.invoke", payload, result, embed_payload)
         )
     return {"ok": bool(result.get("ok")), "result": result, "embed": embed_payload}
 
@@ -737,7 +744,7 @@ def _event_handler(ctx, action: str):
             guild_id = str(payload.get("guild_id") or "")
             embed_payload = service.build_embed_payload(guild_id, result)
             ctx.agent.event_bus.publish(
-                _build_result_event("interfaces.discord_music.event", payload, result, embed_payload)
+                _build_result_event("interfaces.discord.music.event", payload, result, embed_payload)
             )
             return
 
@@ -747,21 +754,21 @@ def _event_handler(ctx, action: str):
                 guild_id = str(payload.get("guild_id") or "")
                 embed_payload = service.build_embed_payload(guild_id, result)
                 ctx.agent.event_bus.publish(
-                    _build_result_event("interfaces.discord_music.event", payload, result, embed_payload)
+                    _build_result_event("interfaces.discord.music.event", payload, result, embed_payload)
                 )
-                logger.info("discord_music handled %s => %s", action, result.get("status"))
+                logger.info("discord.music handled %s => %s", action, result.get("status"))
             except Exception as ex:  # pragma: no cover
-                logger.exception("discord_music async handler failed for %s: %s", action, ex)
+                logger.exception("discord.music async handler failed for %s: %s", action, ex)
 
         bot.loop.call_soon_threadsafe(lambda: asyncio.create_task(_run()))
 
     return _handler
 
 
-def run_plugin(ctx) -> None:
-    """Resident bootstrap: connect node pool and subscribe to MUSIC_* events."""
+def bootstrap_resident(ctx) -> None:
+    """Subscribe to MUSIC_* and start Lavalink preflight (run before the Discord client loop blocks)."""
     if not getattr(ctx, "agent", None):
-        logger.warning("discord_music resident mode requires agent context")
+        logger.warning("discord.music resident mode requires agent context")
         return
 
     _ctx_service(ctx)
@@ -777,17 +784,22 @@ def run_plugin(ctx) -> None:
                     connected = await service.adapter.connect(client=bot)
                     if connected <= 0:
                         logger.error(
-                            "discord_music startup connect failed: %s",
+                            "discord.music startup connect failed: %s",
                             service.adapter.last_error or "no connected nodes",
                         )
                 bot.loop.call_soon_threadsafe(lambda: asyncio.create_task(_init_nodes()))
                 return
             time.sleep(0.5)
-        logger.warning("discord_music startup node preflight skipped: discord client not ready in time")
+        logger.warning("discord.music startup node preflight skipped: discord client not ready in time")
 
     import threading
     threading.Thread(target=_startup_node_preflight, name="neyra-music-node-preflight", daemon=True).start()
 
     for ev in (MUSIC_PLAY, MUSIC_PAUSE, MUSIC_RESUME, MUSIC_SKIP, MUSIC_QUEUE, MUSIC_STOP, MUSIC_CLEAR):
         ctx.agent.event_bus.subscribe(ev, _event_handler(ctx, ev))
-    logger.info("discord_music resident subscribed to MUSIC_* events (lazy lavalink connect)")
+    logger.info("discord.music resident subscribed to MUSIC_* events (lazy lavalink connect)")
+
+
+def run_plugin(ctx) -> None:
+    """Alias for legacy callers (e.g. old discord_music manifest)."""
+    bootstrap_resident(ctx)

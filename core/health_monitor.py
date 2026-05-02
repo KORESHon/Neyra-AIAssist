@@ -142,13 +142,13 @@ class HealthMonitor:
                 or ""
             ).strip()
             if not token:
-                issues.append("discord_text enabled in plugin.yaml but DISCORD_TOKEN is missing")
+                issues.append("discord resident enabled in plugin.yaml but DISCORD_TOKEN is missing")
             return {"ok": len(issues) == 0, "issues": issues}
         except Exception as e:
             return {"ok": False, "error": str(e)[:500]}
 
     def _discord_resident_enabled(self) -> bool:
-        """Включён ли resident discord_text в plugin.yaml (без дублирования в config.yaml плагина)."""
+        """Включён ли resident-плагин discord в plugin.yaml (без дублирования в config.yaml плагина)."""
         root = self._project_root
         if root is None:
             return False
@@ -156,7 +156,7 @@ class HealthMonitor:
             from core.plugin_loader import PluginLoader
 
             for m in PluginLoader(root).discover_manifests():
-                if m.id == "discord_text" and m.enabled and m.lifecycle == "resident":
+                if m.id == "discord" and m.enabled and m.lifecycle == "resident":
                     return True
         except Exception:
             return False

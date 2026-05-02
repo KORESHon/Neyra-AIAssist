@@ -1,3 +1,10 @@
+<!-- co-authored-cursor-badge -->
+[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
+
+<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+
+---
+
 # Quickstart
 
 1. Создайте venv и установите зависимости:
@@ -7,8 +14,8 @@
 2. Скопируйте `.env.example` -> `.env` и заполните ключи.
 3. Скопируйте `config.example.yaml` -> `config.yaml`.
 4. Для плагинов скопируйте:
-   - `interfaces/discord_text/config.example.yaml` -> `config.yaml`
-   - `interfaces/internal_api/config.example.yaml` -> `config.yaml`
+   - `interfaces/discord/config.example.yaml` -> `interfaces/discord/config.yaml`
+   - `interfaces/internal_api/config.example.yaml` -> `interfaces/internal_api/config.yaml`
 5. (опционально) frontend:
    - `cd frontend && npm install && npm run build`
 6. Запуск:

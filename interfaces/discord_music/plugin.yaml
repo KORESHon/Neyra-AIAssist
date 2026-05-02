@@ -1,8 +1,0 @@
-id: discord_music
-name: Discord Music Plugin
-description: Resident event-driven музыкальный плагин Discord.
-version: "0.1.0"
-enabled: true
-lifecycle: resident
-cli_modes: []
-main_script: main.py

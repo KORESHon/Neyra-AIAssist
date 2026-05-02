@@ -1,3 +1,10 @@
+<!-- co-authored-cursor-badge -->
+[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
+
+<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+
+---
+
 # Neyra Plugin SDK — Туториал и справка (Русский)
 
 **English (тот же полный объём, отдельный файл):** [HELP.md](HELP.md)
@@ -289,7 +296,7 @@ def run_plugin(ctx: PluginContext) -> None:
 
 | Путь                                                   | Роль                                                                |
 | ------------------------------------------------------ | ------------------------------------------------------------------- |
-| `interfaces/discord_text/`                             | Discord; в `run_plugin` передаётся `ctx.agent` из `main.py`.        |
+| `interfaces/discord/`                                  | Discord (текст + музыка); в `run_plugin` передаётся `ctx.agent` из `main.py`. |
 | `interfaces/internal_api/`                             | Маршруты FastAPI; приложение собирается в ядре (`build_app`). |
 | `interfaces/local_voice/`, `interfaces/laptop_screen/` | Заглушки под будущую реализацию.                                    |
 
@@ -334,4 +341,3 @@ def run_plugin(ctx: PluginContext) -> None:
 **Плагин не появляется в списке**
 
 - Проверьте путь: должен быть ровно `interfaces/<папка>/plugin.yaml`, не вложенная глубже без своего манифеста.
-

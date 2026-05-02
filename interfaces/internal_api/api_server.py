@@ -114,6 +114,13 @@ class NotifyRequest(BaseModel):
     source: str = Field(default="api.notify", max_length=120)
 
 
+class FireDebugEventRequest(BaseModel):
+    """Тело POST /v1/debug/fire_event — только шина EventBus (без исходящих webhooks)."""
+
+    event_type: str = Field(min_length=1, max_length=200)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class ConfigUpdateRequest(BaseModel):
     updates: dict[str, Any] = Field(default_factory=dict)
 
@@ -483,6 +490,59 @@ def build_app(
                 )
             )
         return {"ok": True, "trace_id": trace_id, "data": {"published": True}}
+
+    @app.post("/v1/debug/fire_event")
+    async def v1_debug_fire_event(body: FireDebugEventRequest, request: Request, _: None = Depends(_auth_dep)):
+        """Публикует событие в EventBus с source=debug.fire_event (без доставки исходящих webhooks)."""
+        trace_id = _trace_id(request)
+        agent.event_bus.publish(
+            CoreEvent(
+                event_type=body.event_type,
+                source="debug.fire_event",
+                payload=body.payload,
+            )
+        )
+        return {"ok": True, "trace_id": trace_id, "data": {"published": True, "event_type": body.event_type}}
+
+    @app.get("/v1/debug/memory")
+    async def v1_debug_memory(request: Request, _: None = Depends(_auth_dep)):
+        """Краткосрочная память (история), сводная статистика агента и счётчики RAG."""
+        trace_id = _trace_id(request)
+        hist = agent.short_memory.get_history()
+        trimmed: list[dict[str, Any]] = []
+        total_chars = 0
+        max_total = 24_000
+        per_msg_cap = 4000
+        for m in hist:
+            role = str(m.get("role") or "")
+            content = str(m.get("content") or "")
+            if len(content) > per_msg_cap:
+                content = content[:per_msg_cap] + "... [truncated]"
+            trimmed.append({"role": role, "content": content})
+            total_chars += len(content)
+            if total_chars >= max_total:
+                trimmed.append(
+                    {
+                        "role": "system",
+                        "content": f"... further STM messages omitted (cap ~{max_total} chars)",
+                    }
+                )
+                break
+        mem_cfg = (config.get("memory") or {}) if isinstance(config.get("memory"), dict) else {}
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "short_term_messages": trimmed,
+                "agent_stats": agent.get_stats(),
+                "rag": {
+                    "enabled": bool(getattr(agent.long_memory, "rag_enabled", True)),
+                    "records": agent.long_memory.count(),
+                    "embedding_model": mem_cfg.get("embedding_model"),
+                    "chroma_db_path": mem_cfg.get("chroma_db_path"),
+                },
+            },
+        }
 
     @app.get("/v1/health")
     async def v1_health(request: Request, _: None = Depends(_auth_dep)):

@@ -1,7 +1,14 @@
-# Гайд конечного пользователя
+<!-- co-authored-cursor-badge -->
+[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
 
-- Запустите `python main.py`.
-- Откройте веб-панель: `http://127.0.0.1:8787/`.
-- Для чата используйте Discord-плагин или API `/v1/chat`.
-- Проверяйте состояние в разделе Dashboard.
-- Для доступа к защищённому API задайте Bearer токен в настройках панели.
+<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+
+---
+
+# End-user guide
+
+- Start the core: `python main.py`.
+- Open the web dashboard: `http://127.0.0.1:8787/` (React + Vite + Tailwind SPA).
+- Chat: Discord plugin (`interfaces/discord`) or HTTP `POST /v1/chat`.
+- Inspect health, memory, plugins on **Dashboard**; configure outbound webhooks and API token under **Settings** / **Webhooks** as needed.
+- Protected `/v1` routes require the Bearer token configured in **Settings** (matches `internal_api.token` in `config.yaml`).

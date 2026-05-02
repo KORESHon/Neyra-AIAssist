@@ -51,8 +51,8 @@ def check_files(root: Path) -> list[str]:
         "config.yaml",
         "requirements.txt",
         ".env.example",
-        "interfaces/discord_text/plugin.yaml",
-        "interfaces/discord_text/discord_text_bot.py",
+        "interfaces/discord/plugin.yaml",
+        "interfaces/discord/bot.py",
     ]
     errors: list[str] = []
     for rel in required:
@@ -83,13 +83,13 @@ def check_llm_config_and_env(cfg: dict) -> list[str]:
 
 
 def check_discord_token(mode: str, cfg: dict, root: Path) -> list[str]:
-    """Для core: если discord_text включён в plugin.yaml — нужен DISCORD_TOKEN в .env."""
+    """Для core: если плагин discord включён в plugin.yaml — нужен DISCORD_TOKEN в .env."""
     if mode != "core":
         return []
     from core.plugin_loader import PluginLoader
 
     for m in PluginLoader(root).discover_manifests():
-        if m.id == "discord_text" and m.enabled and m.lifecycle == "resident":
+        if m.id == "discord" and m.enabled and m.lifecycle == "resident":
             break
     else:
         return []
@@ -98,7 +98,7 @@ def check_discord_token(mode: str, cfg: dict, root: Path) -> list[str]:
         or str((cfg.get("discord") or {}).get("token") or "").strip()
     )
     if not token:
-        return ["discord_text enabled in plugin.yaml but DISCORD_TOKEN is missing in .env"]
+        return ["discord enabled in plugin.yaml but DISCORD_TOKEN is missing in .env"]
     return []
 
 

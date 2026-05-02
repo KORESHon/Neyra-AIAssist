@@ -1,3 +1,10 @@
+<!-- co-authored-cursor-badge -->
+[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
+
+<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+
+---
+
 # Модель конфигурации
 
 ## Источники
@@ -11,6 +18,6 @@
 3. `apply_env_secrets(...)` перекрывает секреты из окружения.
 
 ## Правила
-- `discord_text` мержится в секцию `discord`.
-- `internal_api` мержится в `internal_api` и `dashboard`.
-- Прочие плагины мержатся в `plugins.<id>`.
+- Папка плагина `discord` → ключ верхнего уровня `discord` в общем конфиге.
+- Папка `internal_api` → секции `internal_api` и `dashboard`.
+- Остальные id → `plugins.<id>`.

@@ -1,0 +1,8 @@
+id: discord
+name: Discord (text + music)
+description: Текстовый Discord-бот и музыка (Lavalink) в одном resident-плагине.
+version: "1.0.0"
+enabled: true
+lifecycle: resident
+cli_modes: []
+main_script: main.py

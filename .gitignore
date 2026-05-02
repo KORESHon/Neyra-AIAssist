@@ -5,8 +5,10 @@ interfaces/**/config.yaml
 Gemini.md
 Diplom.md
 .venv/
+.venv_win/
 .venv_pycord/
 .venv_rvc/
+.venv-mcp/
 __pycache__/
 *.pyc
 *.pyo
@@ -29,6 +31,10 @@ logs/
 interfaces/discord_music/lavalink/application.yml
 interfaces/discord_music/lavalink/logs/
 interfaces/discord_music/lavalink/lavalink.log
+interfaces/discord/lavalink/application.yml
+interfaces/discord/lavalink/plugins/*.jar
+interfaces/discord/lavalink/logs/
+interfaces/discord/lavalink/lavalink.log
 *.wav
 *.mp3
 sounds/*.wav
