@@ -1,4 +1,4 @@
-# Neyra Windows launcher (UTF-8). Called from run_neyra.bat — avoids cmd.exe encoding/parenthesis bugs.
+﻿# Neyra Windows launcher (UTF-8). Called from run_neyra.bat — avoids cmd.exe encoding/parenthesis bugs.
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -485,6 +485,10 @@ while ($true) {
             else { Write-Hi "Ок, Lavalink не трогаю — поднимай сам (п.3) или оставь уже запущенный." }
             Write-Ok "Стартую ядро: main.py --mode core"
             & $Py (Join-Path $Root "main.py") --mode core
+            $coreEc = $LASTEXITCODE
+            if ($coreEc -ne 0) {
+                Write-Warn "Ядро завершилось с кодом $coreEc (часто бывает при падении torch/OpenMP или нехватке RAM — см. консоль и logs/system.log)."
+            }
             Write-Hi "Ядро остановилось. Окно можно закрыть или выбрать режим снова."
         }
         "3" {

@@ -24,8 +24,10 @@ Cyber-Core — Проект «Нейра»
 # ─── КРИТИЧНО: прячем GPU от Python/torch ДО любых импортов ──────────────────
 # sentence-transformers в этом процессе не должны занимать VRAM там,
 # где мешают другим демонам (исторически — Ollama).
+import faulthandler
 import os
 import sys
+import threading
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -98,6 +100,21 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub.utils._http").setLevel(logging.ERROR)
 logging.getLogger("torch").setLevel(logging.WARNING)
 logging.getLogger("torch._subclasses").setLevel(logging.WARNING)
+
+# Диагностика: падения в фоновых потоках и нативные SIGABRT/SIGSEGV в stderr
+def _thread_excepthook(args: threading.ExceptHookArgs) -> None:
+    logging.getLogger("neyra.threading").critical(
+        "Необработанное исключение в потоке %s",
+        getattr(args.thread, "name", "?"),
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+
+threading.excepthook = _thread_excepthook
+try:
+    faulthandler.enable(all_threads=True)
+except Exception:
+    pass
 
 # ─── Баннер ───────────────────────────────────────────────────────────────────
 

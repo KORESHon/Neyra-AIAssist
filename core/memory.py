@@ -11,12 +11,29 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("neyra.memory")
+
+
+def _configure_embedding_blas_env() -> None:
+    """
+    До импорта torch/sentence-transformers: один поток BLAS/OpenMP и совместимость
+    нескольких OpenMP-рантаймов в одном процессе (на Windows часто рвёт процесс при
+    загрузке эмбеддера параллельно с Uvicorn).
+    """
+    import os
+
+    if sys.platform == "win32":
+        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    os.environ.setdefault("NUMEXPR_MAX_THREADS", "1")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
 # ─── Краткосрочная память (история чата) ─────────────────────────────────────
@@ -88,6 +105,8 @@ class LongTermMemory:
             self._initializing = True
 
         try:
+            _configure_embedding_blas_env()
+
             import chromadb
             from chromadb.config import Settings
 
@@ -120,6 +139,13 @@ class LongTermMemory:
 
             logger.info(f"Загружаю embedding модель: {self.embedding_model} (CPU only)...")
             self._embedder = SentenceTransformer(self.embedding_model, device="cpu")
+            try:
+                import torch
+
+                torch.set_num_threads(1)
+                torch.set_num_interop_threads(1)
+            except Exception:
+                pass
             logger.info("Embedding модель загружена ✓ (CPU, без CUDA)")
 
         except ImportError as e:
