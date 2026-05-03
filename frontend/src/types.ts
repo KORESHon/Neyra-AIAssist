@@ -12,6 +12,17 @@ export type MemoryStats = {
   people_records: number
 }
 
+export type MemoryPolicies = {
+  rag_enabled: boolean
+  max_records_target?: number
+  ltm_archive_dir?: string
+  ltm_summarize_max_tokens?: number
+  embedding_model?: string
+  chroma_db_path?: string
+  ltm_auto_prune?: Record<string, unknown>
+  ltm_auto_summarize?: Record<string, unknown>
+}
+
 export type PluginRow = {
   id: string
   name: string

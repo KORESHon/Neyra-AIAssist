@@ -324,7 +324,9 @@ class ReflectionEngine:
         try:
             from langchain_core.messages import HumanMessage
 
-            llm_reflect = getattr(self.agent, "llm_reflection", self.agent.llm)
+            llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
+                self.agent, "llm_reflection", self.agent.llm
+            )
             response = await llm_reflect.ainvoke([HumanMessage(content=prompt)])
             note = str(response.content).strip()
             if not note:
@@ -422,7 +424,9 @@ class ReflectionEngine:
 
         try:
             from langchain_core.messages import HumanMessage
-            llm_reflect = getattr(self.agent, "llm_reflection", self.agent.llm)
+            llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
+                self.agent, "llm_reflection", self.agent.llm
+            )
             response = await llm_reflect.ainvoke([HumanMessage(content=prompt)])
             raw = str(response.content).strip()
             blob = self._extract_json_blob(raw)
@@ -466,7 +470,9 @@ class ReflectionEngine:
         try:
             from langchain_core.messages import HumanMessage
 
-            llm_reflect = getattr(self.agent, "llm_reflection", self.agent.llm)
+            llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
+                self.agent, "llm_reflection", self.agent.llm
+            )
             response = await llm_reflect.ainvoke([HumanMessage(content=prompt)])
             note = str(response.content).strip()
             if not note:
@@ -484,6 +490,20 @@ class ReflectionEngine:
         except Exception as e:
             logger.error("Ошибка hourly_diary_note: %s", e)
             return ""
+
+    def _ltm_scheduled_prune_job(self) -> None:
+        from core.ltm_maintenance import run_scheduled_prune
+
+        if self.agent is None:
+            return
+        run_scheduled_prune(self.agent, self.config)
+
+    async def _ltm_scheduled_summarize_job(self) -> None:
+        from core.ltm_maintenance import run_scheduled_summarize
+
+        if self.agent is None:
+            return
+        await run_scheduled_summarize(self.agent, self.config)
 
     def start_scheduler(self):
         """Запускает APScheduler для ночной рефлексии."""
@@ -515,6 +535,33 @@ class ReflectionEngine:
                     minute=0,
                     id="hourly_diary_note",
                 )
+            mem_cfg = self.config.get("memory") or {}
+            ap_cfg = mem_cfg.get("ltm_auto_prune") if isinstance(mem_cfg.get("ltm_auto_prune"), dict) else {}
+            if ap_cfg.get("enabled"):
+                hours = max(1, int(ap_cfg.get("interval_hours", 168)))
+                scheduler.add_job(
+                    self._ltm_scheduled_prune_job,
+                    trigger="interval",
+                    hours=hours,
+                    id="ltm_auto_prune",
+                    replace_existing=True,
+                )
+                logger.info(
+                    "LTM auto-prune: каждые %s ч | older_than_days=%s",
+                    hours,
+                    ap_cfg.get("older_than_days", 90),
+                )
+            sm_cfg = mem_cfg.get("ltm_auto_summarize") if isinstance(mem_cfg.get("ltm_auto_summarize"), dict) else {}
+            if sm_cfg.get("enabled"):
+                hours = max(1, int(sm_cfg.get("interval_hours", 720)))
+                scheduler.add_job(
+                    self._ltm_scheduled_summarize_job,
+                    trigger="interval",
+                    hours=hours,
+                    id="ltm_auto_summarize",
+                    replace_existing=True,
+                )
+                logger.info("LTM auto-summarize: каждые %s ч", hours)
             scheduler.start()
             logger.info(f"Рефлексия запланирована на {self.reflection_time} каждую ночь")
             if self.small_reflection_enabled:

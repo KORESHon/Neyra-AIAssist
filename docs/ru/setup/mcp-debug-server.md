@@ -15,10 +15,16 @@
 |------|------------|
 | `read_neyra_logs` | Хвост `logs/system.log` (или путь из конфига / `NEYRA_LOG_PATH`) |
 | `neyra_api_request` | Произвольный HTTP к Internal API (`GET`/`POST`/…) |
+| `neyra_health` | `GET /v1/health` — быстрый ping ядра |
+| `neyra_lifecycle` | `POST /v1/debug/lifecycle` — **stop**/**restart** процесса (нужен admin-токен и включённый lifecycle; см. ниже) |
 | `neyra_fire_event` | `POST /v1/debug/fire_event` — публикация в Event Bus |
 | `neyra_read_config` | Чтение корневого `config.yaml` с маскированием секретов |
 | `neyra_write_config` | `POST /v1/config/update` — только разрешённые поля ядра |
 | `neyra_inspect_memory` | `GET /v1/debug/memory` — STM + статистика + RAG |
+
+**Lifecycle (`neyra_lifecycle`):** по умолчанию выключен (API вернёт **403**), пока не задано `internal_api.debug_lifecycle_enabled: true` или переменная `NEYRA_DEBUG_LIFECYCLE=1`/`true`/`yes` (в `docker-compose.yml` для сервиса задаётся автоматически). Нужен **admin** Bearer (`INTERNAL_API_TOKEN`). Действия **stop** и **restart** завершают процесс Python; повторный запуск в Docker даёт политика `restart: unless-stopped` или ручной `docker compose restart`.
+
+**Docker Desktop:** из корня репозитория `docker compose up --build`; на хосте MCP указывает `NEYRA_API_BASE=http://127.0.0.1:8787`. Логи в томе `./logs` на хосте совпадают с путём репозитория — `read_neyra_logs` работает из того же чекаута или через `NEYRA_LOG_PATH`. Секреты — в `.env` (см. `.env.example`). Не публикуйте вывод `docker compose config`, если в нём подставляются секреты из `.env`.
 
 ## Установка
 

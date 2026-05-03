@@ -11,8 +11,7 @@
 
 ## Ключевые секции
 - `assistant`
-- `BACKEND`, `openrouter`, `llm`
-- `vision`
+- `BACKEND`, `openrouter`, `llm` — модели и лимиты по ролям: вложенные **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** (VL и пайплайн зрения в одном блоке; корневого **`vision:`** больше нет).
 - `memory`
 - `voice_cloud`
 - `health_monitor`

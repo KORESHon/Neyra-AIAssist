@@ -15,10 +15,21 @@ Official Python MCP SDK (`mcp` package): connect Cursor (or any MCP client) to N
 |------|---------|
 | `read_neyra_logs` | Tail `logs/system.log` (or path from config / `NEYRA_LOG_PATH`) |
 | `neyra_api_request` | Arbitrary HTTP to Internal API (`GET`/`POST`/…) |
+| `neyra_health` | `GET /v1/health` — quick core ping |
+| `neyra_lifecycle` | `POST /v1/debug/lifecycle` — **stop**/**restart** process (admin token + lifecycle enabled; see below) |
 | `neyra_fire_event` | `POST /v1/debug/fire_event` — publish to Event Bus |
 | `neyra_read_config` | Read root `config.yaml` with secret redaction |
 | `neyra_write_config` | `POST /v1/config/update` — only allow-listed keys |
 | `neyra_inspect_memory` | `GET /v1/debug/memory` — STM + stats + RAG |
+
+### Lifecycle tool (`neyra_lifecycle`)
+
+Disabled by default. The API returns **403** unless either:
+
+- `internal_api.debug_lifecycle_enabled: true` in merged config, or
+- environment variable `NEYRA_DEBUG_LIFECYCLE` is `1` / `true` / `yes` (set automatically in `docker-compose.yml` for the service).
+
+You still need the **admin** Bearer token (`INTERNAL_API_TOKEN` / `internal_api.token`). Actions **stop** and **restart** both end the Python process; there is no in-process re-exec. With Docker Compose and `restart: unless-stopped`, a **restart** request stops the container and Docker starts it again. Without Docker, use your process manager or start `main.py` manually.
 
 ## Install
 
@@ -60,9 +71,23 @@ Example JSON (adjust paths):
 Optional `env` for the server:
 
 - `NEYRA_LOG_PATH` — explicit system log path.
-- `NEYRA_API_BASE` — API base URL (default `http://127.0.0.1:8787`).
+- `NEYRA_API_BASE` — API base URL (default `http://127.0.0.1:8787`). When Neyra runs in Docker Desktop and publishes port **8787**, keep this as `http://127.0.0.1:8787` on the **host** where Cursor runs.
 - `NEYRA_API_TOKEN` — Bearer token if `internal_api.token` is set in `config.yaml` (required for HTTP tools).
 - `NEYRA_CONFIG_PATH` — alternate path to `config.yaml` for `neyra_read_config`.
+
+## Docker Desktop (Neyra in a container)
+
+From the repo root:
+
+```bash
+docker compose up --build
+```
+
+The compose file sets `INTERNAL_API_BIND_HOST=0.0.0.0` so the HTTP API is reachable from the host at `http://127.0.0.1:8787`. Volumes mount `./config.yaml`, `./interfaces`, `./memory`, `./logs`, and optionally `./frontend/dist`. Put secrets in `.env` (see `.env.example`); the compose `env_file` is optional if the file is missing.
+
+Point the MCP server at the same host URL (`NEYRA_API_BASE`). Logs written inside the container appear under the repo’s `./logs` on the host, so `read_neyra_logs` works when the MCP process uses that checkout (or set `NEYRA_LOG_PATH` to the host file).
+
+**Note:** `docker compose config` prints interpolated variables; do not share that output if it contains secrets.
 
 With token:
 

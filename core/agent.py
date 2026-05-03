@@ -11,11 +11,12 @@ core/agent.py — Главный агент Нейры
 Логика ответа:
   1. Ищем похожие диалоги в RAG
   2. Ищем упомянутых людей в PeopleDB
-  3. Собираем полный промпт (system + воспоминания + досье + история + запрос)
-  4. Передаём LLM с инструментами
-  5. Парсим CoT (<think>...</think>), сохраняем в thoughts.log
-  6. Парсим [SOUND: tag], убираем из текста
-  7. Сохраняем диалог в ChromaDB и chat.log
+  3. При вложениях — VL конспект → brain (bind_tools / MCP при включении) → сводка для talk
+  4. Собираем промпт личности (talk) + история + запрос
+  5. Стримим / генерируем ответ talk-моделью (без инструментов)
+  6. Парсим CoT (<think>...</think>), сохраняем в thoughts.log
+  7. Парсим [SOUND: tag], убираем из текста
+  8. Сохраняем диалог в ChromaDB и chat.log
 """
 
 from __future__ import annotations
@@ -45,6 +46,9 @@ DEPRECATED_OPENROUTER_MODELS: dict[str, str] = {
     "openrouter/elephant-alpha": "inclusionai/ling-2.6-flash:free",
 }
 EMPTY_REPLY_PLACEHOLDER = "Затупила на секунду. Повтори коротко, пожалуйста."
+
+# Маркер скрытого суффикса Discord GET_LYRICS — включает сохранение переносов строк и больший max_tokens.
+LYRICS_REQUEST_MARKER = "[SYSTEM HIDDEN INSTRUCTION: User wants lyrics"
 
 
 class NeyraAgent:
@@ -87,18 +91,38 @@ class NeyraAgent:
         """Единый путь: ChatOpenAI к base_url с api_key из профиля провайдера."""
         from langchain_openai import ChatOpenAI
 
-        from core.llm_profile import merge_llm_tuning_options, resolved_primary_model
+        from core.llm_profile import (
+            merge_llm_tuning_options,
+            resolved_brain_model,
+            resolved_memory_model,
+            resolved_talk_model,
+            resolved_vision_model_id,
+        )
 
         conn = self._llm_connection
         cfg = merge_llm_tuning_options(self.config)
-        primary_model = resolved_primary_model(self.config, conn.provider)
+        talk_model = resolved_talk_model(self.config, conn.provider)
+        brain_model = resolved_brain_model(self.config, conn.provider)
+        memory_model_raw = resolved_memory_model(self.config, conn.provider)
+        memory_model = DEPRECATED_OPENROUTER_MODELS.get(memory_model_raw, memory_model_raw)
+        if memory_model != memory_model_raw:
+            logger.warning(
+                "Memory model '%s' is deprecated, using '%s' instead.",
+                memory_model_raw,
+                memory_model,
+            )
+        vision_model_id = resolved_vision_model_id(self.config, conn.provider)
         self.context_window = cfg.get("context_window", 16384)
         base_url = conn.base_url
         api_key = conn.api_key
         self.reply_max_tokens = int(cfg.get("reply_max_tokens", cfg.get("max_tokens", 320)))
         self.vision_max_tokens = int(cfg.get("vision_max_tokens", cfg.get("max_tokens", 900)))
         self.reflection_max_tokens = int(cfg.get("reflection_max_tokens", cfg.get("max_tokens", 700)))
+        # Длинные ответы (текст песни): отдельный потолок; bind() на конкретный ход в chat_stream/chat.
+        self.lyrics_reply_max_tokens = int(cfg.get("lyrics_reply_max_tokens", 4096))
         self.reflection_temperature = float(cfg.get("reflection_temperature", cfg.get("temperature", 0.75)))
+        self.brain_max_tokens = int(cfg.get("brain_max_tokens", 8192))
+        self.brain_temperature = float(cfg.get("brain_temperature", 0.35))
 
         if not api_key or api_key == "ollama":
             if conn.provider == "ollama":
@@ -110,8 +134,13 @@ class NeyraAgent:
                     conn.provider,
                 )
 
-        primary_timeout = float(cfg.get("timeout_seconds", cfg.get("primary_timeout_seconds", 120.0)))
-        primary_retries = int(cfg.get("max_retries", cfg.get("primary_max_retries", 1)))
+        talk_timeout = float(cfg.get("timeout_seconds", cfg.get("primary_timeout_seconds", 120.0)))
+        talk_retries = int(cfg.get("max_retries", cfg.get("primary_max_retries", 1)))
+        brain_timeout = float(cfg.get("brain_timeout_seconds", cfg.get("timeout_seconds", talk_timeout)))
+        brain_retries = int(cfg.get("brain_max_retries", cfg.get("max_retries", talk_retries)))
+        ar_cfg0 = cfg.get("async_reflection") if isinstance(cfg.get("async_reflection"), dict) else {}
+        reflection_timeout = float(cfg.get("reflection_timeout_seconds", ar_cfg0.get("timeout_seconds", talk_timeout)))
+        reflection_retries = int(cfg.get("reflection_max_retries", ar_cfg0.get("max_retries", talk_retries)))
         extra_body: dict[str, Any] = {}
         # Опциональные провайдер-специфичные флаги (например, для xAI/Grok).
         if "reasoning_enabled" in cfg:
@@ -119,32 +148,69 @@ class NeyraAgent:
         if "include_reasoning" in cfg:
             extra_body["include_reasoning"] = bool(cfg.get("include_reasoning"))
 
-        hdr_primary = dict(conn.default_headers)
-        self.llm_primary = ChatOpenAI(
+        hdr_talk = dict(conn.default_headers)
+        self.llm_talk = ChatOpenAI(
             base_url=base_url,
             api_key=api_key,
-            model=primary_model,
+            model=talk_model,
             temperature=cfg.get("temperature", 0.75),
             top_p=float(cfg.get("top_p", 1.0)),
             presence_penalty=float(cfg.get("presence_penalty", 0.0)),
             frequency_penalty=float(cfg.get("frequency_penalty", 0.0)),
             max_tokens=self.reply_max_tokens,
             streaming=True,
-            timeout=primary_timeout,
-            max_retries=primary_retries,
+            timeout=talk_timeout,
+            max_retries=talk_retries,
             model_kwargs={"extra_body": extra_body} if extra_body else {},
-            default_headers=hdr_primary,
+            default_headers=hdr_talk,
         )
         # Жестко режем попытки модели выводить think-теги в основном ответе.
         # Это снижает задержки и убирает кейсы "пустой ответ после очистки".
-        self.llm_primary = self.llm_primary.bind(
+        self.llm_talk = self.llm_talk.bind(
             stop=["<think>", "</think>", "<thought>", "</thought>", "<redacted_thinking>", "</redacted_thinking>"]
         )
-        self.llm = self.llm_primary
-        self.llm_model = primary_model
-        self.llm_primary_model = primary_model
+
+        hdr_brain = dict(conn.default_headers)
+        hdr_brain["X-Title"] = "Neyra Brain"
+        self.llm_brain = ChatOpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            model=brain_model,
+            temperature=self.brain_temperature,
+            top_p=float(cfg.get("brain_top_p", cfg.get("top_p", 1.0))),
+            max_tokens=self.brain_max_tokens,
+            streaming=False,
+            timeout=brain_timeout,
+            max_retries=brain_retries,
+            model_kwargs={"extra_body": extra_body} if extra_body else {},
+            default_headers=hdr_brain,
+        )
+
+        hdr_memory = dict(conn.default_headers)
+        hdr_memory["X-Title"] = "Neyra Memory"
+        self.llm_memory = ChatOpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            model=memory_model,
+            temperature=self.reflection_temperature,
+            max_tokens=self.reflection_max_tokens,
+            streaming=False,
+            timeout=reflection_timeout,
+            max_retries=reflection_retries,
+            default_headers=hdr_memory,
+        )
+        self.llm_reflection = self.llm_memory
+        self.llm_memory_model = memory_model
+        self.llm_reflection_model = memory_model
+
+        self.llm_primary = self.llm_talk
+        self.llm = self.llm_talk
+        self.llm_model = talk_model
+        self.llm_talk_model = talk_model
+        self.llm_primary_model = talk_model
+        self.llm_brain_model = brain_model
         self.llm_fallback_model = None
-        self.primary_first_token_timeout = float(cfg.get("primary_first_token_timeout_seconds", primary_timeout))
+        self.primary_first_token_timeout = float(cfg.get("primary_first_token_timeout_seconds", talk_timeout))
         self.async_reflection_cfg = cfg.get("async_reflection") or {}
         self.async_reflection_enabled = bool(self.async_reflection_cfg.get("enabled", False))
         self.micro_planning_cfg = cfg.get("micro_planning") or {}
@@ -163,126 +229,75 @@ class NeyraAgent:
             "unclosed_blocks": 0,
             "leak_detected": 0,
         }
-        raw_reflection_model = str(
-            cfg.get("reflection_model")
-            or self.async_reflection_cfg.get("model")
-            or primary_model
-        ).strip()
-        reflection_model = DEPRECATED_OPENROUTER_MODELS.get(raw_reflection_model, raw_reflection_model)
-        if reflection_model != raw_reflection_model:
+        if str(self.async_reflection_cfg.get("model") or "").strip():
             logger.warning(
-                "Reflection model '%s' is deprecated, using '%s' instead.",
-                raw_reflection_model,
-                reflection_model,
+                "Deprecated: async_reflection.model игнорируется — используется openrouter.memory_model (%s).",
+                memory_model,
             )
-        reflection_timeout = float(
-            cfg.get(
-                "reflection_timeout_seconds",
-                self.async_reflection_cfg.get("timeout_seconds", primary_timeout),
-            )
-        )
-        reflection_retries = int(
-            cfg.get(
-                "reflection_max_retries",
-                self.async_reflection_cfg.get("max_retries", primary_retries),
-            )
-        )
-        hdr_reflection = dict(conn.default_headers)
-        hdr_reflection["X-Title"] = "Neyra Reflection"
-        self.llm_reflection = ChatOpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            model=reflection_model,
-            temperature=self.reflection_temperature,
-            max_tokens=self.reflection_max_tokens,
-            streaming=False,
-            timeout=reflection_timeout,
-            max_retries=reflection_retries,
-            default_headers=hdr_reflection,
-        )
-        self.llm_reflection_model = reflection_model
-        self.llm_think = None
+
         logger.info(
-            "Бэкенд LLM: %s | модель: %s | timeout=%ss retries=%s | max_ctx: %s",
+            "Бэкенд LLM: %s | talk=%s brain=%s memory=%s | timeout talk=%ss retries=%s | max_ctx: %s",
             conn.provider,
-            primary_model,
-            primary_timeout,
-            primary_retries,
+            talk_model,
+            brain_model,
+            memory_model,
+            talk_timeout,
+            talk_retries,
             self.context_window,
         )
         logger.info(
-            "LLM token budgets | reply=%s | vision=%s | reflection=%s | async_reflection=%s",
+            "LLM token budgets | reply=%s | brain=%s | lyrics_cap=%s | vision=%s | memory/reflection=%s | async_reflection_note_max=%s",
             self.reply_max_tokens,
+            self.brain_max_tokens,
+            getattr(self, "lyrics_reply_max_tokens", 0),
             self.vision_max_tokens,
             self.reflection_max_tokens,
             int(self.async_reflection_cfg.get("max_tokens", 500)),
         )
         logger.info(
-            "LLM models | live=%s | reflection=%s | async_reflection=%s",
-            primary_model,
-            reflection_model,
-            str(self.async_reflection_cfg.get("model") or ""),
+            "LLM vision_model id (resolved)=%s",
+            vision_model_id,
         )
         if self.async_reflection_enabled:
-            raw_think_model = str(self.async_reflection_cfg.get("model") or "").strip()
-            think_model = DEPRECATED_OPENROUTER_MODELS.get(raw_think_model, raw_think_model)
-            if think_model != raw_think_model:
-                logger.warning(
-                    "Async reflection model '%s' is deprecated, using '%s' instead.",
-                    raw_think_model,
-                    think_model,
-                )
-            if think_model:
-                hdr_think = dict(conn.default_headers)
-                hdr_think["X-Title"] = "Neyra Async Reflection"
-                self.llm_think = ChatOpenAI(
-                    base_url=base_url,
-                    api_key=api_key,
-                    model=think_model,
-                    temperature=float(self.async_reflection_cfg.get("temperature", 0.6)),
-                    max_tokens=int(self.async_reflection_cfg.get("max_tokens", 500)),
-                    streaming=False,
-                    timeout=float(self.async_reflection_cfg.get("timeout_seconds", 60)),
-                    max_retries=int(self.async_reflection_cfg.get("max_retries", 1)),
-                    default_headers=hdr_think,
-                )
-                logger.info("Async reflection включен | think_model=%s", think_model)
-            else:
-                logger.warning("async_reflection.enabled=true, но не задан openrouter.async_reflection.model")
+            logger.info(
+                "Async reflection включен | memory_model=%s (поведение из async_reflection.*)",
+                memory_model,
+            )
 
-        # Без bind_tools: Qwen через OpenRouter нормально не делает tool-calls; инструменты — триггеры в коде
-        self.llm_with_tools = self.llm
+        self.llm_with_tools = self.llm_brain
         self.llm_capabilities = dict(conn.capabilities)
 
-        vis = self.config.get("vision") or {}
+        vis = self._vision_pipeline_cfg()
         self.llm_vision = None
         if vis.get("enabled"):
             if vis.get("use_main_model_for_vision"):
-                # Для vision используем ту же основную модель.
-                self.llm_vision = self.llm_primary
+                self.llm_vision = self.llm_talk
                 logger.info(
-                    "Зрение: unified — та же модель что и текст (%s). Должна быть VL-capable модель.",
-                    primary_model,
+                    "Зрение: unified — та же модель что и talk (%s). Должна быть VL-capable модель.",
+                    talk_model,
                 )
-            elif str(vis.get("model") or "").strip():
-                vmodel = str(vis["model"]).strip()
+            else:
+                vmodel = str(vision_model_id).strip()
                 hdr_vision = dict(conn.default_headers)
                 hdr_vision["X-Title"] = "Neyra AI Vision"
                 self.llm_vision = ChatOpenAI(
                     base_url=base_url,
                     api_key=api_key,
                     model=vmodel,
-                    temperature=cfg.get("temperature", 0.75),
+                    temperature=float(cfg.get("vision_temperature", cfg.get("temperature", 0.75))),
                     max_tokens=self.vision_max_tokens,
                     streaming=True,
-                    timeout=180,
+                    timeout=float(cfg.get("vision_timeout_seconds", 180)),
+                    model_kwargs={"extra_body": extra_body} if extra_body else {},
                     default_headers=hdr_vision,
                 )
-                logger.info("Зрение: отдельная VL-модель (%s) — %s", conn.provider, vmodel)
-            else:
-                logger.warning(
-                    "vision.enabled, но нет vision.model и use_main_model_for_vision=false — VL выключен."
-                )
+                logger.info("Зрение: VL-модель (%s) — %s", conn.provider, vmodel)
+
+    def _vision_pipeline_cfg(self) -> dict[str, Any]:
+        """Единый контур vision: openrouter.vision_model (см. core.llm_profile.merged_vision_pipeline)."""
+        from core.llm_profile import merged_vision_pipeline
+
+        return merged_vision_pipeline(self.config)
 
     def _setup_memory(self):
         """Инициализирует все модули памяти."""
@@ -312,7 +327,42 @@ class NeyraAgent:
 
         init_tools(self.long_memory, self.people_db, self.config.get("assistant") or {})
         self.tools = {t.name: t for t in ALL_TOOLS}
+        self.mcp_manager = None
+        self._mcp_merge_done = False
+        mc = self.config.get("mcp_client") if isinstance(self.config.get("mcp_client"), dict) else {}
+        if mc.get("enabled"):
+            from core.mcp_client import MCPClientManager
+
+            self.mcp_manager = MCPClientManager(self.config)
         logger.info(f"Tools готовы: {list(self.tools.keys())}")
+
+    async def start_mcp_clients(self) -> None:
+        """Подключить MCP-серверы и добавить динамические tools (идемпотентно)."""
+        await self._ensure_mcp()
+
+    async def stop_mcp_clients(self) -> None:
+        if not self.mcp_manager:
+            return
+        try:
+            await self.mcp_manager.stop()
+        except Exception as e:
+            logger.debug("MCP stop: %s", e)
+        self._mcp_merge_done = False
+
+    async def _ensure_mcp(self) -> None:
+        if self._mcp_merge_done or not self.mcp_manager:
+            return
+        try:
+            await self.mcp_manager.start()
+        except Exception as e:
+            logger.exception("MCP: не удалось запустить клиенты: %s", e)
+        try:
+            for t in self.mcp_manager.get_langchain_tools():
+                self.tools[t.name] = t
+        except Exception as e:
+            logger.warning("MCP: список инструментов недоступен: %s", e)
+        self._mcp_merge_done = True
+        logger.info("MCP: после merge доступно tools=%s", len(self.tools))
 
     def _setup_logs(self):
         """Создаёт директории и файлы для логов."""
@@ -445,18 +495,22 @@ class NeyraAgent:
     def _build_system_prompt(
         self,
         extra_memories: list[str] = None,
-        people_context: str = "",
+        people_context_active: str = "",
+        people_context_mentioned: str = "",
         diary_context: str = "",
         username: str = None,
         web_context: str = "",
         tool_context: str = "",
         has_vision_images: bool = False,
         last_image_context: Optional[str] = None,
+        lyrics_mode: bool = False,
+        mcp_tools_catalog: str = "",
+        brain_router_context: str = "",
+        attached_image_caption: str = "",
     ) -> str:
-        """Собирает финальный системный промпт с контекстом."""
+        """Собирает системный промпт. Порядок (B2): роль → активный → упомянутые → правила → RAG → остальное."""
         base = self.config["assistant"]["system_prompt"]
 
-        # Короткая нейтральная системная ремарка о среде.
         from core.llm_profile import is_local_openai_compatible_provider
 
         if is_local_openai_compatible_provider(self.backend):
@@ -466,30 +520,50 @@ class NeyraAgent:
 
         from datetime import datetime
         now = datetime.now()
-        time_context = f"\n\n[СИСТЕМНАЯ ВАЖНАЯ ИНФОРМАЦИЯ]\nТекущее время и дата: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+        time_only = (
+            f"\n\n[ВРЕМЯ И СРЕДА]\nТекущие дата и время (локально сервера): "
+            f"{now.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        sections: list[str] = [base + hw_note + time_only]
+
+        active_lines: list[str] = []
         if username:
-            time_context += (
-                f"\nТЕКУЩИЙ СОБЕСЕДНИК: {username}. "
-                "Ориентируйся на это имя как на основной контекст текущего диалога."
+            active_lines.append(
+                f"Сейчас говоришь с: {username}. "
+                "Это основной адресат текущей реплики; тон и обращение — в первую очередь к этому человеку."
+            )
+        if people_context_active:
+            active_lines.append(people_context_active.strip())
+        if active_lines:
+            sections.append("\n# АКТИВНЫЙ СОБЕСЕДНИК\n" + "\n\n".join(active_lines))
+
+        if people_context_mentioned:
+            sections.append(
+                "\n# УПОМЯНУТЫЕ ЛЮДИ (дополнительный контекст)\n"
+                f"{people_context_mentioned.strip()}"
+            )
+        if people_context_active and people_context_mentioned:
+            sections.append(
+                "\n[ПРИОРИТЕТ ДОСЬЕ]\n"
+                "Если сведения об активном собеседнике и об упомянутых людях расходятся — "
+                "ориентируйся на активного собеседника для тона и адресации ответа."
             )
 
-        sections = [base + hw_note + time_context]
-        sections.append(
-            "\n[КРИТИЧЕСКОЕ ПРАВИЛО ОТВЕТА]\n"
+        rule_chunks: list[str] = [
+            "[КРИТИЧЕСКОЕ ПРАВИЛО ОТВЕТА]\n"
             "Запрещено выводить теги/блоки внутреннего мышления: "
-            "<think>, <thought>, <redacted_thinking> и любые их варианты. "
-            "Отвечай сразу готовым текстом для пользователя."
-        )
-        sections.append(
-            "\n[АНТИ-ПОВТОР И РЕЛЕВАНТНОСТЬ]\n"
+            "<think>, <thought>, <think> и любые их варианты. "
+            "Отвечай сразу готовым текстом для пользователя.",
+            "[АНТИ-ПОВТОР И РЕЛЕВАНТНОСТЬ]\n"
             "Сначала ответь ПО СМЫСЛУ текущего сообщения пользователя. "
             "Токсичность/локальные мемы/подколы используй как приправу, а не как основной контент. "
-            "Не повторяй дословно свои последние фразы из истории чата."
-        )
+            "Не повторяй дословно свои последние фразы из истории чата.",
+        ]
         if self.micro_planning_enabled:
             if self.micro_plan_mode == "anchor":
-                sections.append(
-                    "\n[МИКРО-ПЛАНИРОВАНИЕ]\n"
+                rule_chunks.append(
+                    "[МИКРО-ПЛАНИРОВАНИЕ]\n"
                     "Перед финальным ответом сформируй короткий внутренний план (до 8 слов) "
                     "в anchor-формате, затем сам ответ пользователю. "
                     "Не используй markdown.\n"
@@ -501,8 +575,8 @@ class NeyraAgent:
                     f"{self.micro_plan_anchor_reply}, не пиши план вообще и сразу отвечай пользователю."
                 )
             else:
-                sections.append(
-                    "\n[МИКРО-ПЛАНИРОВАНИЕ]\n"
+                rule_chunks.append(
+                    "[МИКРО-ПЛАНИРОВАНИЕ]\n"
                     f"Перед основным текстом добавь КОРОТКИЙ внутренний план в тегах "
                     f"{self.micro_plan_start}...{self.micro_plan_end} (до 8 слов), "
                     "после него сразу дай обычный ответ для пользователя. "
@@ -514,26 +588,47 @@ class NeyraAgent:
                     f"Если не можешь соблюсти формат {self.micro_plan_start}...{self.micro_plan_end}, "
                     "не пиши план вообще и сразу давай обычный ответ."
                 )
+        sections.append("\n# ПРАВИЛА ПОВЕДЕНИЯ И СТИЛЬ ОТВЕТА\n" + "\n\n".join(rule_chunks))
 
-        # Досье упомянутых людей
-        if people_context:
-            sections.append(f"\n# АКТУАЛЬНОЕ ДОСЬЕ (из базы):\n{people_context}")
+        if extra_memories:
+            memories_text = "\n".join(f"- {m[:300]}" for m in extra_memories)
+            sections.append(
+                "\n# ДОЛГОСРОЧНАЯ ПАМЯТЬ (RAG, фрагменты прошлых разговоров)\n"
+                f"{memories_text}"
+            )
+
+        if brain_router_context:
+            sections.append(
+                "\n# КОНТЕКСТ МАРШРУТИЗАТОРА (brain: инструменты и факты)\n"
+                f"{brain_router_context.strip()}"
+            )
 
         if diary_context:
-            sections.append(f"\n# ЛИЧНЫЙ ДНЕВНИК НЕЙРЫ (последние заметки):\n{diary_context}")
+            sections.append(f"\n# ЛИЧНЫЙ ДНЕВНИК НЕЙРЫ (последние заметки)\n{diary_context}")
 
         if web_context:
-            sections.append(f"\n# ИНФОРМАЦИЯ ИЗ ИНТЕРНЕТА ПО ЗАПРОСУ ПОЛЬЗОВАТЕЛЯ:\n{web_context}\n(Используй эти актуальные данные для ответа на вопрос пользователя)")
+            sections.append(
+                f"\n# АКТУАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА (по запросу пользователя)\n{web_context}\n"
+                "(Опирайся на эти данные, если они релевантны вопросу.)"
+            )
 
         if tool_context:
             sections.append(
-                f"\n# РЕЗУЛЬТАТЫ ИНСТРУМЕНТОВ (уже посчитано кодом, не выдумывай другое):\n{tool_context}"
+                f"\n# РЕЗУЛЬТАТЫ ИНСТРУМЕНТОВ (уже посчитано кодом, не выдумывай другое)\n{tool_context}"
             )
 
-        # Воспоминания из RAG
-        if extra_memories:
-            memories_text = "\n".join(f"- {m[:300]}" for m in extra_memories)
-            sections.append(f"\n# ВОСПОМИНАНИЯ ИЗ ПРОШЛЫХ РАЗГОВОРОВ:\n{memories_text}")
+        if mcp_tools_catalog:
+            sections.append(
+                "\n# ДОСТУПНЫЕ ВНЕШНИЕ ИНСТРУМЕНТЫ (MCP)\n"
+                f"{mcp_tools_catalog.strip()}\n"
+                "(Имена с префиксом mcp_ зарезервированы для вызова через ядро; не имитируй JSON-RPC.)"
+            )
+
+        if (attached_image_caption or "").strip():
+            sections.append(
+                "\n# ИЗОБРАЖЕНИЕ К ЭТОЙ РЕПЛИКЕ (конспект VL)\n"
+                f"{attached_image_caption.strip()}"
+            )
 
         if has_vision_images:
             sections.append(
@@ -553,11 +648,180 @@ class NeyraAgent:
                 f"{last_image_context}"
             )
 
+        if lyrics_mode:
+            sections.append(
+                "\n[РЕЖИМ ТЕКСТА ПЕСНИ / ПОЛНЫЙ ВЫВОД]\n"
+                "Пользователь запросил текст песни (по данным из веб-поиска). "
+                "На этот ход не действует правило отвечать очень кратко (1–3 предложения): выведи текст полностью. "
+                "Сохраняй переносы строк и пустые строки между куплетами, как в источнике; "
+                "не сжимай весь ответ в один абзац."
+            )
+
         return "\n".join(sections)
+
+    def _build_brain_system_prompt(
+        self,
+        *,
+        extra_memories: Optional[list[str]] = None,
+        people_context_active: str = "",
+        people_context_mentioned: str = "",
+        diary_context: str = "",
+        username: Optional[str] = None,
+        web_context: str = "",
+        tool_context: str = "",
+        mcp_tools_catalog: str = "",
+        last_image_context: Optional[str] = None,
+    ) -> str:
+        """Компактный системный промпт для brain: инструменты и факты, без личности talk-модели."""
+        lines: list[str] = [
+            "Ты служебный маршрутизатор (brain) ассистента Нейра.",
+            "Не имитируй финальный ответ пользователю и не включай личность Нейры.",
+            "Если доступны инструменты — вызывай их через tool_calls, когда это нужно для фактов.",
+            "Когда данных достаточно или инструменты не нужны — выдай сжатое резюме для следующей модели (talk): "
+            "факты, результаты инструментов, намерение пользователя; по-русски; без приветствий и без тегов мышления.",
+        ]
+        if username:
+            lines.append(f"Текущий собеседник в подписи сообщений: {username}.")
+        if people_context_active:
+            lines.append("# Активный собеседник\n" + people_context_active.strip())
+        if people_context_mentioned:
+            lines.append("# Упомянутые люди\n" + people_context_mentioned.strip())
+        if extra_memories:
+            mt = "\n".join(f"- {m[:400]}" for m in extra_memories)
+            lines.append("# Фрагменты памяти (RAG)\n" + mt)
+        if diary_context:
+            lines.append("# Дневник (недавние заметки)\n" + diary_context.strip())
+        if web_context:
+            lines.append("# Веб / актуальные данные\n" + web_context.strip())
+        if tool_context:
+            lines.append("# Уже посчитано кодом (не выдумывай другое)\n" + tool_context.strip())
+        if last_image_context:
+            lines.append(
+                "# Последний скрин в канале (нет нового вложения)\n"
+                + last_image_context.strip()
+            )
+        if mcp_tools_catalog:
+            lines.append(
+                "# Доступные MCP-инструменты\n"
+                + mcp_tools_catalog.strip()
+                + "\n(Имена с префиксом mcp_ — только через tool_calls.)"
+            )
+        return "\n\n".join(lines)
+
+    async def _caption_vision_images(
+        self,
+        user_message: str,
+        vision_images: list[tuple[str, str]],
+        *,
+        speaker_label: str,
+    ) -> str:
+        """Краткий текстовый конспект изображений через VL-модель (до brain/talk)."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        if not vision_images or not self.llm_vision:
+            return ""
+        sys = SystemMessage(
+            content=(
+                "Ты модуль зрения. Кратко по-русски опиши, что на изображении (1–8 предложений). "
+                "Несколько картинок — перечисли по порядку. Текст на экране — по возможности дословно. "
+                "Без личности ассистента, без markdown-заголовков."
+            )
+        )
+        human = self._make_human_turn(
+            (user_message or "").strip() or "Что на изображении?",
+            vision_images,
+            speaker_label=speaker_label,
+        )
+        resp = await self.llm_vision.ainvoke([sys, human])
+        raw = resp.content if hasattr(resp, "content") else str(resp)
+        caption = (raw or "").strip()
+        self._log_model_route(self._extract_model_name(resp), lane="vision")
+        return caption
+
+    async def _run_brain_tool_phase(
+        self,
+        *,
+        user_message: str,
+        speaker_label: str,
+        vision_caption: Optional[str],
+        brain_system: str,
+        lyrics_mode: bool,
+    ) -> str:
+        """Маршрутизация и tool-loop на llm_brain; возвращает текст для секции talk «brain»."""
+        from langchain_core.messages import AIMessage as LC_AIMessage
+        from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+        parts: list[str] = []
+        um = (user_message or "").strip()
+        if um:
+            parts.append(self._format_spoken_user_message(um, speaker_label))
+        vc = (vision_caption or "").strip()
+        if vc:
+            parts.append("[Конспект изображения VL]\n" + vc)
+        human_content = "\n\n".join(parts) if parts else "(пустое сообщение)"
+        if lyrics_mode:
+            human_content += "\n\n[Оговорка] Пользователь запросил режим текста песни — учитывай для инструментов/поиска."
+
+        messages: list[Any] = [
+            SystemMessage(content=brain_system),
+            HumanMessage(content=human_content),
+        ]
+
+        mcp_cfg = self.config.get("mcp_client") if isinstance(self.config.get("mcp_client"), dict) else {}
+        use_tool_loop = bool(mcp_cfg.get("llm_tool_calls")) and bool(self.tools)
+        max_tool_steps = max(1, int(mcp_cfg.get("llm_tool_max_steps", 4)))
+
+        brain_llm = self.llm_brain
+        if lyrics_mode:
+            brain_llm = self.llm_brain.bind(
+                max_tokens=max(self.brain_max_tokens, self.lyrics_reply_max_tokens)
+            )
+
+        try:
+            if not use_tool_loop:
+                response = await self._ainvoke_text_with_fallback(messages, llm=brain_llm)
+                self._log_model_route(self._extract_model_name(response), lane="brain")
+                text = response.content if hasattr(response, "content") else str(response)
+                return (text or "").strip()
+
+            bound = brain_llm.bind_tools(list(self.tools.values()))
+            step = 0
+            response = None
+            while step < max_tool_steps:
+                response = await self._ainvoke_text_with_fallback(messages, llm=bound)
+                self._log_model_route(self._extract_model_name(response), lane="brain")
+                tcalls = getattr(response, "tool_calls", None) if isinstance(response, LC_AIMessage) else None
+                if not tcalls:
+                    break
+                messages.append(response)
+                for tc in tcalls:
+                    if isinstance(tc, dict):
+                        tid = str(tc.get("id") or "")
+                        tname = str(tc.get("name") or "")
+                        args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+                    else:
+                        tid = str(getattr(tc, "id", None) or "")
+                        tname = str(getattr(tc, "name", None) or "")
+                        args = getattr(tc, "args", None) or {}
+                        if not isinstance(args, dict):
+                            args = {}
+                    if not tname:
+                        continue
+                    out = await self._execute_tool(tname, **args)
+                    messages.append(ToolMessage(content=out, tool_call_id=tid))
+                step += 1
+            if response is None:
+                response = await self._ainvoke_text_with_fallback(messages, llm=brain_llm)
+                self._log_model_route(self._extract_model_name(response), lane="brain")
+            text = response.content if hasattr(response, "content") else str(response)
+            return (text or "").strip()
+        except Exception as e:
+            logger.warning("Brain phase: ошибка, talk продолжит без сводки brain: %s", e)
+            return ""
 
     def _make_vision_memory_note(self, thoughts: str, clean_text: str) -> str:
         """Текст для «памяти последнего скрина»: приоритет — CoT/think из ответа VL."""
-        vis = self.config.get("vision") or {}
+        vis = self._vision_pipeline_cfg()
         max_c = int(vis.get("last_image_note_max_chars", 1200))
         t = (thoughts or "").strip()
         if t:
@@ -579,7 +843,7 @@ class NeyraAgent:
         channel_id: Optional[str],
         vision_images: Optional[list],
     ) -> Optional[str]:
-        vis_cfg = self.config.get("vision") or {}
+        vis_cfg = self._vision_pipeline_cfg()
         if not vis_cfg.get("remember_last_image", True) or vision_images or not channel_id:
             return None
         return self._last_vision_note_by_channel.get(str(channel_id))
@@ -593,7 +857,7 @@ class NeyraAgent:
     ) -> None:
         if not channel_id or not vision_images:
             return
-        vis = self.config.get("vision") or {}
+        vis = self._vision_pipeline_cfg()
         if not vis.get("remember_last_image", True):
             return
         note = self._make_vision_memory_note(thoughts, clean_text)
@@ -601,10 +865,40 @@ class NeyraAgent:
             self._last_vision_note_by_channel[str(channel_id)] = note
             logger.debug("Зрение: заметка по каналу %s (%s симв.)", channel_id, len(note))
 
+    def _resolve_speaker_label(
+        self,
+        username: Optional[str],
+        discord_user_id: Optional[str],
+        author_display_name: Optional[str] = None,
+    ) -> str:
+        """Подпись собеседника для STM, HumanMessage и system prompt (этап B1)."""
+        u = (username or "").strip()
+        disp = (author_display_name or "").strip()
+        if u:
+            person = self.people_db.find(u, discord_id=discord_user_id)
+            if person and person.get("names"):
+                return f"{person['names'][0]} (Discord-ник: {u})"
+            return disp or u
+        if disp:
+            return disp
+        return "user"
+
+    def _format_spoken_user_message(self, text: str, speaker_label: str) -> str:
+        """Префикс авторства реплики в контексте LLM ([Пользователь …]: …)."""
+        body = (text or "").strip()
+        sl = (speaker_label or "").strip()
+        if not sl:
+            return body
+        if body:
+            return f"[Пользователь {sl}]: {body}"
+        return f"[Пользователь {sl}]:"
+
     def _make_human_turn(
         self,
         user_message: str,
         vision_images: Optional[list[tuple[str, str]]] = None,
+        *,
+        speaker_label: Optional[str] = None,
     ):
         """HumanMessage: текст или мультимодальный контент (mime, base64) для VL."""
         from langchain_core.messages import HumanMessage
@@ -617,6 +911,7 @@ class NeyraAgent:
             )
         if use_vl:
             text = (user_message or "").strip() or "Что на изображении? Коротко по-русски."
+            text = self._format_spoken_user_message(text, speaker_label or "")
             parts: list[dict] = [{"type": "text", "text": text}]
             for mime, b64 in vision_images:
                 parts.append(
@@ -629,7 +924,9 @@ class NeyraAgent:
                     }
                 )
             return HumanMessage(content=parts)
-        return HumanMessage(content=user_message)
+        return HumanMessage(
+            content=self._format_spoken_user_message(user_message, speaker_label or "")
+        )
 
     def _stream_llm(self, vision_images: Optional[list[tuple[str, str]]]):
         """Какой LLM вызывать в этом ходе."""
@@ -651,7 +948,7 @@ class NeyraAgent:
                 return str(model)
         return None
 
-    def _log_model_route(self, used_model: Optional[str], *, vision: bool = False) -> None:
+    def _log_model_route(self, used_model: Optional[str], *, lane: str = "talk") -> None:
         if not used_model:
             return
         primary = str(getattr(self, "llm_primary_model", "") or "")
@@ -659,8 +956,7 @@ class NeyraAgent:
         route = "primary"
         if fallback and fallback in used_model:
             route = "fallback"
-        kind = "vision" if vision else "text"
-        logger.info("LLM route | kind=%s | route=%s | model=%s", kind, route, used_model)
+        logger.info("LLM route | lane=%s | route=%s | model=%s", lane, route, used_model)
 
     async def _run_async_reflection(
         self,
@@ -669,10 +965,16 @@ class NeyraAgent:
         username: Optional[str],
         discord_user_id: Optional[str],
     ) -> None:
-        if not self.async_reflection_enabled or not self.llm_think:
+        if not self.async_reflection_enabled:
             return
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
+
+            ar = self.async_reflection_cfg if isinstance(self.async_reflection_cfg, dict) else {}
+            llm_ar = self.llm_memory.bind(
+                temperature=float(ar.get("temperature", self.reflection_temperature)),
+                max_tokens=int(ar.get("max_tokens", self.reflection_max_tokens)),
+            )
 
             sys_prompt = (
                 "Ты внутренний аналитический модуль Нейры. "
@@ -686,7 +988,7 @@ class NeyraAgent:
                 f"Нейра ответила:\n{assistant_text}\n\n"
                 "Сделай полезную заметку для дневника."
             )
-            resp = await self.llm_think.ainvoke(
+            resp = await llm_ar.ainvoke(
                 [SystemMessage(content=sys_prompt), HumanMessage(content=human)]
             )
             note = (resp.content if hasattr(resp, "content") else str(resp)).strip()
@@ -711,7 +1013,7 @@ class NeyraAgent:
         username: Optional[str],
         discord_user_id: Optional[str],
     ) -> None:
-        if not self.async_reflection_enabled or not self.llm_think:
+        if not self.async_reflection_enabled:
             return
         try:
             asyncio.create_task(
@@ -725,19 +1027,21 @@ class NeyraAgent:
         except Exception as e:
             logger.warning("Не удалось запланировать async reflection: %s", e)
 
-    async def _ainvoke_text_with_fallback(self, messages: list[Any]):
+    async def _ainvoke_text_with_fallback(self, messages: list[Any], *, llm=None):
         """Обычный нестриминговый вызов (одна модель)."""
-        return await self.llm_primary.ainvoke(messages)
+        model = llm or self.llm_talk
+        return await model.ainvoke(messages)
 
-    async def _astream_text_with_fallback(self, messages: list[Any]):
+    async def _astream_text_with_fallback(self, messages: list[Any], *, llm=None):
         """Стриминговый вызов live-модели с guard по first-token timeout и 1 ретраем."""
+        model = llm or self.llm_talk
         first_timeout = max(0.1, float(getattr(self, "primary_first_token_timeout", 8.0)))
         attempts = 2
         last_err: Optional[Exception] = None
 
         for attempt in range(1, attempts + 1):
             started = time.monotonic()
-            stream = self.llm_primary.astream(messages)
+            stream = model.astream(messages)
             it = stream.__aiter__()
             try:
                 first_chunk = await asyncio.wait_for(it.__anext__(), timeout=first_timeout)
@@ -772,18 +1076,18 @@ class NeyraAgent:
 
     # ─── Вспомогательные методы ────────────────────────────────────────────
 
-    def _extract_sound_tags(self, text: str) -> tuple[str, list[str]]:
+    def _extract_sound_tags(self, text: str, *, preserve_line_breaks: bool = False) -> tuple[str, list[str]]:
         """Вырезает [SOUND: tag] из текста, возвращает (чистый текст, список тегов)."""
         pattern = r"\[SOUND:\s*(\w+)\]"
         tags = re.findall(pattern, text)
         clean = re.sub(pattern, "", text).strip()
-        
+
         # Жестко вырезаем все остальные [Roleplay] и [Действия] скобки, если модель опять галлюцинирует
         clean = re.sub(r"\[[^\]]*\]", "", clean)
-        
+
         # Агрессивно вырезаем ЛЮБЫЕ действия в звездочках *Злобно хихикает*
         clean = re.sub(r"\*[^\*]{2,150}\*", "", clean)
-        
+
         # Агрессивно вырезаем действия в скобках (закатывает глаза)
         # Ищем скобки, в которых есть хотя бы 1 слово на кириллице
         clean = re.sub(r"\([^\)]*[А-Яа-яЁё][^\)]*\)", "", clean)
@@ -795,10 +1099,14 @@ class NeyraAgent:
         if clean.startswith('"') and clean.endswith('"'):
             clean = clean[1:-1]
 
-        # Убираем двойные пробелы, оставшиеся после вырезания
-        clean = re.sub(r"\s+", " ", clean).strip()
+        # Обычный режим: один абзац. Режим текста песни: сохраняем \n, схлопываем только пробелы в строке.
+        if preserve_line_breaks:
+            lines = [re.sub(r"[ \t]+", " ", ln).rstrip() for ln in clean.splitlines()]
+            clean = "\n".join(lines).strip()
+        else:
+            clean = re.sub(r"\s+", " ", clean).strip()
         clean = clean.replace('""', '"').replace("''", "'")
-        
+
         return clean, tags
 
     def _extract_think_blocks(self, text: str) -> tuple[str, str]:
@@ -822,7 +1130,13 @@ class NeyraAgent:
 
         return clean, "\n---\n".join(thoughts)
 
-    def _ensure_nonempty_reply(self, text_no_think: str, clean_text: str) -> str:
+    def _ensure_nonempty_reply(
+        self,
+        text_no_think: str,
+        clean_text: str,
+        *,
+        preserve_line_breaks: bool = False,
+    ) -> str:
         """
         Гарантирует, что после пост-очистки ответ не станет пустым.
         Иногда модель уходит в служебные блоки/скобки и после фильтров ничего не остаётся.
@@ -832,7 +1146,10 @@ class NeyraAgent:
             return c
         # Мягкий salvage: убираем только SOUND-теги и лишние пробелы.
         t = re.sub(r"\[SOUND:\s*\w+\]", "", (text_no_think or ""), flags=re.IGNORECASE)
-        t = re.sub(r"\s+", " ", t).strip()
+        if preserve_line_breaks:
+            t = "\n".join(re.sub(r"[ \t]+", " ", ln).strip() for ln in t.splitlines()).strip()
+        else:
+            t = re.sub(r"\s+", " ", t).strip()
         if t:
             return t
         logger.warning("Пустой ответ после очистки: fallback-фраза")
@@ -851,7 +1168,7 @@ class NeyraAgent:
                 )
             )
             retry_messages = [messages[0], guard, *messages[1:]] if messages else [guard]
-            resp = await self.llm_primary.ainvoke(retry_messages)
+            resp = await self.llm_talk.ainvoke(retry_messages)
             raw = resp.content if hasattr(resp, "content") else str(resp)
             text_no_think, _ = self._extract_think_blocks(raw)
             clean, _ = self._extract_sound_tags(text_no_think)
@@ -1068,6 +1385,8 @@ class NeyraAgent:
         Если новый ответ почти дублирует предыдущий ответ ассистента,
         делаем быструю переформулировку, чтобы не зацикливаться.
         """
+        if LYRICS_REQUEST_MARKER in (user_message or ""):
+            return (clean_text or "").strip()
         text = (clean_text or "").strip()
         if not text:
             return text
@@ -1087,7 +1406,7 @@ class NeyraAgent:
         logger.warning("Anti-repeat: похожий ответ (similarity=%.2f), делаю перефраз", sim)
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
-            rewrite_llm = self.llm_primary.bind(max_tokens=90, temperature=0.9)
+            rewrite_llm = self.llm_talk.bind(max_tokens=90, temperature=0.9)
             resp = await rewrite_llm.ainvoke(
                 [
                     SystemMessage(
@@ -1156,14 +1475,51 @@ class NeyraAgent:
                     
         return found
 
+    def _split_people_context_for_prompt(
+        self,
+        mentioned: list[str],
+        username: Optional[str],
+        discord_user_id: Optional[str],
+    ) -> tuple[str, str]:
+        """
+        B2: досье текущего пользователя отдельно от прочих упомянутых (без дублирования).
+        """
+        active_pid: Optional[str] = None
+        u = (username or "").strip()
+        if u:
+            ap = self.people_db.find(u, discord_id=discord_user_id)
+            if ap:
+                active_pid = ap["id"]
+        active_block = (self.people_db.get_summary(active_pid) or "").strip() if active_pid else ""
+        other_ids = [pid for pid in mentioned if not active_pid or pid != active_pid]
+        if not other_ids:
+            return active_block, ""
+        summaries = [self.people_db.get_summary(pid) for pid in other_ids]
+        others = "\n\n".join(s for s in summaries if s)
+        return active_block, others
+
+    @staticmethod
+    def _shrink_people_sections(active: str, mentioned: str, max_chars: int) -> tuple[str, str]:
+        """Ужимает блоки досье при переполнении контекста; приоритет — активный собеседник."""
+        a, m = (active or "").strip(), (mentioned or "").strip()
+        if len(a) + len(m) <= max_chars:
+            return a, m
+        if a:
+            a_cap = min(len(a), max(max_chars // 2 + 80, max_chars - 120))
+            a = a[:a_cap]
+        m = m[: max(0, max_chars - len(a))]
+        return a, m
+
     # ─── Инструменты — ручной вызов ────────────────────────────────────────
 
     async def _execute_tool(self, tool_name: str, **kwargs) -> str:
-        """Выполняет инструмент по имени (для команд / расширений)."""
+        """Выполняет инструмент по имени (встроенный или MCP)."""
         t = self.tools.get(tool_name)
         if not t:
             return f"Инструмент '{tool_name}' не найден"
         try:
+            if hasattr(t, "ainvoke"):
+                return str(await t.ainvoke(kwargs))
             return str(t.invoke(kwargs))
         except Exception as e:
             logger.error(f"Tool {tool_name} ошибка: {e}")
@@ -1495,6 +1851,7 @@ class NeyraAgent:
         discord_user_id: Optional[str] = None,
         vision_images: Optional[list[tuple[str, str]]] = None,
         channel_id: Optional[str] = None,
+        author_display_name: Optional[str] = None,
     ) -> dict:
         """
         Основной метод чата.
@@ -1510,6 +1867,7 @@ class NeyraAgent:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         internal_uid = self._resolve_internal_user_id(discord_user_id, username)
+        await self._ensure_mcp()
 
         # 1. Ищем воспоминания в RAG
         memories = self.long_memory.search(user_message)
@@ -1524,35 +1882,83 @@ class NeyraAgent:
         # Эвристика: ручное сохранение фактов
         saved_facts = self._handle_memory_trigger(user_message, mentioned, username)
 
-        people_ctx = ""
-        if mentioned:
-            summaries = [self.people_db.get_summary(pid) for pid in mentioned]
-            people_ctx = "\n\n".join(s for s in summaries if s)
+        people_active, people_others = self._split_people_context_for_prompt(
+            mentioned, username, discord_user_id
+        )
         diary_ctx = self.diary.recent_text(limit=6)
 
         # Эвристический веб-поиск
         web_ctx = self._handle_websearch_trigger(user_message)
         tool_ctx = self._collect_tool_context(user_message)
 
-        # Разрешаем настоящее имя спикера
-        speaker_name = username
-        if username:
-            person = self.people_db.find(username, discord_id=discord_user_id)
-            if person:
-                speaker_name = f"{person['names'][0]} (Discord-ник: {username})"
+        speaker_label = self._resolve_speaker_label(username, discord_user_id, author_display_name)
 
         has_vis = bool(vision_images)
         last_img_ctx = self._last_image_context_for_prompt(channel_id, vision_images)
-        # 3. Системный промпт
-        system_prompt = self._build_system_prompt(
+        lyrics_mode = LYRICS_REQUEST_MARKER in (user_message or "")
+
+        mcp_cfg = self.config.get("mcp_client") if isinstance(self.config.get("mcp_client"), dict) else {}
+        mcp_catalog = ""
+        if mcp_cfg.get("inject_tool_catalog") and self.mcp_manager:
+            ml = self.mcp_manager.catalog_lines()
+            if ml:
+                mcp_catalog = "\n".join(ml)
+
+        attached_caption = ""
+        if vision_images and self.llm_vision:
+            try:
+                attached_caption = await self._caption_vision_images(
+                    user_message, vision_images, speaker_label=speaker_label
+                )
+            except Exception as e:
+                logger.warning("VL caption: ошибка, продолжаю без конспекта: %s", e)
+        elif vision_images and not self.llm_vision:
+            logger.warning(
+                "Изображения в сообщении, но vision/VL не настроено — ответ только по тексту."
+            )
+
+        caption_ok = (attached_caption or "").strip()
+        talk_vm = None if (vision_images and self.llm_vision) else vision_images
+        has_vis_prompt = bool(vision_images) and not caption_ok and self.llm_vision is None
+
+        brain_sys = self._build_brain_system_prompt(
             extra_memories=memories,
-            people_context=people_ctx,
+            people_context_active=people_active,
+            people_context_mentioned=people_others,
             diary_context=diary_ctx,
-            username=speaker_name,
+            username=speaker_label,
             web_context=web_ctx,
             tool_context=tool_ctx,
-            has_vision_images=has_vis,
+            mcp_tools_catalog=mcp_catalog,
             last_image_context=last_img_ctx,
+        )
+        brain_context = ""
+        try:
+            brain_context = await self._run_brain_tool_phase(
+                user_message=user_message,
+                speaker_label=speaker_label,
+                vision_caption=caption_ok or None,
+                brain_system=brain_sys,
+                lyrics_mode=lyrics_mode,
+            )
+        except Exception as e:
+            logger.warning("Brain phase: пропуск сводки — %s", e)
+
+        # 3. Системный промпт (talk)
+        system_prompt = self._build_system_prompt(
+            extra_memories=memories,
+            people_context_active=people_active,
+            people_context_mentioned=people_others,
+            diary_context=diary_ctx,
+            username=speaker_label,
+            web_context=web_ctx,
+            tool_context=tool_ctx,
+            has_vision_images=has_vis_prompt,
+            last_image_context=last_img_ctx,
+            lyrics_mode=lyrics_mode,
+            mcp_tools_catalog=mcp_catalog,
+            brain_router_context=brain_context or "",
+            attached_image_caption=caption_ok,
         )
 
         # 4. Строим список сообщений
@@ -1567,21 +1973,24 @@ class NeyraAgent:
                 messages.append(AIMessage(content=msg["content"]))
 
         # Текущее сообщение
-        messages.append(self._make_human_turn(user_message, vision_images))
+        messages.append(
+            self._make_human_turn(user_message, talk_vm, speaker_label=speaker_label)
+        )
         messages = self._maybe_append_micro_plan_prefill(
             messages,
-            has_vision_images=bool(vision_images),
+            has_vision_images=bool(vision_images) and self.llm_vision is None,
         )
         final_messages_used = messages
 
-        llm_use = self._stream_llm(vision_images)
-        # 5. Вызов LLM
+        # 5. Вызов LLM (talk only)
         try:
-            if vision_images:
-                response = await llm_use.ainvoke(messages)
-            else:
-                response = await self._ainvoke_text_with_fallback(messages)
-            self._log_model_route(self._extract_model_name(response), vision=bool(vision_images))
+            cap_llm = (
+                self.llm_talk.bind(max_tokens=max(self.reply_max_tokens, self.lyrics_reply_max_tokens))
+                if lyrics_mode
+                else self.llm_talk
+            )
+            response = await self._ainvoke_text_with_fallback(messages, llm=cap_llm)
+            self._log_model_route(self._extract_model_name(response), lane="talk")
             raw_response = response.content if hasattr(response, "content") else str(response)
         except Exception as e:
             logger.error(f"Ошибка вызова LLM: {e}")
@@ -1615,15 +2024,18 @@ class NeyraAgent:
             self._micro_plan_metrics["unclosed_blocks"] += 1
 
         # 7. Парсим [SOUND: tag]
-        clean_text, sounds = self._extract_sound_tags(text_no_think)
-        clean_text = self._ensure_nonempty_reply(text_no_think, clean_text)
+        clean_text, sounds = self._extract_sound_tags(text_no_think, preserve_line_breaks=lyrics_mode)
+        clean_text = self._ensure_nonempty_reply(
+            text_no_think, clean_text, preserve_line_breaks=lyrics_mode
+        )
         clean_text = await self._retry_short_reply_if_empty(final_messages_used, clean_text)
         clean_text = await self._de_repeat_reply(user_message, clean_text)
 
-        # 8. Обновляем краткосрочную память
-        # Добавляем префикс с именем, чтобы модель различала разных людей
-        display_name = username or "user"
-        self.short_memory.add("user", f"[от: {display_name}] {user_message}")
+        # 8. Обновляем краткосрочную память (та же подпись, что и в HumanMessage)
+        self.short_memory.add(
+            "user",
+            self._format_spoken_user_message(user_message, speaker_label),
+        )
         self.short_memory.add("assistant", clean_text)
 
         # 9. Сохраняем в RAG и логах (не ждём — fire and forget)
@@ -1686,6 +2098,7 @@ class NeyraAgent:
         discord_user_id: Optional[str] = None,
         vision_images: Optional[list[tuple[str, str]]] = None,
         channel_id: Optional[str] = None,
+        author_display_name: Optional[str] = None,
     ):
         """
         Стриминговый чат — yield'ит токены сразу как модель их генерирует.
@@ -1700,6 +2113,7 @@ class NeyraAgent:
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
         internal_uid = self._resolve_internal_user_id(discord_user_id, username)
+        await self._ensure_mcp()
 
         # 1. Контекст (RAG + досье)
         memories = self.long_memory.search(user_message)
@@ -1712,47 +2126,94 @@ class NeyraAgent:
         # Эвристика: ручное сохранение фактов
         saved_facts = self._handle_memory_trigger(user_message, mentioned, username)
 
-        people_ctx = ""
-        if mentioned:
-            summaries = [self.people_db.get_summary(pid) for pid in mentioned]
-            people_ctx = "\n\n".join(s for s in summaries if s)
+        people_active, people_others = self._split_people_context_for_prompt(
+            mentioned, username, discord_user_id
+        )
         diary_ctx = self.diary.recent_text(limit=6)
 
         # Эвристический веб-поиск
         web_ctx = self._handle_websearch_trigger(user_message)
         tool_ctx = self._collect_tool_context(user_message)
 
-        speaker_name = username
-        if username:
-            person = self.people_db.find(username, discord_id=discord_user_id)
-            if person:
-                speaker_name = f"{person['names'][0]} (Discord-ник: {username})"
+        speaker_label = self._resolve_speaker_label(username, discord_user_id, author_display_name)
 
         has_vis = bool(vision_images)
         last_img_ctx = self._last_image_context_for_prompt(channel_id, vision_images)
-        system_prompt = self._build_system_prompt(
+        lyrics_mode = LYRICS_REQUEST_MARKER in (user_message or "")
+
+        mcp_cfg_stream = self.config.get("mcp_client") if isinstance(self.config.get("mcp_client"), dict) else {}
+        mcp_catalog_s = ""
+        if mcp_cfg_stream.get("inject_tool_catalog") and self.mcp_manager:
+            ml_s = self.mcp_manager.catalog_lines()
+            if ml_s:
+                mcp_catalog_s = "\n".join(ml_s)
+
+        attached_caption = ""
+        if vision_images and self.llm_vision:
+            try:
+                attached_caption = await self._caption_vision_images(
+                    user_message, vision_images, speaker_label=speaker_label
+                )
+            except Exception as e:
+                logger.warning("VL caption (stream): ошибка — %s", e)
+        elif vision_images and not self.llm_vision:
+            logger.warning(
+                "Изображения в сообщении (stream), но vision/VL не настроено — ответ только по тексту."
+            )
+
+        caption_ok = (attached_caption or "").strip()
+        talk_vm = None if (vision_images and self.llm_vision) else vision_images
+        has_vis_prompt = bool(vision_images) and not caption_ok and self.llm_vision is None
+
+        brain_sys = self._build_brain_system_prompt(
             extra_memories=memories,
-            people_context=people_ctx,
+            people_context_active=people_active,
+            people_context_mentioned=people_others,
             diary_context=diary_ctx,
-            username=speaker_name,
+            username=speaker_label,
             web_context=web_ctx,
             tool_context=tool_ctx,
-            has_vision_images=has_vis,
+            mcp_tools_catalog=mcp_catalog_s,
             last_image_context=last_img_ctx,
         )
-
-        llm_use = self._stream_llm(vision_images)
-        if vision_images:
-            vis_cfg = self.config.get("vision") or {}
-            vlog = (
-                f"{self.llm_model} (unified)"
-                if vis_cfg.get("use_main_model_for_vision")
-                else (vis_cfg.get("model") or "")
+        brain_context = ""
+        try:
+            brain_context = await self._run_brain_tool_phase(
+                user_message=user_message,
+                speaker_label=speaker_label,
+                vision_caption=caption_ok or None,
+                brain_system=brain_sys,
+                lyrics_mode=lyrics_mode,
             )
+        except Exception as e:
+            logger.warning("Brain phase (stream): пропуск сводки — %s", e)
+
+        system_prompt = self._build_system_prompt(
+            extra_memories=memories,
+            people_context_active=people_active,
+            people_context_mentioned=people_others,
+            diary_context=diary_ctx,
+            username=speaker_label,
+            web_context=web_ctx,
+            tool_context=tool_ctx,
+            has_vision_images=has_vis_prompt,
+            last_image_context=last_img_ctx,
+            lyrics_mode=lyrics_mode,
+            mcp_tools_catalog=mcp_catalog_s,
+            brain_router_context=brain_context or "",
+            attached_image_caption=caption_ok,
+        )
+
+        stream_llm = self.llm_talk
+        if lyrics_mode:
+            stream_llm = self.llm_talk.bind(
+                max_tokens=max(self.reply_max_tokens, self.lyrics_reply_max_tokens)
+            )
+        if vision_images:
             logger.info(
-                "Зрение: VL-ход, изображений=%s, модель=%s",
+                "Зрение: caption→brain→talk, изображений=%s | talk_model=%s",
                 len(vision_images),
-                vlog,
+                getattr(self, "llm_talk_model", self.llm_model),
             )
 
         # 2. Сообщения
@@ -1762,10 +2223,12 @@ class NeyraAgent:
                 messages.append(HumanMessage(content=msg["content"]))
             else:
                 messages.append(AIMessage(content=msg["content"]))
-        messages.append(self._make_human_turn(user_message, vision_images))
+        messages.append(
+            self._make_human_turn(user_message, talk_vm, speaker_label=speaker_label)
+        )
         messages = self._maybe_append_micro_plan_prefill(
             messages,
-            has_vision_images=bool(vision_images),
+            has_vision_images=bool(vision_images) and self.llm_vision is None,
         )
         final_messages_used = messages
 
@@ -1777,10 +2240,7 @@ class NeyraAgent:
         raw_chunk_count = 0
         yielded_chunk_count = 0
         try:
-            if vision_images:
-                stream_iter = llm_use.astream(messages)
-            else:
-                stream_iter = self._astream_text_with_fallback(messages)
+            stream_iter = self._astream_text_with_fallback(messages, llm=stream_llm)
             async for chunk in stream_iter:
                 if used_model_name is None:
                     used_model_name = self._extract_model_name(chunk)
@@ -1796,7 +2256,7 @@ class NeyraAgent:
             if tail:
                 yield {"type": "token", "text": tail}
                 yielded_chunk_count += 1
-            self._log_model_route(used_model_name, vision=bool(vision_images))
+            self._log_model_route(used_model_name, lane="talk")
             logger.debug(
                 "LLM stream stats | raw_chunks=%s | yielded_chunks=%s | micro_plan=%s",
                 raw_chunk_count,
@@ -1806,7 +2266,7 @@ class NeyraAgent:
 
         except Exception as e:
             err_str = str(e)
-            
+
             # Контекст переполнен → чистим память и пробуем снова
             if "context size has been exceeded" in err_str.lower() or "context_length_exceeded" in err_str.lower():
                 context_exceeded = True
@@ -1816,14 +2276,20 @@ class NeyraAgent:
                 self.short_memory.trim_to_half()
                 
                 # Урезаем системный промпт (убираем веб и память, оставляем только базу)
+                pa, pm = self._shrink_people_sections(people_active, people_others, 500)
                 system_prompt = self._build_system_prompt(
                     extra_memories=[],
-                    people_context=people_ctx[:500],
-                    username=speaker_name,
+                    people_context_active=pa,
+                    people_context_mentioned=pm,
+                    username=speaker_label,
                     web_context="",
                     tool_context="",
-                    has_vision_images=has_vis,
+                    has_vision_images=has_vis_prompt,
                     last_image_context=last_img_ctx,
+                    lyrics_mode=lyrics_mode,
+                    mcp_tools_catalog="",
+                    brain_router_context=brain_context or "",
+                    attached_image_caption=caption_ok,
                 )
 
                 # Повторный запрос
@@ -1833,14 +2299,13 @@ class NeyraAgent:
                         messages_retry.append(HumanMessage(content=msg["content"]))
                     else:
                         messages_retry.append(AIMessage(content=msg["content"]))
-                messages_retry.append(self._make_human_turn(user_message, vision_images))
+                messages_retry.append(
+                    self._make_human_turn(user_message, talk_vm, speaker_label=speaker_label)
+                )
                 final_messages_used = messages_retry
 
                 try:
-                    if vision_images:
-                        retry_iter = llm_use.astream(messages_retry)
-                    else:
-                        retry_iter = self._astream_text_with_fallback(messages_retry)
+                    retry_iter = self._astream_text_with_fallback(messages_retry, llm=stream_llm)
                     async for chunk in retry_iter:
                         if used_model_name is None:
                             used_model_name = self._extract_model_name(chunk)
@@ -1856,7 +2321,7 @@ class NeyraAgent:
                     if tail:
                         yield {"type": "token", "text": tail}
                         yielded_chunk_count += 1
-                    self._log_model_route(used_model_name, vision=bool(vision_images))
+                    self._log_model_route(used_model_name, lane="talk")
                     logger.debug(
                         "LLM stream stats | raw_chunks=%s | yielded_chunks=%s | micro_plan=%s | retry=true",
                         raw_chunk_count,
@@ -1898,8 +2363,10 @@ class NeyraAgent:
             )
         if unclosed_final:
             self._micro_plan_metrics["unclosed_blocks"] += 1
-        clean_text, sounds = self._extract_sound_tags(text_no_think)
-        clean_text = self._ensure_nonempty_reply(text_no_think, clean_text)
+        clean_text, sounds = self._extract_sound_tags(text_no_think, preserve_line_breaks=lyrics_mode)
+        clean_text = self._ensure_nonempty_reply(
+            text_no_think, clean_text, preserve_line_breaks=lyrics_mode
+        )
         clean_text = await self._retry_short_reply_if_empty(final_messages_used, clean_text)
         clean_text = await self._de_repeat_reply(user_message, clean_text)
 
@@ -1908,8 +2375,10 @@ class NeyraAgent:
             # После автосброса — помечаем что был рестарт (только в логе, не в память)
             logger.info("Успешный ответ после переполнения контекста.")
             
-        display_name = username or "user"
-        self.short_memory.add("user", f"[от: {display_name}] {user_message}")
+        self.short_memory.add(
+            "user",
+            self._format_spoken_user_message(user_message, speaker_label),
+        )
         self.short_memory.add("assistant", clean_text)
 
         metadata = {
@@ -1964,6 +2433,33 @@ class NeyraAgent:
             "raw": raw_response,
         }
 
+    async def summarize_ltm_corpus(self, combined_dialog_text: str) -> str:
+        """
+        Сжимает пакет выгружаемых диалогов LTM в короткий digest для последующей записи в RAG.
+        Использует reflection-модель с умеренным лимитом токенов (обслуживание памяти, не чат).
+        """
+        from langchain_core.messages import HumanMessage
+
+        raw = (combined_dialog_text or "").strip()
+        if not raw:
+            return ""
+        cap = 120_000
+        if len(raw) > cap:
+            raw = raw[: cap - 100] + "\n… [truncated for summarization]"
+
+        mem_cfg = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
+        max_out = int(mem_cfg.get("ltm_summarize_max_tokens", min(self.reflection_max_tokens * 2, 4096)))
+        prompt = (
+            "Ниже — фрагменты старых диалогов из долговременной памяти. "
+            "Сожми их в один связный markdown-текст на русском: темы, имена, факты, без воды и без выдумок. "
+            "Если данных мало — дай 2–4 предложения.\n\n---\n\n"
+            f"{raw}"
+        )
+        llm = getattr(self, "llm_memory", None) or getattr(self, "llm_reflection", None) or self.llm_talk
+        call = llm.bind(max_tokens=max_out) if hasattr(llm, "bind") else llm
+        resp = await call.ainvoke([HumanMessage(content=prompt)])
+        text = getattr(resp, "content", None)
+        return (str(text) if text is not None else "").strip()
 
     def reset_context(self, channel_id: Optional[str] = None):
         """Сбрасывает краткую память; для Discord — ещё заметку последнего скрина в этом канале."""
@@ -1976,13 +2472,24 @@ class NeyraAgent:
 
     def get_stats(self) -> dict:
         """Возвращает статистику агента."""
+        mcp_info = None
+        if self.mcp_manager is not None:
+            mcp_info = {
+                "configured_servers": len(self.mcp_manager.configured_servers()),
+                "connected_servers": self.mcp_manager.connected_servers(),
+                "errors": self.mcp_manager.last_errors(),
+            }
         return {
             "mode": self.mode,
             "llm_provider": self.backend,
             "model": self.llm_model,
+            "talk_model": getattr(self, "llm_talk_model", self.llm_model),
+            "brain_model": getattr(self, "llm_brain_model", None),
+            "memory_model": getattr(self, "llm_memory_model", None),
             "short_memory_size": len(self.short_memory),
             "long_memory_records": self.long_memory.count(),
             "people_db_records": len(self.people_db._cache),
             "tools_count": len(self.tools),
             "event_bus": self.event_bus.handler_counts(),
+            "mcp": mcp_info,
         }

@@ -237,6 +237,7 @@ async def run_console() -> None:
     try:
         from core.agent import NeyraAgent
         agent = NeyraAgent(config)
+        await agent.start_mcp_clients()
     except Exception as e:
         console.print(f"[red]ОШИБКА инициализации агента: {e}[/red]")
         console.print("[yellow]Проверь OPENROUTER_API_KEY в .env и доступ к интернету.[/yellow]")

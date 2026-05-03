@@ -9,10 +9,9 @@
 
 `config.yaml` содержит только базовый runtime-конфиг ядра.
 
-## Ключевые секции
+## Key sections
 - `assistant`
-- `BACKEND`, `openrouter`, `llm`
-- `vision`
+- `BACKEND`, `openrouter`, `llm` — per-role nested blocks: **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** (VL + vision pipeline; no top-level **`vision:`**).
 - `memory`
 - `voice_cloud`
 - `health_monitor`

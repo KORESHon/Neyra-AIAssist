@@ -21,8 +21,8 @@ export function SettingsPage() {
     try {
       await apiPost<ApiEnvelope<unknown>>('/v1/config/update', {
         updates: {
-          'openrouter.model': model,
-          'openrouter.temperature': Number(temperature),
+          'openrouter.talk_model.model': model,
+          'openrouter.talk_model.temperature': Number(temperature),
         },
       })
       setStatus('Настройки применены')
@@ -76,7 +76,7 @@ export function SettingsPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <label className="grid gap-2 text-sm text-zinc-300">
-            <span>openrouter.model</span>
+            <span>openrouter.talk_model.model</span>
             <input
               className="rounded-xl border border-zinc-700 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-300 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/50"
               onChange={(e) => setModel(e.target.value)}
@@ -85,7 +85,7 @@ export function SettingsPage() {
             />
           </label>
           <label className="grid gap-2 text-sm text-zinc-300">
-            <span>openrouter.temperature</span>
+            <span>openrouter.talk_model.temperature</span>
             <input
               className="rounded-xl border border-zinc-700 bg-zinc-950/80 px-3 py-2 font-mono text-sm text-zinc-300 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/50"
               onChange={(e) => setTemperature(e.target.value)}

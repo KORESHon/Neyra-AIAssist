@@ -8,12 +8,17 @@ Internal API (v1): маршруты FastAPI и сборка приложения
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
+import os
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import httpx
 import yaml
@@ -26,6 +31,7 @@ from core.agent import NeyraAgent
 from core.backup_manager import BackupManager
 from core.event_bus import CoreEvent
 from core.health_monitor import HealthMonitor
+from core.ltm_maintenance import execute_ltm_summarize
 from core.plugin_loader import PluginLoader
 from core.plugin_sdk import PluginContext, run_plugin_entrypoint
 from core.reflection import ReflectionEngine
@@ -58,6 +64,27 @@ def _trace_id(request: Request) -> str:
     return str(request.headers.get("x-trace-id") or uuid.uuid4())
 
 
+def _debug_lifecycle_allowed(cfg: dict) -> bool:
+    """Включается через internal_api.debug_lifecycle_enabled или NEYRA_DEBUG_LIFECYCLE=1 (удобно в Docker)."""
+    if os.environ.get("NEYRA_DEBUG_LIFECYCLE", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    ia = cfg.get("internal_api") if isinstance(cfg.get("internal_api"), dict) else {}
+    return bool(ia.get("debug_lifecycle_enabled", False))
+
+
+def _schedule_exit_after_response() -> None:
+    """После отправки ответа клиенту завершает процесс (os._exit)."""
+
+    def _run() -> None:
+        import time
+
+        time.sleep(0.35)
+        logger.info("Завершение процесса по POST /v1/debug/lifecycle")
+        os._exit(0)
+
+    threading.Thread(target=_run, daemon=False, name="neyra-debug-lifecycle-exit").start()
+
+
 def _err_payload(trace_id: str, code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "error": {"code": code, "message": message}, "trace_id": trace_id}
 
@@ -67,26 +94,103 @@ def _api_token(cfg: dict) -> str:
     return str(api_cfg.get("token") or "").strip()
 
 
-def _require_auth(authorization: Optional[str], cfg: dict) -> None:
-    token = _api_token(cfg)
-    if not token:
-        return
+_ROLE_RANK = {"anon": 0, "viewer": 1, "maint": 2, "admin": 3}
+
+
+def _resolve_role(authorization: Optional[str], cfg: dict) -> str:
+    """anon — токены не заданы (открытый доступ как раньше). Иначе нужен Bearer и один из известных токенов."""
+    api = cfg.get("internal_api") if isinstance(cfg.get("internal_api"), dict) else {}
+    primary = str(api.get("token") or "").strip()
+    viewer = str(api.get("viewer_token") or "").strip()
+    maint = str(api.get("maint_token") or "").strip()
+    if not primary and not viewer and not maint:
+        return "anon"
     raw = (authorization or "").strip()
     if not raw.startswith("Bearer "):
         raise ApiError("unauthorized", "Missing bearer token", 401)
     got = raw.removeprefix("Bearer ").strip()
-    if got != token:
-        raise ApiError("unauthorized", "Invalid bearer token", 401)
+    if primary and got == primary:
+        return "admin"
+    if maint and got == maint:
+        return "maint"
+    if viewer and got == viewer:
+        return "viewer"
+    raise ApiError("unauthorized", "Invalid bearer token", 401)
+
+
+def _role_at_least(role: str, minimum: str) -> bool:
+    if role == "anon":
+        return True
+    return _ROLE_RANK.get(role, 0) >= _ROLE_RANK.get(minimum, 0)
 
 
 def _require_ws_auth(token_qs: Optional[str], authorization: Optional[str], cfg: dict) -> None:
-    token = _api_token(cfg)
-    if not token:
+    api = cfg.get("internal_api") if isinstance(cfg.get("internal_api"), dict) else {}
+    primary = str(api.get("token") or "").strip()
+    viewer = str(api.get("viewer_token") or "").strip()
+    maint = str(api.get("maint_token") or "").strip()
+    if not primary and not viewer and not maint:
         return
-    # Allow either ?token=... or Authorization: Bearer ...
-    if token_qs and token_qs.strip() == token:
+    got = ""
+    if token_qs and str(token_qs).strip():
+        got = str(token_qs).strip()
+    elif authorization and authorization.strip().startswith("Bearer "):
+        got = authorization.removeprefix("Bearer ").strip()
+    else:
+        raise ApiError("unauthorized", "Missing bearer token for WebSocket", 401)
+    if primary and got == primary:
         return
-    _require_auth(authorization, cfg)
+    raise ApiError("forbidden", "WebSocket requires primary internal API token", 403)
+
+
+def _verify_inbound_webhook_signature(secret: str, body: bytes, signature_header: Optional[str]) -> bool:
+    if not secret:
+        return False
+    body = body if body is not None else b""
+    sig_raw = (signature_header or "").strip()
+    if not sig_raw:
+        return False
+    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    token = sig_raw
+    lower = sig_raw.lower()
+    if lower.startswith("sha256="):
+        token = sig_raw.split("=", 1)[1].strip()
+    elif lower.startswith("v1="):
+        token = sig_raw.split("=", 1)[1].strip()
+    got = token.strip().lower()
+    try:
+        return hmac.compare_digest(expected.lower(), got)
+    except Exception:
+        return False
+
+
+_rate_limit_lock = asyncio.Lock()
+_rate_limit_buckets: dict[str, list[float]] = {}
+
+
+async def _rate_limit_allow(bucket_key: str, max_per_minute: int) -> bool:
+    if max_per_minute <= 0:
+        return True
+    now = time.monotonic()
+    async with _rate_limit_lock:
+        dq = _rate_limit_buckets.setdefault(bucket_key, [])
+        cutoff = now - 60.0
+        while dq and dq[0] < cutoff:
+            dq.pop(0)
+        if len(dq) >= max_per_minute:
+            return False
+        dq.append(now)
+        return True
+
+
+def _parse_inbound_json_body(raw: bytes) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else {"raw": data}
+    except Exception:
+        return {"raw_text": raw.decode("utf-8", errors="replace")}
 
 
 class ChatRequest(BaseModel):
@@ -94,6 +198,7 @@ class ChatRequest(BaseModel):
     username: Optional[str] = Field(default=None, max_length=120)
     platform_user_id: Optional[str] = Field(default=None, max_length=120)
     channel_id: Optional[str] = Field(default=None, max_length=120)
+    author_display_name: Optional[str] = Field(default=None, max_length=120)
 
 
 class MemorySearchRequest(BaseModel):
@@ -108,6 +213,36 @@ class MemoryWriteRequest(BaseModel):
     platform_user_id: Optional[str] = Field(default=None, max_length=120)
 
 
+class MemoryAddRequest(BaseModel):
+    """Один документ знаний в RAG (не пара диалога). Живая инъекция без перезапуска ядра."""
+
+    text: str = Field(min_length=1, max_length=24000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryPruneRequest(BaseModel):
+    older_than_days: float = Field(default=90.0, ge=0.5, le=36500.0)
+    types: Optional[list[str]] = Field(default=None)
+    dry_run: bool = False
+
+
+class MemoryArchiveRequest(BaseModel):
+    older_than_days: float = Field(default=90.0, ge=0.5, le=36500.0)
+    types: Optional[list[str]] = Field(default=None)
+    dry_run: bool = False
+    max_entries: int = Field(default=2000, ge=1, le=50000)
+
+
+class MemorySummarizeRequest(BaseModel):
+    """Архивация старых записей + опционально один digest-документ через LLM."""
+
+    older_than_days: float = Field(default=60.0, ge=0.5, le=36500.0)
+    types: Optional[list[str]] = Field(default=None)
+    dry_run: bool = False
+    max_entries: int = Field(default=500, ge=1, le=10000)
+    compress_with_llm: bool = True
+
+
 class NotifyRequest(BaseModel):
     event_type: str = Field(min_length=3, max_length=120)
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -119,6 +254,12 @@ class FireDebugEventRequest(BaseModel):
 
     event_type: str = Field(min_length=1, max_length=200)
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class LifecycleDebugRequest(BaseModel):
+    """POST /v1/debug/lifecycle — завершение процесса (Docker/Orchestrator поднимает снова при restart policy)."""
+
+    action: Literal["stop", "restart"]
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -164,6 +305,26 @@ class WebhookRetryRequest(BaseModel):
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_audit_log_lock = threading.Lock()
+
+
+def _audit_file_append(cfg: dict, root: Path, entry: dict[str, Any]) -> None:
+    ia = cfg.get("internal_api") if isinstance(cfg.get("internal_api"), dict) else {}
+    if not bool(ia.get("audit_log_enabled", True)):
+        return
+    rel = str(ia.get("audit_log_path", "./logs/api_audit.jsonl")).strip()
+    path = Path(rel)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps({**entry, "ts": _utc_now()}, ensure_ascii=False) + "\n"
+        with _audit_log_lock:
+            path.open("a", encoding="utf-8").write(line)
+    except Exception as e:
+        logger.warning("audit log append failed: %s", e)
 
 
 def _mask_secret(s: str) -> str:
@@ -407,6 +568,17 @@ def build_app(
             reflection.start_scheduler()
         monitor.start()
         await monitor.run_once()
+        try:
+            await agent.start_mcp_clients()
+        except Exception:
+            logger.exception("MCP clients startup failed (non-fatal)")
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        try:
+            await agent.stop_mcp_clients()
+        except Exception:
+            logger.debug("MCP clients shutdown", exc_info=True)
 
     @app.exception_handler(ApiError)
     async def _api_error_handler(request: Request, exc: ApiError):
@@ -427,28 +599,67 @@ def build_app(
             headers={"x-trace-id": trace_id},
         )
 
-    async def _auth_dep(authorization: Optional[str] = Header(default=None)):
-        _require_auth(authorization, config)
+    class RequireRole:
+        __slots__ = ("min_role",)
+
+        def __init__(self, min_role: str):
+            self.min_role = min_role
+
+        async def __call__(self, authorization: Optional[str] = Header(default=None)) -> str:
+            role = _resolve_role(authorization, config)
+            if not _role_at_least(role, self.min_role):
+                raise ApiError("forbidden", "Insufficient API token scope", 403)
+            return role
+
+    dep_viewer = RequireRole("viewer")
+    dep_maint = RequireRole("maint")
+    dep_admin = RequireRole("admin")
+
+    ia_sec = config.get("internal_api") if isinstance(config.get("internal_api"), dict) else {}
+    rate_rpm = int(ia_sec.get("rate_limit_requests_per_minute", 0))
+
+    @app.middleware("http")
+    async def _rate_limit_middleware(request: Request, call_next):
+        path = request.url.path or ""
+        if rate_rpm <= 0 or not path.startswith("/v1") or path.startswith("/v1/ws"):
+            return await call_next(request)
+        ip = request.client.host if request.client else "unknown"
+        if not await _rate_limit_allow(f"http:{ip}", rate_rpm):
+            tid = _trace_id(request)
+            return JSONResponse(
+                status_code=429,
+                content=_err_payload(tid, "rate_limited", "Too many requests"),
+                headers={"x-trace-id": tid, "Retry-After": "60"},
+            )
+        return await call_next(request)
+
+    def _audit(op: str, trace_id: str, role: str, extra: Optional[dict[str, Any]] = None) -> None:
+        logger.info("api_audit | op=%s | trace_id=%s | role=%s", op, trace_id, role)
+        row: dict[str, Any] = {"op": op, "trace_id": trace_id, "role": role}
+        if extra:
+            row.update(extra)
+        _audit_file_append(config, root, row)
 
     @app.post("/v1/chat")
-    async def v1_chat(body: ChatRequest, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_chat(body: ChatRequest, request: Request, _role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
         out = await agent.chat(
             user_message=body.text,
             username=body.username or "api_user",
             discord_user_id=body.platform_user_id,
             channel_id=body.channel_id,
+            author_display_name=body.author_display_name,
         )
         return {"ok": True, "trace_id": trace_id, "data": out}
 
     @app.post("/v1/memory/search")
-    async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         rows = agent.long_memory.search(body.query, n_results=body.top_k)
         return {"ok": True, "trace_id": trace_id, "data": {"results": rows}}
 
     @app.post("/v1/memory/write")
-    async def v1_memory_write(body: MemoryWriteRequest, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_memory_write(body: MemoryWriteRequest, request: Request, api_role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
         uid = agent.identity.resolve("api", body.platform_user_id or body.username or "unknown")
         meta = {
@@ -458,10 +669,26 @@ def build_app(
             "source": "internal_api",
         }
         agent.long_memory.save(body.user_text, body.assistant_text, meta)
+        _audit("memory_write", trace_id, api_role, {"user_id": uid})
         return {"ok": True, "trace_id": trace_id, "data": {"written": True, "user_id": uid}}
 
+    @app.post("/v1/memory/add")
+    async def v1_memory_add(body: MemoryAddRequest, request: Request, api_role: str = Depends(dep_admin)):
+        """Добавляет один фрагмент знаний в Chroma через ядро (без прямого доступа к SQLite снаружи)."""
+
+        trace_id = _trace_id(request)
+
+        def _run() -> tuple[bool, str]:
+            return agent.long_memory.add_knowledge(body.text, body.metadata)
+
+        ok, info = await asyncio.to_thread(_run)
+        if not ok:
+            raise ApiError("memory_add_failed", info, 400)
+        _audit("memory_add", trace_id, api_role, {"id": info})
+        return {"ok": True, "trace_id": trace_id, "data": {"id": info}}
+
     @app.post("/v1/notify")
-    async def v1_notify(body: NotifyRequest, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_notify(body: NotifyRequest, request: Request, api_role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
         agent.event_bus.publish(
             CoreEvent(
@@ -489,10 +716,11 @@ def build_app(
                     source="event_bus",
                 )
             )
+        _audit("notify", trace_id, api_role, {"event_type": body.event_type})
         return {"ok": True, "trace_id": trace_id, "data": {"published": True}}
 
     @app.post("/v1/debug/fire_event")
-    async def v1_debug_fire_event(body: FireDebugEventRequest, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_debug_fire_event(body: FireDebugEventRequest, request: Request, api_role: str = Depends(dep_admin)):
         """Публикует событие в EventBus с source=debug.fire_event (без доставки исходящих webhooks)."""
         trace_id = _trace_id(request)
         agent.event_bus.publish(
@@ -502,10 +730,38 @@ def build_app(
                 payload=body.payload,
             )
         )
+        _audit("debug_fire_event", trace_id, api_role, {"event_type": body.event_type})
         return {"ok": True, "trace_id": trace_id, "data": {"published": True, "event_type": body.event_type}}
 
+    @app.post("/v1/debug/lifecycle")
+    async def v1_debug_lifecycle(
+        body: LifecycleDebugRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """
+        Завершает процесс ядра (этап E1 / отладка в Docker).
+        Требует admin-токен и `internal_api.debug_lifecycle_enabled` или env NEYRA_DEBUG_LIFECYCLE=1.
+        «restart» ничем не отличается от «stop» на уровне процесса; повторный запуск обеспечивает Docker/systemd.
+        """
+        trace_id = _trace_id(request)
+        if not _debug_lifecycle_allowed(config):
+            raise ApiError(
+                "lifecycle_disabled",
+                "Включите internal_api.debug_lifecycle_enabled или задайте NEYRA_DEBUG_LIFECYCLE=1",
+                403,
+            )
+        _audit("debug_lifecycle", trace_id, api_role, {"action": body.action})
+        note = (
+            "Процесс будет завершён. При docker compose с restart:unless-stopped контейнер перезапустится."
+            if body.action == "restart"
+            else "Процесс будет завершён."
+        )
+        _schedule_exit_after_response()
+        return {"ok": True, "trace_id": trace_id, "data": {"action": body.action, "note": note}}
+
     @app.get("/v1/debug/memory")
-    async def v1_debug_memory(request: Request, _: None = Depends(_auth_dep)):
+    async def v1_debug_memory(request: Request, _: None = Depends(dep_viewer)):
         """Краткосрочная память (история), сводная статистика агента и счётчики RAG."""
         trace_id = _trace_id(request)
         hist = agent.short_memory.get_history()
@@ -545,13 +801,13 @@ def build_app(
         }
 
     @app.get("/v1/health")
-    async def v1_health(request: Request, _: None = Depends(_auth_dep)):
+    async def v1_health(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         rep = await monitor.run_once()
         return {"ok": True, "trace_id": trace_id, "data": rep}
 
     @app.get("/v1/memory/stats")
-    async def v1_memory_stats(request: Request, _: None = Depends(_auth_dep)):
+    async def v1_memory_stats(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         return {
             "ok": True,
@@ -563,8 +819,88 @@ def build_app(
             },
         }
 
+    @app.get("/v1/memory/policies")
+    async def v1_memory_policies(request: Request, _: None = Depends(dep_viewer)):
+        trace_id = _trace_id(request)
+        mem_cfg = config.get("memory") if isinstance(config.get("memory"), dict) else {}
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "rag_enabled": bool(mem_cfg.get("rag_enabled", True)),
+                "max_records_target": mem_cfg.get("max_records"),
+                "ltm_archive_dir": str(mem_cfg.get("ltm_archive_dir", "ltm_archive")),
+                "ltm_summarize_max_tokens": mem_cfg.get("ltm_summarize_max_tokens"),
+                "embedding_model": mem_cfg.get("embedding_model"),
+                "chroma_db_path": mem_cfg.get("chroma_db_path"),
+                "ltm_auto_prune": mem_cfg.get("ltm_auto_prune"),
+                "ltm_auto_summarize": mem_cfg.get("ltm_auto_summarize"),
+            },
+        }
+
+    @app.post("/v1/memory/prune")
+    async def v1_memory_prune(body: MemoryPruneRequest, request: Request, api_role: str = Depends(dep_maint)):
+        trace_id = _trace_id(request)
+        _audit(
+            "memory_prune",
+            trace_id,
+            api_role,
+            {"older_than_days": body.older_than_days, "dry_run": body.dry_run},
+        )
+
+        def _run() -> dict[str, Any]:
+            return agent.long_memory.prune_older_than(
+                body.older_than_days,
+                types=body.types,
+                dry_run=body.dry_run,
+            )
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.post("/v1/memory/summarize")
+    async def v1_memory_summarize(body: MemorySummarizeRequest, request: Request, api_role: str = Depends(dep_maint)):
+        trace_id = _trace_id(request)
+        _audit(
+            "memory_summarize",
+            trace_id,
+            api_role,
+            {
+                "older_than_days": body.older_than_days,
+                "compress_with_llm": body.compress_with_llm,
+                "dry_run": body.dry_run,
+            },
+        )
+        data = await execute_ltm_summarize(
+            agent,
+            config,
+            root,
+            older_than_days=body.older_than_days,
+            types=body.types,
+            dry_run=body.dry_run,
+            max_entries=body.max_entries,
+            compress_with_llm=body.compress_with_llm,
+            digest_source="memory_summarize_api",
+        )
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.post("/v1/memory/reindex")
+    async def v1_memory_reindex(request: Request, api_role: str = Depends(dep_admin)):
+        """Проверка состояния индекса Chroma (полная переиндексация не требуется при persistent-коллекции)."""
+        trace_id = _trace_id(request)
+        _audit("memory_reindex", trace_id, api_role)
+        n = agent.long_memory.count()
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "records": n,
+                "note": "Векторный индекс Chroma persistent; массовая переэмбеддинга не выполняется. Используйте prune/summarize.",
+            },
+        }
+
     @app.get("/v1/plugins")
-    async def v1_plugins(request: Request, _: None = Depends(_auth_dep)):
+    async def v1_plugins(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         loader = PluginLoader(_project_root())
         return {"ok": True, "trace_id": trace_id, "data": {"plugins": loader.list_plugins()}}
@@ -580,7 +916,7 @@ def build_app(
         return manifest.plugin_dir / "config.yaml"
 
     @app.get("/v1/plugins/{plugin_id}")
-    async def v1_plugin_get(plugin_id: str, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_plugin_get(plugin_id: str, request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
@@ -612,7 +948,7 @@ def build_app(
         }
 
     @app.patch("/v1/plugins/{plugin_id}")
-    async def v1_plugin_patch(plugin_id: str, body: PluginStateUpdateRequest, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_plugin_patch(plugin_id: str, body: PluginStateUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
         loader = PluginLoader(root)
         ok = loader.set_enabled(plugin_id, body.enabled)
@@ -627,10 +963,11 @@ def build_app(
             "result": {"enabled": body.enabled},
             "ts": _utc_now(),
         }
+        _audit("plugin_set_enabled", trace_id, api_role, {"plugin_id": plugin_id, "enabled": body.enabled})
         return {"ok": True, "trace_id": trace_id, "data": plugin_ops[op_id]}
 
     @app.get("/v1/plugins/{plugin_id}/config")
-    async def v1_plugin_config_get(plugin_id: str, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_plugin_config_get(plugin_id: str, request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
@@ -645,7 +982,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": {"plugin_id": m.id, "config": cfg}}
 
     @app.put("/v1/plugins/{plugin_id}/config")
-    async def v1_plugin_config_put(plugin_id: str, body: PluginConfigUpdateRequest, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_plugin_config_put(plugin_id: str, body: PluginConfigUpdateRequest, request: Request, _: None = Depends(dep_admin)):
         trace_id = _trace_id(request)
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
@@ -667,7 +1004,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": plugin_ops[op_id]}
 
     @app.post("/v1/plugins/{plugin_id}/reload")
-    async def v1_plugin_reload(plugin_id: str, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_plugin_reload(plugin_id: str, request: Request, _: None = Depends(dep_admin)):
         trace_id = _trace_id(request)
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
@@ -685,7 +1022,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": plugin_ops[op_id]}
 
     @app.post("/v1/plugins/{plugin_id}/restart")
-    async def v1_plugin_restart(plugin_id: str, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_plugin_restart(plugin_id: str, request: Request, _: None = Depends(dep_admin)):
         trace_id = _trace_id(request)
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
@@ -703,7 +1040,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": plugin_ops[op_id]}
 
     @app.post("/v1/plugins/{plugin_id}/invoke")
-    async def v1_plugin_invoke(plugin_id: str, body: PluginInvokeRequest, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_plugin_invoke(plugin_id: str, body: PluginInvokeRequest, request: Request, _: None = Depends(dep_admin)):
         trace_id = _trace_id(request)
         loader = PluginLoader(root)
         m = _find_manifest(loader, plugin_id)
@@ -728,7 +1065,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": {"operation": plugin_ops[op_id], "result": result}}
 
     @app.get("/v1/plugins/operations/{operation_id}")
-    async def v1_plugin_op(operation_id: str, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_plugin_op(operation_id: str, request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         row = plugin_ops.get(operation_id)
         if row is None:
@@ -736,7 +1073,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": row}
 
     @app.get("/v1/llm/balance")
-    async def v1_llm_balance(request: Request, _: None = Depends(_auth_dep)):
+    async def v1_llm_balance(request: Request, _: None = Depends(dep_viewer)):
         from core.llm_profile import resolve_openai_compatible_connection
         from core.openrouter_balance import fetch_openrouter_key_usage
 
@@ -766,7 +1103,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": {"provider": "openrouter", **out}}
 
     @app.get("/v1/docs/markdown/{doc_id}", response_class=PlainTextResponse)
-    async def v1_docs_markdown(doc_id: str, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_docs_markdown(doc_id: str, request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
         rid = (doc_id or "").strip().lower()
         mapping = {
@@ -797,12 +1134,44 @@ def build_app(
         cur[keys[-1]] = value
 
     @app.post("/v1/config/update")
-    async def v1_config_update(body: ConfigUpdateRequest, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_config_update(body: ConfigUpdateRequest, request: Request, api_role: str = Depends(dep_admin)):
         trace_id = _trace_id(request)
+        _audit("config_update", trace_id, api_role, {"keys": list(body.updates.keys())})
         allowed = {
             "openrouter.model",
+            "openrouter.talk_model",
+            "openrouter.brain_model",
+            "openrouter.memory_model",
+            "openrouter.vision_model",
             "openrouter.temperature",
             "openrouter.top_p",
+            "openrouter.reply_max_tokens",
+            "openrouter.brain_max_tokens",
+            "openrouter.reflection_max_tokens",
+            "openrouter.talk_model.model",
+            "openrouter.talk_model.reply_max_tokens",
+            "openrouter.talk_model.lyrics_reply_max_tokens",
+            "openrouter.talk_model.temperature",
+            "openrouter.talk_model.timeout_seconds",
+            "openrouter.brain_model.model",
+            "openrouter.brain_model.max_tokens",
+            "openrouter.brain_model.temperature",
+            "openrouter.brain_model.timeout_seconds",
+            "openrouter.memory_model.model",
+            "openrouter.memory_model.max_tokens",
+            "openrouter.memory_model.temperature",
+            "openrouter.vision_model.model",
+            "openrouter.vision_model.max_tokens",
+            "openrouter.vision_model.temperature",
+            "openrouter.vision_model.timeout_seconds",
+            "openrouter.vision_model.enabled",
+            "openrouter.vision_model.use_main_model_for_vision",
+            "openrouter.vision_model.max_images_per_message",
+            "openrouter.vision_model.max_image_bytes",
+            "openrouter.vision_model.max_image_width",
+            "openrouter.vision_model.max_image_height",
+            "openrouter.vision_model.remember_last_image",
+            "openrouter.vision_model.last_image_note_max_chars",
             "llm.model",
             "llm.provider",
             "llm.base_url",
@@ -818,8 +1187,9 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": {"updated": updates_applied}}
 
     @app.post("/v1/backup/run")
-    async def v1_backup_run(request: Request, _: None = Depends(_auth_dep)):
+    async def v1_backup_run(request: Request, api_role: str = Depends(dep_maint)):
         trace_id = _trace_id(request)
+        _audit("backup_run", trace_id, api_role)
         res = await asyncio.to_thread(backup_manager.run_backup, "api_manual")
         return {"ok": True, "trace_id": trace_id, "data": res}
 
@@ -827,7 +1197,7 @@ def build_app(
     async def v1_webhooks_route_create(
         body: WebhookRouteCreateRequest,
         request: Request,
-        _: None = Depends(_auth_dep),
+        api_role: str = Depends(dep_admin),
     ):
         trace_id = _trace_id(request)
         row = await webhook_store.upsert_route(
@@ -840,10 +1210,16 @@ def build_app(
                 "max_retries": body.max_retries,
             }
         )
+        _audit(
+            "webhook_route_create",
+            trace_id,
+            api_role,
+            {"route_id": row.get("route_id"), "event_type": body.event_type},
+        )
         return {"ok": True, "trace_id": trace_id, "data": row}
 
     @app.get("/v1/webhooks/out/routes")
-    async def v1_webhooks_route_list(request: Request, _: None = Depends(_auth_dep)):
+    async def v1_webhooks_route_list(request: Request, _: None = Depends(dep_admin)):
         trace_id = _trace_id(request)
         rows = await webhook_store.list_routes()
         return {"ok": True, "trace_id": trace_id, "data": {"routes": rows}}
@@ -853,7 +1229,7 @@ def build_app(
         route_id: str,
         body: WebhookRouteUpdateRequest,
         request: Request,
-        _: None = Depends(_auth_dep),
+        _: None = Depends(dep_admin),
     ):
         trace_id = _trace_id(request)
         current = await webhook_store.get_route(route_id)
@@ -866,7 +1242,7 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": row}
 
     @app.delete("/v1/webhooks/out/routes/{route_id}")
-    async def v1_webhooks_route_delete(route_id: str, request: Request, _: None = Depends(_auth_dep)):
+    async def v1_webhooks_route_delete(route_id: str, request: Request, _: None = Depends(dep_admin)):
         trace_id = _trace_id(request)
         ok = await webhook_store.delete_route(route_id)
         if not ok:
@@ -878,7 +1254,7 @@ def build_app(
         route_id: str,
         body: WebhookTestRequest,
         request: Request,
-        _: None = Depends(_auth_dep),
+        _: None = Depends(dep_admin),
     ):
         trace_id = _trace_id(request)
         route = webhook_store._state["routes"].get(route_id)
@@ -897,7 +1273,7 @@ def build_app(
     async def v1_webhooks_deliveries(
         request: Request,
         status: Optional[str] = Query(default=None),
-        _: None = Depends(_auth_dep),
+        _: None = Depends(dep_admin),
     ):
         trace_id = _trace_id(request)
         rows = await webhook_store.list_deliveries((status or "").strip())
@@ -908,7 +1284,7 @@ def build_app(
         delivery_id: str,
         body: WebhookRetryRequest,
         request: Request,
-        _: None = Depends(_auth_dep),
+        _: None = Depends(dep_admin),
     ):
         trace_id = _trace_id(request)
         row = await webhook_store.get_delivery(delivery_id)
@@ -929,19 +1305,17 @@ def build_app(
         return {"ok": True, "trace_id": trace_id, "data": redelivered}
 
     @app.get("/v1/webhooks/dlq")
-    async def v1_webhooks_dlq(request: Request, _: None = Depends(_auth_dep)):
+    async def v1_webhooks_dlq(request: Request, _: None = Depends(dep_admin)):
         trace_id = _trace_id(request)
         rows = await webhook_store.list_dlq()
         return {"ok": True, "trace_id": trace_id, "data": {"items": rows}}
 
-    async def _handle_inbound(provider: str, endpoint_id: str, request: Request) -> dict[str, Any]:
-        try:
-            payload = await request.json()
-            if not isinstance(payload, dict):
-                payload = {"raw": payload}
-        except Exception:
-            text = await request.body()
-            payload = {"raw_text": text.decode("utf-8", errors="replace")}
+    async def _handle_inbound_payload(
+        provider: str,
+        endpoint_id: str,
+        payload: dict[str, Any],
+        inbound_headers: dict[str, str],
+    ) -> dict[str, Any]:
         source = f"webhook.{provider}"
         ev = CoreEvent(
             event_type=f"webhook.{provider}.inbound",
@@ -949,13 +1323,12 @@ def build_app(
             payload={
                 "endpoint_id": endpoint_id,
                 "provider": provider,
-                "headers": dict(request.headers),
+                "headers": inbound_headers,
                 "payload": payload,
                 "received_at": _utc_now(),
             },
         )
         agent.event_bus.publish(ev)
-        # Basic bridge: if payload has text/message, pass into agent chat.
         txt = str(
             payload.get("text")
             or payload.get("message")
@@ -964,18 +1337,33 @@ def build_app(
         ).strip()
         chat_reply = ""
         if txt:
+            disp = payload.get("author_display_name") or payload.get("display_name")
             chat_reply = await agent.chat(
                 user_message=txt,
                 username=str(payload.get("username") or f"{provider}_user"),
                 discord_user_id=str(payload.get("user_id") or ""),
                 channel_id=str(payload.get("channel_id") or f"{provider}:{endpoint_id}"),
+                author_display_name=str(disp).strip() if disp else None,
             )
         return {"accepted": True, "provider": provider, "endpoint_id": endpoint_id, "reply": chat_reply}
 
     @app.post("/v1/webhooks/in/{provider}/{endpoint_id}")
     async def v1_webhooks_inbound(provider: str, endpoint_id: str, request: Request):
         trace_id = _trace_id(request)
-        out = await _handle_inbound(provider, endpoint_id, request)
+        raw_body = await request.body()
+        ia = config.get("internal_api") if isinstance(config.get("internal_api"), dict) else {}
+        secret = str(ia.get("webhook_inbound_secret") or "").strip()
+        if secret:
+            sig = request.headers.get("x-neyra-signature") or request.headers.get("X-Neyra-Signature")
+            if not _verify_inbound_webhook_signature(secret, raw_body, sig):
+                return JSONResponse(
+                    status_code=401,
+                    content=_err_payload(trace_id, "invalid_signature", "Invalid or missing X-Neyra-Signature"),
+                    headers={"x-trace-id": trace_id},
+                )
+        payload = _parse_inbound_json_body(raw_body)
+        inbound_headers = {k: v for k, v in request.headers.items()}
+        out = await _handle_inbound_payload(provider, endpoint_id, payload, inbound_headers)
         return {"ok": True, "trace_id": trace_id, "data": out}
 
     @app.get("/v1/webhooks/in/{provider}/{endpoint_id}/health")
@@ -1034,6 +1422,8 @@ def build_app(
             username = str(msg.get("username") or "ws_user")
             platform_user_id = str(msg.get("platform_user_id") or "")
             channel_id = str(msg.get("channel_id") or "ws")
+            ws_disp = msg.get("author_display_name") or msg.get("display_name")
+            ws_author_disp = str(ws_disp).strip() if ws_disp else None
 
             try:
                 async for chunk in agent.chat_stream(
@@ -1041,6 +1431,7 @@ def build_app(
                     username=username,
                     discord_user_id=platform_user_id,
                     channel_id=channel_id,
+                    author_display_name=ws_author_disp,
                 ):
                     if chunk.get("type") == "token":
                         await websocket.send_json(

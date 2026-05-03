@@ -60,8 +60,10 @@ def apply_env_secrets(cfg: dict) -> None:
 
     sp = _s("SCREEN_PROXY_SECRET")
     if sp:
-        vis = cfg.setdefault("vision", {})
-        vis.setdefault("screen_proxy", {})["secret"] = sp
+        # Будущий отдельный модуль screen-proxy (не vision.*); см. PLAN / документацию плагина.
+        plug = cfg.setdefault("screen_proxy_plugin", {})
+        if isinstance(plug, dict):
+            plug["secret"] = sp
 
     tid = _s("TELEGRAM_API_ID")
     if tid:
@@ -78,6 +80,22 @@ def apply_env_secrets(cfg: dict) -> None:
     iat = _s("INTERNAL_API_TOKEN")
     if iat:
         cfg.setdefault("internal_api", {})["token"] = iat
+
+    bind_h = _s("INTERNAL_API_BIND_HOST")
+    if bind_h:
+        cfg.setdefault("internal_api", {})["host"] = bind_h
+
+    iv = _s("INTERNAL_API_VIEWER_TOKEN")
+    if iv:
+        cfg.setdefault("internal_api", {})["viewer_token"] = iv
+
+    im = _s("INTERNAL_API_MAINT_TOKEN")
+    if im:
+        cfg.setdefault("internal_api", {})["maint_token"] = im
+
+    wh_in = _s("WEBHOOK_INBOUND_SECRET")
+    if wh_in:
+        cfg.setdefault("internal_api", {})["webhook_inbound_secret"] = wh_in
 
     yk = _s("YANDEX_API_KEY")
     yf = _s("YANDEX_FOLDER_ID") or _s("YANDEX_ID_KEY")

@@ -72,9 +72,54 @@ openrouter:
   # RU: API ключ подставляется из .env; в шаблоне оставляем пустым.
   api_key: ""
 
-  # EN: Primary chat model for live replies.
-  # RU: Основная чат-модель для живых ответов.
-  model: "qwen/qwen3-235b-a22b-2507"
+  # EN: Per-role settings (nested). Keys model/id + sampling budgets. Legacy flat openrouter.* still works.
+  # RU: Настройки по ролям (вложенные dict). Ключ model или id — ID на OpenRouter.
+
+  talk_model:
+    model: "qwen/qwen3-235b-a22b-2507"
+    reply_max_tokens: 220
+    lyrics_reply_max_tokens: 4096
+    temperature: 0.8
+    top_p: 1.0
+    presence_penalty: 0.3
+    frequency_penalty: 0.3
+    timeout_seconds: 30.0
+    max_retries: 1
+    primary_first_token_timeout_seconds: 8.0
+
+  brain_model:
+    model: "qwen/qwen3-235b-a22b-2507"
+    max_tokens: 8192
+    temperature: 0.35
+    top_p: 1.0
+    timeout_seconds: 30.0
+    max_retries: 1
+
+  memory_model:
+    model: "qwen/qwen3-next-80b-a3b-instruct:free"
+    max_tokens: 900
+    temperature: 0.6
+    timeout_seconds: 60.0
+    max_retries: 1
+
+  # EN: VL + pipeline (Discord attachments, image limits, last-screen memory). Single source for vision.
+  # RU: VL-модель и весь контур зрения — только здесь (корневого vision: больше нет).
+  vision_model:
+    enabled: true
+    use_main_model_for_vision: false
+    model: "qwen/qwen3.5-flash-02-23"
+    max_tokens: 800
+    temperature: 0.75
+    timeout_seconds: 180.0
+    max_images_per_message: 4
+    max_image_bytes: 8388608
+    max_image_width: 1920
+    max_image_height: 1080
+    remember_last_image: true
+    last_image_note_max_chars: 1200
+
+  # EN: Deprecated flat aliases (omit when using nested blocks above).
+  # model / brain_max_tokens / reply_max_tokens at root — см. expand_openrouter_nested в core/llm_profile.py
 
   # EN: OpenRouter API base URL.
   # RU: Базовый URL OpenRouter API.
@@ -84,61 +129,10 @@ openrouter:
   # RU: Ожидаемый контекстный бюджет для оркестратора.
   context_window: 16384
 
-  # EN: Sampling temperature for live responses (higher = more creative).
-  # RU: Температура генерации для live-ответов (выше = креативнее).
-  temperature: 0.8
-
-  # EN: Nucleus sampling threshold.
-  # RU: Порог nucleus sampling.
-  top_p: 1.0
-
-  # EN: Penalizes repeating already used topics.
-  # RU: Штрафует за повтор уже затронутых тем.
-  presence_penalty: 0.3
-
-  # EN: Penalizes token-level repetition.
-  # RU: Штрафует за повтор одинаковых токенов.
-  frequency_penalty: 0.3
-
-  # EN: Max tokens for normal assistant reply.
-  # RU: Максимум токенов для обычного ответа ассистента.
-  reply_max_tokens: 220
-
-  # EN: Max tokens for vision model output.
-  # RU: Максимум токенов для ответа vision-модели.
-  vision_max_tokens: 800
-
-  # EN: Max tokens for scheduled reflection routines.
-  # RU: Максимум токенов для задач рефлексии.
-  reflection_max_tokens: 900
-
-  # EN: Temperature used by reflection generation.
-  # RU: Температура генерации для рефлексии.
-  reflection_temperature: 0.6
-
-  # ── Scheduled reflection model (`reflection_model`) ───────────────────────────
-  # EN:
-  #   Used by `ReflectionEngine` (core/reflection.py): night job (~04:00), «small»
-  #   reflections, hourly diary slices — summarizing chat.log → journal / diary.
-  #   This is NOT run after every Discord message; it batches logs on a schedule.
-  #   Budget/temperature for these calls: reflection_max_tokens + reflection_temperature above.
-  # RU:
-  #   Модель для «тяжёлой» запланированной рефлексии: ночной прогон, малые рефлексии,
-  #   почасовые срезы дневника — разбор chat.log → журнал / дневник. Это не после каждого
-  #   сообщения в Discord, а пакетная обработка по расписанию.
-  #   Лимиты: reflection_max_tokens и reflection_temperature в этом же блоке openrouter.
-  reflection_model: "qwen/qwen3-next-80b-a3b-instruct:free"
-
-  # EN: HTTP timeout for regular OpenRouter calls.
-  # RU: HTTP timeout для обычных вызовов OpenRouter.
+  # EN: HTTP timeout fallback when not set inside talk_model (same for max_retries).
+  # RU: Запасной таймаут, если не задан в talk_model.
   timeout_seconds: 30.0
 
-  # EN: First-token watchdog timeout for stream calls.
-  # RU: Таймаут ожидания первого токена в stream-режиме.
-  primary_first_token_timeout_seconds: 8.0
-
-  # EN: Retry attempts for transient API failures.
-  # RU: Количество повторов при временных сбоях API.
   max_retries: 1
 
   # -------------------------
@@ -174,27 +168,17 @@ openrouter:
     anchor_reply: "SAY:"
 
   # -------------------------
-  # Async reflection — отдельно от `reflection_model` выше
-  # Async reflection — separate from scheduled `reflection_model`
+  # Async reflection (behavior only — model is openrouter.memory_model)
   # -------------------------
   # EN:
-  #   When enabled: after EACH user-visible reply, Neyra fires a short background LLM call
-  #   (`llm_think` in agent.py) → one diary note (source async_reflection). Fast/cheap model is OK.
-  #   Does NOT replace nightly ReflectionEngine; both can coexist with different models.
-  #   If enabled=true, set `model` explicitly (same free tier as reflection is fine).
+  #   When enabled: after EACH user-visible reply, a short background call using memory_model
+  #   → one diary note (source async_reflection). Does NOT replace nightly ReflectionEngine.
   # RU:
-  #   Если включено: после КАЖДОГО ответа пользователю — короткий фоновый вызов LLM → заметка
-  #   в дневник (источник async_reflection). Удобно держать ту же бесплатную/дёшевую модель.
-  #   Не заменяет ночную рефлексию из reflection_model — это два разных контура.
-  #   При enabled=true обязательно задайте `model` (можно такую же, как reflection_model).
+  #   После каждого ответа — короткий фоновый вызов на memory_model → заметка в дневник.
   async_reflection:
     # EN: Master switch for post-reply background diary notes (not the nightly journal job).
     # RU: Включить фоновые заметки после каждого ответа (не путать с ночным журналом).
     enabled: false
-
-    # EN: Model ONLY for those post-reply notes (timeouts/max_tokens below apply here).
-    # RU: Только для этих пост-ответных заметок (таймауты и max_tokens — из этого блока).
-    model: ""
 
     # EN: Temperature for async reflection text.
     # RU: Температура для текста фоновой рефлексии.
@@ -215,65 +199,6 @@ openrouter:
     # EN: Max saved diary note length from async reflection.
     # RU: Максимальная длина заметки в дневник из фоновой рефлексии.
     max_note_chars: 1200
-
-# ---------------------------
-# Vision pipeline / Vision-контур
-# ---------------------------
-vision:
-  # EN: Enables image processing in supported interfaces.
-  # RU: Включает обработку изображений в поддерживаемых интерфейсах.
-  enabled: true
-
-  # EN: true = use same model as text; false = use dedicated vision model below.
-  # RU: true = использовать ту же модель, что и для текста; false = отдельную vision-модель ниже.
-  use_main_model_for_vision: false
-
-  # EN: Dedicated vision model when use_main_model_for_vision=false.
-  # RU: Отдельная vision-модель, если use_main_model_for_vision=false.
-  model: "qwen/qwen3.5-flash-02-23"
-
-  # EN: Max number of images accepted from one user message.
-  # RU: Максимум изображений, принимаемых из одного сообщения пользователя.
-  max_images_per_message: 4
-
-  # EN: Max image size in bytes before rejection/downscale.
-  # RU: Максимальный размер изображения в байтах до отклонения/сжатия.
-  max_image_bytes: 8388608
-
-  # EN: Max image width after normalization.
-  # RU: Максимальная ширина изображения после нормализации.
-  max_image_width: 1920
-
-  # EN: Max image height after normalization.
-  # RU: Максимальная высота изображения после нормализации.
-  max_image_height: 1080
-
-  # EN: Stores short memory note about last image per channel.
-  # RU: Хранит краткую заметку о последнем изображении по каналу.
-  remember_last_image: true
-
-  # EN: Max chars for stored last-image note.
-  # RU: Максимум символов в заметке о последнем изображении.
-  last_image_note_max_chars: 1200
-
-  # EN: Optional HTTP screen capture proxy for local machine screenshots.
-  # RU: Опциональный HTTP прокси для получения скриншотов с локальной машины.
-  screen_proxy:
-    # EN: Enables screen proxy integration.
-    # RU: Включает интеграцию screen proxy.
-    enabled: false
-
-    # EN: Base URL of local/remote screenshot service.
-    # RU: Базовый URL локального/удалённого сервиса скриншотов.
-    base_url: "http://127.0.0.1:8788"
-
-    # EN: Shared secret for proxy authentication (keep in .env in real setup).
-    # RU: Секрет для авторизации прокси (в рабочем варианте держать в .env).
-    secret: ""
-
-    # EN: Default display index for multi-monitor setups.
-    # RU: Индекс экрана по умолчанию для многомониторных систем.
-    default_display: 0
 
 # ---------------------------
 # Memory subsystem / Подсистема памяти
@@ -330,6 +255,32 @@ memory:
   # EN: Intended max long-term records (cleanup policy depends on runtime code).
   # RU: Целевой максимум записей в памяти (очистка зависит от runtime-логики).
   max_records: 10000
+
+  # EN: Subdirectory (under the Chroma parent path) for cold JSONL archives from /v1/memory/summarize.
+  # RU: Подкаталог (рядом с Chroma) для JSONL-архивов при summarize.
+  ltm_archive_dir: "ltm_archive"
+
+  # EN: Max tokens for LLM digest when running POST /v1/memory/summarize with compress_with_llm.
+  # RU: Лимит токенов digest при summarize с LLM.
+  ltm_summarize_max_tokens: 2048
+
+  # EN: Background LTM prune (same APScheduler as reflection).
+  # RU: Фоновый prune LTM (тот же APScheduler, что и рефлексия).
+  ltm_auto_prune:
+    enabled: true
+    interval_hours: 168
+    older_than_days: 90
+    dry_run: false
+
+  # EN: Background cold-archive + optional LLM digest (costly; often disabled).
+  # RU: Фоновый архив + digest LLM (дорого по токенам; часто выключено).
+  ltm_auto_summarize:
+    enabled: false
+    interval_hours: 720
+    older_than_days: 60
+    max_entries: 500
+    compress_with_llm: true
+    dry_run: false
 
   # EN: Nightly reflection schedule (HH:MM, local time).
   # RU: Расписание ночной рефлексии (HH:MM, локальное время).
@@ -406,6 +357,32 @@ logging:
   # EN: Log level: DEBUG | INFO | WARNING | ERROR.
   # RU: Уровень логов: DEBUG | INFO | WARNING | ERROR.
   level: "INFO"
+
+# ---------------------------
+# MCP client / Подключение внешних MCP-серверов (E2)
+# ---------------------------
+# EN: Dynamic tools from local/remote MCP servers (stdio subprocess or HTTP SSE).
+#     Requires: pip install mcp
+# RU: Динамические инструменты с внешних MCP (stdio или SSE). Нужен пакет: pip install mcp
+#
+# mcp_client:
+#   enabled: true
+#   connect_timeout_seconds: 45
+#   # EN: Append short tool name list to the system prompt (no execution).
+#   # RU: Краткий список имён MCP в системный промпт (без реального вызова).
+#   inject_tool_catalog: false
+#   # EN: Use OpenAI-style tool calling loop (model must support tool_calls; Qwen via OR may be weak).
+#   # RU: Цикл bind_tools + вызовы (нужна поддержка tool_calls у модели).
+#   llm_tool_calls: false
+#   llm_tool_max_steps: 4
+#   servers:
+#     sqlite_example:
+#       transport: stdio
+#       command: ["npx", "-y", "@modelcontextprotocol/server-sqlite", "/path/to/database.db"]
+#     filesystem_example:
+#       transport: stdio
+#       command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+#     # sse_example: "http://127.0.0.1:8080/sse"
 
 # ---------------------------
 # Core health monitor / Монитор здоровья ядра

@@ -182,6 +182,24 @@ def neyra_inspect_memory() -> str:
     return neyra_api_request("GET", "/v1/debug/memory", None)
 
 
+@mcp.tool()
+def neyra_health() -> str:
+    """GET /v1/health — быстрый ping ядра и монитора (viewer-доступ при настроенных ролях)."""
+    return neyra_api_request("GET", "/v1/health", None)
+
+
+@mcp.tool()
+def neyra_lifecycle(action: str) -> str:
+    """
+    POST /v1/debug/lifecycle — остановить процесс ядра (нужен admin token и NEYRA_DEBUG_LIFECYCLE=1 или debug_lifecycle_enabled в конфиге).
+    action: «stop» или «restart» (на уровне ОС то же завершение; в Docker при restart:unless-stopped контейнер поднимется снова).
+    """
+    a = (action or "").strip().lower()
+    if a not in ("stop", "restart"):
+        return "action must be stop or restart"
+    return neyra_api_request("POST", "/v1/debug/lifecycle", {"action": a})
+
+
 def main() -> None:
     mcp.run()
 

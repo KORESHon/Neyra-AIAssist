@@ -28,6 +28,20 @@ slash_sync_guild_id: null
 # EN: Max wait for MUSIC_RESULT after publishing a music command (seconds).
 music_result_timeout_seconds: 25.0
 
+# EN: Proactive chat (stage B5) — periodic messages via Internal API POST /v1/chat only (no core edits).
+# RU: Спонтанные реплики — только HTTP к ядру; нужны запущенный internal_api и при необходимости INTERNAL_API_TOKEN.
+#     Интервал — случайная пауза между сообщениями (минуты). Канал: proactive.channel_id или первый из channel_ids.
+proactive:
+  enabled: false
+  min_interval_minutes: 10
+  max_interval_minutes: 30
+  channel_id: null
+  request_timeout_seconds: 180
+  username: "neyra_proactive"
+  platform_user_id: "discord_proactive"
+  author_display_name: "Нейра"
+  # prompt: "..."  # optional override; default — короткая спонтанная реплика / мемы (см. bot.py)
+
 # EN: Lavalink nodes (read by interfaces.discord.music). Legacy: plugins.discord_music in config.
 music:
   nodes:

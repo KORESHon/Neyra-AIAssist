@@ -12,17 +12,21 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
-import json
 import logging
 import os
+import random
 from datetime import datetime, timezone
 import re
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
 import discord
+import httpx
 from discord import app_commands
+from discord.ext import tasks
 from discord.app_commands import Choice
+
+from core.llm_profile import resolve_openai_compatible_connection
 
 from core.event_bus import (
     MUSIC_CLEAR,
@@ -49,10 +53,88 @@ QUEUE_PAGE_SIZE = 10
 # Discord embed field value limit; keep headroom for ellipsis
 EMBED_FIELD_SAFE = 1000
 
+# Суффикс к запросу в ядро: web_search + полный вывод; ядро дополнительно включает lyrics_mode (см. core/agent.py).
+LYRICS_HIDDEN_SUFFIX = (
+    "\n\n[SYSTEM HIDDEN INSTRUCTION: User wants lyrics. You MUST use the web_search tool to find the exact lyrics. "
+    "Do NOT generate lyrics from internal memory. CRITICAL: Output the FULL lyrics preserving original formatting. "
+    "You MUST use line breaks (\\n) for verses and choruses. Do NOT squash the text into a single paragraph. "
+    "Override any brevity rule: the reply must be the complete song text, not a summary.]"
+)
+
+INTENT_LABELS = frozenset({"PLAY_MUSIC", "GET_LYRICS", "CHAT"})
+
+
+def chunk_message(text: str, limit: int = 1900) -> list[str]:
+    """
+    Делит текст на части под лимит Discord (~2000); сначала по \\n, иначе по пробелу, иначе по длине.
+    Не режет строку посередине, если есть естественная точка разрыва в окне.
+    """
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+    raw = text or ""
+    if len(raw) <= limit:
+        return [raw]
+    out: list[str] = []
+    rest = raw
+    while rest:
+        if len(rest) <= limit:
+            out.append(rest)
+            break
+        window = rest[:limit]
+        cut = window.rfind("\n")
+        if cut > 0:
+            out.append(rest[:cut].rstrip())
+            rest = rest[cut + 1 :].lstrip("\n")
+            continue
+        cut = window.rfind(" ")
+        if cut > 0:
+            out.append(rest[:cut].rstrip())
+            rest = rest[cut + 1 :].lstrip()
+            continue
+        out.append(rest[:limit])
+        rest = rest[limit:]
+    return out if out else [""]
+
 COL_BRAND = 0x5865F2
 COL_OK = 0x57F287
 COL_ERR = 0xED4245
 COL_WARN = 0xFEE75C
+
+
+def _lyrics_request_hint(text: str) -> bool:
+    """Грубый признак запроса текста песни — включает LLM-классификатор до маршрутизации."""
+    t = (text or "").lower()
+    if re.search(
+        r"\b(текст\s+песн|слова\s+песн|lyrics|куплет(а|ы)?\b|реплик(а|и)\s+текст|"
+        r"дай\s+текст|найди\s+текст|покажи\s+текст|скинь\s+текст|текст\s+трека|слова\s+трека)\b",
+        t,
+    ):
+        return True
+    return False
+
+
+def _normalize_intent_label(raw: str) -> str:
+    """Достаём одно из PLAY_MUSIC | GET_LYRICS | CHAT из ответа микро-модели."""
+    s = (raw or "").strip().upper()
+    for label in ("GET_LYRICS", "PLAY_MUSIC", "CHAT"):
+        if label in s:
+            return label
+    m = re.search(r"\b(PLAY_MUSIC|GET_LYRICS|CHAT)\b", s)
+    if m:
+        return m.group(1)
+    if re.search(r"LYRIC", s):
+        return "GET_LYRICS"
+    if re.search(r"PLAY", s) and "CHAT" not in s:
+        return "PLAY_MUSIC"
+    return "CHAT"
+
+
+def _intent_classifier_model(cfg: dict) -> str:
+    from core.llm_profile import resolved_memory_model
+
+    llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+    prov = str(llm.get("provider") or cfg.get("BACKEND") or "openrouter").strip().lower()
+    return resolved_memory_model(cfg, prov)
 
 
 def _clip_field(text: str, limit: int = EMBED_FIELD_SAFE) -> str:
@@ -190,8 +272,118 @@ class NeyraDiscordBot(discord.Client):
 
         self.agent.event_bus.subscribe(MUSIC_RESULT, self._on_music_result)
 
-    @staticmethod
-    def _candidate_music_intent(text: str) -> Optional[dict[str, str]]:
+    def _internal_api_base_url(self) -> str:
+        ia = self.config.get("internal_api") or {}
+        host = str(ia.get("host") or "127.0.0.1")
+        port = int(ia.get("port") or 8787)
+        return f"http://{host}:{port}".rstrip("/")
+
+    def _resolve_proactive_text_channel(self) -> Optional[discord.TextChannel]:
+        disc = self.config.get("discord") or {}
+        proactive = disc.get("proactive") if isinstance(disc.get("proactive"), dict) else {}
+        raw_c = proactive.get("channel_id")
+        if raw_c is not None and str(raw_c).strip().lower() not in ("", "null", "none"):
+            ch = self.get_channel(int(raw_c))
+            if isinstance(ch, discord.TextChannel):
+                return ch
+        for cid in sorted(self.active_channel_ids):
+            ch = self.get_channel(int(cid))
+            if isinstance(ch, discord.TextChannel):
+                return ch
+        return None
+
+    async def _internal_api_chat(
+        self,
+        *,
+        text: str,
+        channel_id: int,
+        username: str,
+        platform_user_id: str,
+        author_display_name: str,
+    ) -> Optional[str]:
+        """Этап B5: спонтанное сообщение только через Internal API (`POST /v1/chat`), без прямого вызова ядра."""
+        ia = self.config.get("internal_api") or {}
+        token = str(ia.get("token") or "").strip()
+        headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        body = {
+            "text": text,
+            "username": username,
+            "platform_user_id": platform_user_id,
+            "channel_id": str(channel_id),
+            "author_display_name": author_display_name,
+        }
+        disc = self.config.get("discord") or {}
+        proactive = disc.get("proactive") if isinstance(disc.get("proactive"), dict) else {}
+        timeout = float(proactive.get("request_timeout_seconds") or ia.get("proactive_chat_timeout_seconds") or 180.0)
+        url = f"{self._internal_api_base_url()}/v1/chat"
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.post(url, headers=headers, json=body)
+            r.raise_for_status()
+            payload = r.json()
+            if not payload.get("ok"):
+                logger.warning("proactive /v1/chat: ответ ok=false | %s", payload)
+                return None
+            data = payload.get("data")
+            if isinstance(data, dict):
+                return str(data.get("text") or "").strip()
+            return None
+        except Exception as e:
+            logger.warning("proactive /v1/chat не удался: %s", e)
+            return None
+
+    @tasks.loop(seconds=1)
+    async def proactive_spark(self):
+        """Периодическое сообщение в канал: интервал задаётся паузой внутри итерации (рандом 10–30 мин и др.)."""
+        disc = self.config.get("discord") or {}
+        proactive = disc.get("proactive") if isinstance(disc.get("proactive"), dict) else {}
+        if not bool(proactive.get("enabled", False)):
+            return
+        lo_m = float(proactive.get("min_interval_minutes", 10))
+        hi_m = float(proactive.get("max_interval_minutes", 30))
+        lo_s = max(60.0, lo_m * 60.0)
+        hi_s = max(lo_s, hi_m * 60.0)
+        await asyncio.sleep(random.uniform(lo_s, hi_s))
+
+        channel = self._resolve_proactive_text_channel()
+        if channel is None:
+            logger.warning("proactive: нет текстового канала — задайте discord.channel_ids или discord.proactive.channel_id")
+            return
+
+        default_prompt = (
+            "[System]: Придумай спонтанное сообщение для чата, используй актуальные мемы или коротко прокомментируй тишину. "
+            "Не пиши, что это команда или задание. Одна или две короткие реплики, как живая участница чата."
+        )
+        prompt = str(proactive.get("prompt") or "").strip() or default_prompt
+        uname = str(proactive.get("username") or "neyra_proactive").strip() or "neyra_proactive"
+        pid = str(proactive.get("platform_user_id") or "discord_proactive").strip() or "discord_proactive"
+        adisp = str(proactive.get("author_display_name") or "Нейра").strip() or "Нейра"
+
+        reply = await self._internal_api_chat(
+            text=prompt,
+            channel_id=int(channel.id),
+            username=uname,
+            platform_user_id=pid,
+            author_display_name=adisp,
+        )
+        if not reply:
+            return
+        preview = self._make_preview(reply, lyrics_mode=False)
+        if not preview:
+            return
+        parts = chunk_message(preview, limit=MAX_MSG_LEN)
+        await channel.send(parts[0])
+        for chunk in parts[1:]:
+            await channel.send(chunk)
+        logger.info("Proactive Discord: отправлено в #%s, частей=%s", channel.name, len(parts))
+
+    @proactive_spark.before_loop
+    async def proactive_spark_before(self):
+        await self.wait_until_ready()
+
+    def _candidate_music_intent(self, text: str) -> Optional[dict[str, str]]:
         raw = (text or "").strip()
         if not raw:
             return None
@@ -218,37 +410,47 @@ class NeyraDiscordBot(discord.Client):
         q = re.sub(r"^(включи|вруби|поставь|play|music|музыка)\s+", "", q, flags=re.IGNORECASE).strip()
         return {"intent": "music_control", "action": MUSIC_PLAY, "query": q}
 
-    async def _confirm_music_intent(self, text: str, candidate: dict[str, str]) -> Optional[dict[str, str]]:
-        # Non-play actions should stay deterministic and fast.
-        if str(candidate.get("action") or "") != MUSIC_PLAY:
-            return candidate
-        # Stage-B semantic confirmation via LLM JSON output.
-        if not getattr(self.agent, "llm_primary", None):
-            return candidate
+    async def _classify_intent(self, user_text: str) -> str:
+        """
+        Микро-классификатор для маршрутизации Discord: музыка vs текст песни vs обычный чат.
+        Модель — openrouter.memory_model (или её fallback из конфига).
+        """
         prompt = (
-            "Classify user text as music control intent.\n"
-            "Return ONLY JSON: {\"is_music\":bool,\"action\":string,\"query\":string,\"confidence\":float}.\n"
-            f"Allowed action: {MUSIC_PLAY},{MUSIC_PAUSE},{MUSIC_RESUME},{MUSIC_SKIP},{MUSIC_STOP},{MUSIC_CLEAR},{MUSIC_QUEUE}.\n"
-            f"Candidate={json.dumps(candidate, ensure_ascii=False)}\n"
-            f"Text={text}"
+            "You are an intent classifier for a Discord bot. The bot can play music in a voice channel "
+            "or chat/search the web. Analyze the user's text and reply with EXACTLY ONE word from this list: "
+            "PLAY_MUSIC (if user wants to hear/play audio), GET_LYRICS (if user specifically asks for song lyrics/text), "
+            "CHAT (for everything else). User text: "
+            + (user_text or "")
         )
         try:
-            response = await self.agent.llm_primary.ainvoke(prompt)
-            content = str(getattr(response, "content", "") or "")
-            match = re.search(r"\{[\s\S]*\}", content)
-            if not match:
-                return candidate
-            data = json.loads(match.group(0))
-            if not data.get("is_music"):
-                return None
-            confidence = float(data.get("confidence", 0.0))
-            if confidence < 0.65:
-                return None
-            action = str(data.get("action") or candidate.get("action") or MUSIC_PLAY).strip()
-            query = str(data.get("query") or candidate.get("query") or "").strip()
-            return {"intent": "music_control", "action": action, "query": query}
-        except Exception:
-            return candidate
+            conn = resolve_openai_compatible_connection(self.config)
+            model = _intent_classifier_model(self.config)
+            url = f"{conn.base_url}/chat/completions"
+            headers: dict[str, str] = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {conn.api_key}",
+            }
+            headers.update({str(k): str(v) for k, v in dict(conn.default_headers).items()})
+            body: dict[str, Any] = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 16,
+                "temperature": 0.0,
+            }
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                r = await client.post(url, headers=headers, json=body)
+            r.raise_for_status()
+            data = r.json()
+            choice = (data.get("choices") or [{}])[0]
+            msg = choice.get("message") or {}
+            content = str(msg.get("content") or "").strip()
+            label = _normalize_intent_label(content)
+            if label in INTENT_LABELS:
+                return label
+            return "CHAT"
+        except Exception as ex:
+            logger.warning("Discord intent classifier failed: %s", ex)
+            return "CHAT"
 
     def _on_music_result(self, event: CoreEvent) -> None:
         payload = event.payload or {}
@@ -298,6 +500,17 @@ class NeyraDiscordBot(discord.Client):
             logger.info("Активные каналы: %s", self.active_channel_ids)
         else:
             logger.info("Активных каналов нет — отвечаю только на @mention")
+
+        disc_cfg = self.config.get("discord") or {}
+        proactive = disc_cfg.get("proactive") if isinstance(disc_cfg.get("proactive"), dict) else {}
+        if proactive.get("enabled", False):
+            if not self.proactive_spark.is_running():
+                self.proactive_spark.start()
+                logger.info(
+                    "Спонтанные сообщения (B5): вкл · пауза %s–%s мин между сообщениями · ответ через POST /v1/chat",
+                    proactive.get("min_interval_minutes", 10),
+                    proactive.get("max_interval_minutes", 30),
+                )
 
     async def setup_hook(self) -> None:
         @self.tree.command(name="reset", description="Сбросить краткую память диалога")
@@ -353,10 +566,18 @@ class NeyraDiscordBot(discord.Client):
             s = self.agent.get_stats()
             cpu = psutil.cpu_percent(interval=None)
             mem = psutil.virtual_memory()
+            tm = s.get("talk_model") or s.get("model")
+            bm = s.get("brain_model")
+            mm = s.get("memory_model")
+            model_lines = [f"Talk: {tm}"]
+            if bm:
+                model_lines.append(f"Brain: {bm}")
+            if mm:
+                model_lines.append(f"Memory: {mm}")
             lines = [
                 "**Статистика**",
                 f"Режим: {s['mode'].upper()}",
-                f"Модель: {s['model']}",
+                *model_lines,
                 f"Память диалога: {s['short_memory_size']} сообщений",
                 f"RAG: {s['long_memory_records']} записей",
                 f"Людей в БД: {s.get('people_db_records', 0)}",
@@ -477,9 +698,21 @@ class NeyraDiscordBot(discord.Client):
         if vision_imgs and content == "*молчишь*":
             content = "Что на изображении? Коротко по-русски."
 
-        candidate = self._candidate_music_intent(content)
-        if candidate:
-            resolved = await self._confirm_music_intent(content, candidate)
+        music_candidate = self._candidate_music_intent(content)
+        lyrics_hint = _lyrics_request_hint(content)
+
+        # Пауза/стоп/очередь/skip — только детерминированно, без классификатора.
+        if music_candidate and str(music_candidate.get("action") or "") != MUSIC_PLAY:
+            route = "PLAY_MUSIC"
+        elif music_candidate or lyrics_hint:
+            route = await self._classify_intent(content)
+        else:
+            route = "CHAT"
+
+        use_music = bool(music_candidate) and route == "PLAY_MUSIC"
+
+        if use_music:
+            resolved = music_candidate
         else:
             resolved = None
 
@@ -630,22 +863,35 @@ class NeyraDiscordBot(discord.Client):
                 )
             return
 
+        chat_content = content
+        if route == "GET_LYRICS":
+            chat_content = content + LYRICS_HIDDEN_SUFFIX
+
+        author_display = (
+            getattr(message.author, "display_name", None)
+            or getattr(message.author, "global_name", None)
+            or message.author.name
+        )
         asyncio.create_task(
             self._run_chat_stream(
                 text_channel=message.channel,
                 starter_message=message,
-                content=content,
+                content=chat_content,
                 username=message.author.name,
+                author_display_name=str(author_display).strip() or message.author.name,
                 discord_user_id=str(message.author.id),
                 channel_id_str=str(message.channel.id),
                 vision_images=vision_imgs if vision_imgs else None,
+                lyrics_mode=(route == "GET_LYRICS"),
             )
         )
 
     async def _collect_image_attachments(self, message: discord.Message) -> list[tuple[str, str]]:
         from core.vision_util import prepare_image_for_vision, resolve_discord_image_mime
 
-        vis = self.config.get("vision") or {}
+        from core.llm_profile import merged_vision_pipeline
+
+        vis = merged_vision_pipeline(self.config)
         if not vis.get("enabled"):
             return []
         max_n = int(vis.get("max_images_per_message", 4))
@@ -683,9 +929,11 @@ class NeyraDiscordBot(discord.Client):
         starter_message: Optional[discord.Message],
         content: str,
         username: str,
+        author_display_name: str,
         discord_user_id: str,
         channel_id_str: str,
         vision_images: Optional[list[tuple[str, str]]],
+        lyrics_mode: bool = False,
     ) -> None:
         async with text_channel.typing():
             response_msg = (
@@ -705,6 +953,7 @@ class NeyraDiscordBot(discord.Client):
                     discord_user_id=discord_user_id,
                     vision_images=vision_images,
                     channel_id=channel_id_str,
+                    author_display_name=author_display_name,
                 ):
                     if chunk["type"] == "token":
                         full_raw += chunk["text"]
@@ -712,7 +961,7 @@ class NeyraDiscordBot(discord.Client):
                             continue
                         now = asyncio.get_event_loop().time()
                         if now - last_edit >= self.stream_edit_interval:
-                            preview = self._make_preview(full_raw)
+                            preview = self._make_preview(full_raw, lyrics_mode=lyrics_mode)
                             try:
                                 await response_msg.edit(content=preview + THINKING_DOT)
                                 last_edit = now
@@ -726,11 +975,11 @@ class NeyraDiscordBot(discord.Client):
                         return
 
                 final_text = done_data.get("text", full_raw).strip() or "*(пустой ответ)*"
-                parts = _split_message(final_text)
+                parts = chunk_message(final_text, limit=1900)
                 await response_msg.edit(content=parts[0])
                 sent_ids: list[int] = [response_msg.id]
-                for part in parts[1:]:
-                    sent = await text_channel.send(part)
+                for chunk in parts[1:]:
+                    sent = await text_channel.send(chunk)
                     sent_ids.append(sent.id)
                 internal_uid = (
                     self.agent.identity.resolve_from_discord(discord_user_id)
@@ -755,7 +1004,7 @@ class NeyraDiscordBot(discord.Client):
                 except Exception:
                     pass
 
-    def _make_preview(self, raw: str) -> str:
+    def _make_preview(self, raw: str, *, lyrics_mode: bool = False) -> str:
         text = re.sub(
             r"<(?:redacted_thinking|think|thought)>.*?</(?:redacted_thinking|think|thought)>",
             "",
@@ -764,28 +1013,16 @@ class NeyraDiscordBot(discord.Client):
         )
         text = re.sub(r"<(?:redacted_thinking|think|thought)>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r"</?(?:redacted_thinking|think|thought)>", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\[[^\]]*\]", "", text).strip()
+        if not lyrics_mode:
+            text = re.sub(r"\[[^\]]*\]", "", text).strip()
+        else:
+            text = text.strip()
         if len(text) > MAX_MSG_LEN - 10:
             text = text[: MAX_MSG_LEN - 10]
         return text
 
     def _resolve_stream_output_mode(self) -> str:
         return "final_only" if self.stream_output_mode == "final_only" else "stream"
-
-
-def _split_message(text: str) -> list[str]:
-    if len(text) <= MAX_MSG_LEN:
-        return [text]
-    parts = []
-    while len(text) > MAX_MSG_LEN:
-        split_at = text.rfind("\n", 0, MAX_MSG_LEN)
-        if split_at == -1:
-            split_at = MAX_MSG_LEN
-        parts.append(text[:split_at])
-        text = text[split_at:].lstrip()
-    if text:
-        parts.append(text)
-    return parts
 
 
 def run_discord_bot(agent: "NeyraAgent", config: dict) -> None:

@@ -3,11 +3,15 @@ core/tools.py — Инструменты (Tools) для агента Нейры
 ──────────────────────────────────────────────────────
 LLM может вызывать эти функции сама через Function Calling.
 
+Динамические MCP-инструменты подмешиваются в рантайме (core/mcp_client.py + NeyraAgent._ensure_mcp),
+их имена вида mcp_<server>_<tool>.
+
 Текущие инструменты:
   • TimeContextTool   — текущее время и дата
   • SystemMonitorTool — состояние системы (безопасные команды)
   • WebSearchTool     — поиск через DuckDuckGo
   • MemorySearchTool  — поиск по ChromaDB
+  • RememberKnowledge — сохранить фрагмент в ChromaDB (любая полезная информация)
   • UpdatePersonFact  — записать новый факт о человеке
   • GetPersonInfo     — получить досье на человека
 """
@@ -161,9 +165,9 @@ def web_search(query: str) -> str:
 @tool
 def search_memory(query: str) -> str:
     """
-    Ищет в долгосрочной памяти (прошлые диалоги) похожие разговоры.
-    Используй когда нужно вспомнить что-то из прошлых бесед.
-    query — то, что нужно вспомнить.
+    Ищет в долгосрочной памяти по смыслу: прошлые фрагменты диалогов и сохранённые знания (RAG).
+    Используй, когда нужно вспомнить факты, о чём договаривались, что сохраняли через remember_knowledge.
+    query — суть того, что нужно найти.
     """
     if _long_memory is None:
         return "Долгосрочная память не инициализирована."
@@ -177,6 +181,32 @@ def search_memory(query: str) -> str:
         lines.append(f"[{i}] {r[:400]}")
 
     return "\n\n".join(lines)
+
+
+@tool
+def remember_knowledge(text: str, category: str = "general") -> str:
+    """
+    Сохраняет фрагмент в долгосрочную векторную память (RAG), чтобы позже найти через search_memory.
+
+    Используй для **любой нормальной информации**, которую разумно вспоминать позже: факты, новости, ситуации, договорённости,
+    предпочтения, контекст чата, заметки о проекте, ссылки на события — не только мемы и шутки.
+    Отдельно про людей: если речь о конкретном человеке из досье — чаще уместен update_person_fact; для всего остального
+    универсального контекста — remember_knowledge.
+
+    Для **мемов, приколов, локальных шуток, интернет-отсылок** тоже сохраняй: удобно передать category=\"meme\" или \"шутки\";
+    при необходимости можно начать text с «[Категория: Мемы/Шутки]».
+
+    text — что запомнить (кратко, 1–5 предложений, своими словами).
+    category — необязательная метка: general, news, situation, meme, fact, шутки и т.п.
+    """
+    if _long_memory is None:
+        return "Долгосрочная память не инициализирована."
+
+    meta = {"source": "agent_tool", "category": (category or "general").strip()[:120]}
+    ok, info = _long_memory.add_knowledge(text.strip(), meta)
+    if ok:
+        return f"Запомнила в долгую память (документ {info})."
+    return f"Не удалось сохранить: {info}"
 
 
 # ─── UpdatePersonFact ────────────────────────────────────────────────────────
@@ -249,6 +279,7 @@ ALL_TOOLS = [
     check_system,
     web_search,
     search_memory,
+    remember_knowledge,
     update_person_fact,
     get_person_info,
     get_character_profile,

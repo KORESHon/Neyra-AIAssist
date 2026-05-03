@@ -13,11 +13,52 @@ import logging
 import re
 import sys
 import threading
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("neyra.memory")
+
+
+def _parse_metadata_timestamp(raw: Any) -> Optional[datetime]:
+    """Парсит ISO timestamp из метаданных Chroma (UTC для сравнения)."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _chroma_flat_metadata(d: Optional[dict[str, Any]]) -> dict[str, str | int | float | bool]:
+    """Chroma требует метаданные примитивами; длинные значения обрезаем."""
+    if not d:
+        return {}
+    out: dict[str, str | int | float | bool] = {}
+    for k, v in d.items():
+        key = str(k)[:256]
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            out[key] = v
+        elif isinstance(v, int):
+            out[key] = v
+        elif isinstance(v, float):
+            out[key] = v
+        elif isinstance(v, str):
+            out[key] = v[:8000]
+        else:
+            out[key] = str(v)[:8000]
+    return out
 
 
 def _configure_embedding_blas_env() -> None:
@@ -84,6 +125,7 @@ class LongTermMemory:
         self._collection = None
         self._embedder = None
         self._init_lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._initializing = False
 
         if not self.rag_enabled:
@@ -182,18 +224,53 @@ class LongTermMemory:
 
             meta = {"timestamp": datetime.now().isoformat(), "type": "dialog"}
             if metadata:
-                meta.update(metadata)
+                meta.update(_chroma_flat_metadata(metadata))
 
-            self._collection.add(
-                ids=[doc_id],
-                embeddings=[embedding],
-                documents=[text],
-                metadatas=[meta],
-            )
+            with self._write_lock:
+                self._collection.add(
+                    ids=[doc_id],
+                    embeddings=[embedding],
+                    documents=[text],
+                    metadatas=[meta],
+                )
             logger.debug(f"Диалог сохранён в ChromaDB: {doc_id}")
 
         except Exception as e:
             logger.error(f"Ошибка сохранения в ChromaDB: {e}")
+
+    def add_knowledge(self, text: str, metadata: Optional[dict[str, Any]] = None) -> tuple[bool, str]:
+        """
+        Добавляет один документ знаний в RAG (не формат «диалог»).
+        Вызывается из Internal API и инструментов агента — одна точка записи в Chroma.
+        """
+        self._init()
+        if not self.rag_enabled:
+            return False, "RAG отключён (rag_enabled: false)"
+        if self._collection is None or self._embedder is None:
+            return False, "ChromaDB или эмбеддер не инициализированы"
+        raw = (text or "").strip()
+        if not raw:
+            return False, "Пустой текст"
+
+        try:
+            meta = _chroma_flat_metadata(metadata)
+            if "type" not in meta:
+                meta["type"] = "knowledge"
+            meta["timestamp"] = datetime.now().isoformat()
+            embedding = self._embedder.encode(raw, show_progress_bar=False).tolist()
+            doc_id = f"knowledge_{uuid.uuid4().hex}"
+            with self._write_lock:
+                self._collection.add(
+                    ids=[doc_id],
+                    embeddings=[embedding],
+                    documents=[raw],
+                    metadatas=[meta],
+                )
+            logger.info("Добавлен документ знаний в ChromaDB: %s", doc_id)
+            return True, doc_id
+        except Exception as e:
+            logger.error("Ошибка add_knowledge: %s", e)
+            return False, str(e)[:500]
 
     def search(self, query: str, n_results: Optional[int] = None) -> list[str]:
         """Ищет похожие диалоги по запросу. Возвращает список текстов."""
@@ -227,6 +304,124 @@ class LongTermMemory:
             return self._collection.count()
         except Exception:
             return 0
+
+    def _iter_all_documents(self) -> list[tuple[str, dict[str, Any], str]]:
+        """Все документы коллекции (ids + meta + text). Для обслуживания / prune."""
+        self._init()
+        if self._collection is None:
+            return []
+        try:
+            batch = self._collection.get(include=["metadatas", "documents"])
+            ids = batch.get("ids") or []
+            metas = batch.get("metadatas") or []
+            docs = batch.get("documents") or []
+            out: list[tuple[str, dict[str, Any], str]] = []
+            for i, doc_id in enumerate(ids):
+                meta = metas[i] if i < len(metas) and metas[i] else {}
+                doc = docs[i] if i < len(docs) else ""
+                out.append((doc_id, dict(meta) if meta else {}, doc or ""))
+            return out
+        except Exception as e:
+            logger.error("ChromaDB get failed: %s", e)
+            return []
+
+    def select_older_than(
+        self,
+        older_than_days: float,
+        *,
+        types: Optional[list[str]] = None,
+    ) -> list[tuple[str, dict[str, Any], str]]:
+        """Записи с timestamp старше порога; без timestamp не трогаем (совместимость)."""
+        self._init()
+        if self._collection is None:
+            return []
+        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        type_set = set(types) if types else None
+        selected: list[tuple[str, dict[str, Any], str]] = []
+        for doc_id, meta, doc in self._iter_all_documents():
+            if str(meta.get("ltm_priority") or "") == "pinned":
+                continue
+            ts = _parse_metadata_timestamp(meta.get("timestamp"))
+            if ts is None:
+                continue
+            if ts >= cutoff:
+                continue
+            dtype = str(meta.get("type") or "dialog")
+            if type_set is not None and dtype not in type_set:
+                continue
+            selected.append((doc_id, meta, doc))
+        return selected
+
+    def prune_older_than(
+        self,
+        older_than_days: float,
+        *,
+        types: Optional[list[str]] = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Удаляет из Chroma записи старше порога (TTL-подобная очистка)."""
+        rows = self.select_older_than(older_than_days, types=types)
+        ids = [r[0] for r in rows]
+        if dry_run:
+            return {"dry_run": True, "matched": len(ids), "deleted": 0, "sample_ids": ids[:40]}
+        if not ids:
+            return {"dry_run": False, "matched": 0, "deleted": 0}
+        deleted = 0
+        chunk = 400
+        with self._write_lock:
+            for i in range(0, len(ids), chunk):
+                part = ids[i : i + chunk]
+                self._collection.delete(ids=part)
+                deleted += len(part)
+        logger.info("LTM prune: удалено %s записей (старше %s дн.)", deleted, older_than_days)
+        return {"dry_run": False, "matched": len(ids), "deleted": deleted}
+
+    def archive_older_than(
+        self,
+        older_than_days: float,
+        archive_dir: Path,
+        *,
+        types: Optional[list[str]] = None,
+        dry_run: bool = False,
+        max_entries: int = 2000,
+    ) -> dict[str, Any]:
+        """
+        Cold archive: выгружает старые записи в JSONL и удаляет их из Chroma.
+        Используется перед summarize или как самостоятельная операция.
+        """
+        rows = self.select_older_than(older_than_days, types=types)
+        if len(rows) > max_entries:
+            rows = rows[:max_entries]
+        ids = [r[0] for r in rows]
+        if dry_run:
+            return {
+                "dry_run": True,
+                "would_archive": len(ids),
+                "archive_path": None,
+                "truncated_to_max": False,
+            }
+        if not ids:
+            return {"dry_run": False, "archived": 0, "deleted_from_chroma": 0, "archive_path": None}
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        path = archive_dir / f"ltm_archive_{stamp}.jsonl"
+        with path.open("w", encoding="utf-8") as f:
+            for doc_id, meta, doc in rows:
+                rec = {"id": doc_id, "metadata": meta, "document": doc}
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        deleted = 0
+        with self._write_lock:
+            for i in range(0, len(ids), 400):
+                part = ids[i : i + 400]
+                self._collection.delete(ids=part)
+                deleted += len(part)
+        logger.info("LTM archive: %s строк → %s, удалено из Chroma: %s", len(ids), path, deleted)
+        return {
+            "dry_run": False,
+            "archived": len(ids),
+            "deleted_from_chroma": deleted,
+            "archive_path": str(path),
+        }
 
 
 # ─── PeopleDB — досье на людей ───────────────────────────────────────────────

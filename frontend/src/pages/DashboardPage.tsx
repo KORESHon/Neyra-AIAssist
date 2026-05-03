@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Activity, Brain, Database, RefreshCw, Wallet } from 'lucide-react'
-import { apiGet } from '../api'
+import { apiGet, apiPost } from '../api'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { EmptyState } from '../components/ui/empty-state'
 import { InlineFeedback } from '../components/ui/inline-feedback'
 import { cn } from '../lib/utils'
-import type { ApiEnvelope, BalanceData, HealthData, MemoryStats, PluginRow } from '../types'
+import type { ApiEnvelope, BalanceData, HealthData, MemoryPolicies, MemoryStats, PluginRow } from '../types'
 
 export function DashboardPage() {
   const [loading, setLoading] = useState(false)
@@ -15,21 +15,29 @@ export function DashboardPage() {
   const [memory, setMemory] = useState<MemoryStats | null>(null)
   const [plugins, setPlugins] = useState<PluginRow[]>([])
   const [balance, setBalance] = useState<BalanceData | null>(null)
+  const [memPolicies, setMemPolicies] = useState<MemoryPolicies | null>(null)
+  const [ltmBusy, setLtmBusy] = useState(false)
+  const [ltmMsg, setLtmMsg] = useState<string | null>(null)
+  const [pruneDays, setPruneDays] = useState('90')
+  const [sumDays, setSumDays] = useState('60')
+  const [sumCompress, setSumCompress] = useState(true)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const [h, m, p, b] = await Promise.all([
+      const [h, m, p, b, pol] = await Promise.all([
         apiGet<ApiEnvelope<HealthData>>('/v1/health'),
         apiGet<ApiEnvelope<MemoryStats>>('/v1/memory/stats'),
         apiGet<ApiEnvelope<{ plugins: PluginRow[] }>>('/v1/plugins'),
         apiGet<ApiEnvelope<BalanceData>>('/v1/llm/balance'),
+        apiGet<ApiEnvelope<MemoryPolicies>>('/v1/memory/policies'),
       ])
       setHealth(h.data)
       setMemory(m.data)
       setPlugins(p.data.plugins ?? [])
       setBalance(b.data)
+      setMemPolicies(pol.data)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -40,6 +48,23 @@ export function DashboardPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  async function runLtm(
+    path: '/v1/memory/prune' | '/v1/memory/summarize',
+    body: Record<string, unknown>,
+  ) {
+    setLtmBusy(true)
+    setLtmMsg(null)
+    try {
+      const r = await apiPost<ApiEnvelope<unknown>>(path, body)
+      setLtmMsg(JSON.stringify(r.data, null, 2))
+      await load()
+    } catch (e) {
+      setLtmMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLtmBusy(false)
+    }
+  }
 
   const healthStatus = String((health?.status as string | undefined) ?? 'unknown')
   const healthUptime = String((health?.uptime_seconds as string | number | undefined) ?? '—')
@@ -118,6 +143,116 @@ export function DashboardPage() {
                 <p className="text-xs uppercase tracking-wide text-zinc-500">PeopleDB</p>
                 <p className="mt-2 text-2xl font-semibold tracking-tight text-zinc-100">{memory?.people_records ?? '—'}</p>
               </div>
+            </div>
+            <div className="mt-6 border-t border-zinc-800 pt-6">
+              <p className="mb-3 text-sm font-medium text-zinc-200">Обслуживание LTM</p>
+              <p className="mb-4 text-xs text-zinc-500">
+                Нужен токен уровня maint или admin. Политики и расписание авто-джобов — ниже.
+              </p>
+              <div className="mb-4 grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1 text-xs text-zinc-400">
+                  Prune: старше (дней)
+                  <input
+                    className="rounded-lg border border-zinc-700 bg-zinc-950/80 px-2 py-1.5 font-mono text-sm text-zinc-200"
+                    onChange={(e) => setPruneDays(e.target.value)}
+                    type="text"
+                    value={pruneDays}
+                  />
+                </label>
+                <label className="grid gap-1 text-xs text-zinc-400">
+                  Summarize: старше (дней)
+                  <input
+                    className="rounded-lg border border-zinc-700 bg-zinc-950/80 px-2 py-1.5 font-mono text-sm text-zinc-200"
+                    onChange={(e) => setSumDays(e.target.value)}
+                    type="text"
+                    value={sumDays}
+                  />
+                </label>
+              </div>
+              <label className="mb-4 flex cursor-pointer items-center gap-2 text-sm text-zinc-400">
+                <input
+                  checked={sumCompress}
+                  className="rounded border-zinc-600"
+                  onChange={(e) => setSumCompress(e.target.checked)}
+                  type="checkbox"
+                />
+                Summarize: сжатие через LLM (digest в RAG)
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  className="border-zinc-600 bg-zinc-800 text-zinc-100 hover:bg-zinc-700"
+                  disabled={ltmBusy}
+                  onClick={() =>
+                    void runLtm('/v1/memory/prune', {
+                      older_than_days: Number(pruneDays) || 90,
+                      dry_run: true,
+                    })
+                  }
+                  type="button"
+                >
+                  Prune (dry-run)
+                </Button>
+                <Button
+                  className="border-amber-500/40 bg-amber-900/40 text-amber-100 hover:bg-amber-900/60"
+                  disabled={ltmBusy}
+                  onClick={() =>
+                    void runLtm('/v1/memory/prune', {
+                      older_than_days: Number(pruneDays) || 90,
+                      dry_run: false,
+                    })
+                  }
+                  type="button"
+                >
+                  Prune
+                </Button>
+                <Button
+                  className="border-zinc-600 bg-zinc-800 text-zinc-100 hover:bg-zinc-700"
+                  disabled={ltmBusy}
+                  onClick={() =>
+                    void runLtm('/v1/memory/summarize', {
+                      older_than_days: Number(sumDays) || 60,
+                      dry_run: true,
+                      max_entries: 500,
+                      compress_with_llm: sumCompress,
+                    })
+                  }
+                  type="button"
+                >
+                  Summarize (dry-run)
+                </Button>
+                <Button
+                  className="border-cyan-500/40 bg-cyan-900/30 text-cyan-100 hover:bg-cyan-900/50"
+                  disabled={ltmBusy}
+                  onClick={() =>
+                    void runLtm('/v1/memory/summarize', {
+                      older_than_days: Number(sumDays) || 60,
+                      dry_run: false,
+                      max_entries: 500,
+                      compress_with_llm: sumCompress,
+                    })
+                  }
+                  type="button"
+                >
+                  Summarize
+                </Button>
+              </div>
+              {ltmMsg ? (
+                <pre className="mt-4 max-h-48 overflow-auto rounded-lg border border-zinc-800 bg-zinc-950/80 p-3 text-left text-xs text-zinc-300">
+                  {ltmMsg}
+                </pre>
+              ) : null}
+              {memPolicies ? (
+                <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-500">
+                  <p className="mb-1 font-mono text-zinc-400">/v1/memory/policies</p>
+                  <p>archive: {memPolicies.ltm_archive_dir ?? '—'} · embed: {memPolicies.embedding_model ?? '—'}</p>
+                  <p className="mt-1 break-all">
+                    auto_prune: {JSON.stringify(memPolicies.ltm_auto_prune ?? {})}
+                  </p>
+                  <p className="mt-1 break-all">
+                    auto_summarize: {JSON.stringify(memPolicies.ltm_auto_summarize ?? {})}
+                  </p>
+                </div>
+              ) : null}
             </div>
           </CardContent>
         </Card>
