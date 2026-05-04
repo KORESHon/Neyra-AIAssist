@@ -20,15 +20,17 @@ Neyra is designed as a reusable assistant core plus pluggable integrations.
 Key goals:
 
 - stable core (`LLM + Memory + Reflection + Tools`),
-- provider-agnostic model backends (cloud/local),
-- event-driven integrations and webhooks,
-- plugin-style extensibility without rewriting the core.
+- provider-agnostic model backends with **four specialized roles** (talk / brain / memory / vision),
+- event-driven integrations, webhooks, and **MCP-native** extensibility,
+- plugin-style extensibility without rewriting the core,
+- local-first runtime with optional cloud providers.
 
 Current stable runtime:
 
 - `**python main.py`** — core: HTTP API, web dashboard, one `NeyraAgent`, resident plugins (e.g. Discord when enabled),
 - `**python main.py --mode console`** — terminal-only for prompt experiments,
-- `discord` (text + music) and other interfaces ship as plugins under `interfaces/`.
+- `discord` (text + music) and other interfaces ship as plugins under `interfaces/`,
+- optional **Docker** deployment via `Dockerfile` + `docker-compose.yml`.
 
 ### Dashboard (frontend)
 
@@ -42,20 +44,31 @@ Optional **Model Context Protocol** debug server in `tools/mcp_server/` (stdio M
 
 Single resident plugin **`interfaces/discord/`** (text gateway + music service). Music path uses **Lavalink 4.x** with up-to-date **YouTube / source plugins**; deployments often set Lavalink client identifiers such as **ANDROID_VR** where needed to avoid provider-side breakage.
 
-### Models (examples)
+### Models — four roles, nested config
 
-Fully driven by `config.yaml`. Typical stacks pair large **MoE** chat models (e.g. **Qwen3 235B** class through OpenRouter) with heavier models for reflection/diary analysis (e.g. **gpt-oss-120b** class). Swap IDs to match your provider and quota.
+Fully driven by `config.yaml` under `openrouter.talk_model`, `brain_model`, `memory_model`, `vision_model`:
+
+- **talk** — final user-facing responses (streamed, no tools),
+- **brain** — supervisor/tool-loop with `bind_tools` (MCP-aware),
+- **memory** — reflection, diary analysis, LTM summarization,
+- **vision** — VL captioning (single model via `openrouter.vision_model`).
+
+Typical stacks pair large **MoE** chat models (e.g. **Qwen3 235B** through OpenRouter) for talk/brain, with dedicated models for memory. Legacy flat keys (`openrouter.model`, `reflection_model`) are supported with deprecation warnings.
 
 ## Architecture at a glance
 
-- `core/` - model, memory, reflection, tools, secrets loader.
-- `core/voice/` - voice adapters and factories (cloud/local evolution path).
-- `frontend/` - React+Vite+Tailwind sources; production bundle in `frontend/dist`.
-- `interfaces/` - plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: **`discord`** (unified text+music), `internal_api`, `local_voice`, `laptop_screen`; template `**000EXAMPLE/`** (see Plugin SDK links below).
-- `scripts/` - ops helpers (health checks and maintenance utilities).
+- `core/` — model profiles, memory (STM/LTM/PeopleDB/Diary), reflection, tools, secrets loader.
+  - `core/mcp_client.py` — **MCP client manager** (stdio + SSE servers, dynamic LangChain tools).
+  - `core/ltm_maintenance.py` — LTM lifecycle: TTL prune, summarization → cold archive.
+  - `core/voice/` — voice adapters and factories (cloud/local evolution path).
+- `frontend/` — React+Vite+Tailwind sources; production bundle in `frontend/dist`.
+- `interfaces/` — plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: **`discord`** (unified text+music), `internal_api`, `local_voice`, `laptop_screen`; template `**000EXAMPLE/`** (see Plugin SDK links below).
+- `tools/mcp_server/` — **MCP debug server** (stdio MCP for Cursor): logs, API calls, fire_event, memory snapshot.
+- `scripts/` — ops helpers (health checks, maintenance, `inject_memes_2026.py`).
 - `main.py` — entrypoint (`core` vs `console` only).
 - `run_neyra.bat` — Windows menu (core / console / preflight).
 - `run_neyra.sh` — Linux/macOS menu (core / console / status / stop / git updates).
+- `Dockerfile` + `docker-compose.yml` — containerized deployment (ports `8787`, optional Lavalink, volumes for `config.yaml`, `interfaces/`, `memory/`, `logs/`).
 
 ## Product direction
 
@@ -65,11 +78,15 @@ Neyra is moving toward a public personal-assistant platform:
 - mobile-lite chat client via API,
 - micro web dashboard with status, controls, and API docs,
 - external storage adapters (Google Drive-first) for backup/restore,
-- modular expansion (voice/screen/music/plugins).
+- modular expansion (voice/screen/music/plugins),
+- **MCP-native integrations** — external capabilities via standard Model Context Protocol servers,
+- **vision pipeline** — screen understanding via VL models (caption → brain tool-loop → talk response).
 
 Long-term hardware "assistant station" form factor is tracked as a future backlog item.
 
 ## Quick start
+
+### Python (direct)
 
 1. Create and activate venv:
   - `python -m venv .venv`
@@ -78,7 +95,8 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
 2. Install dependencies:
   - `pip install -r requirements.txt`
 3. Create `.env` from `.env.example` and fill secrets.
-4. Create `config.yaml` from `config.example.yaml` and adjust runtime values.
+4. Create `config.yaml` from `config.example.yaml` and adjust runtime values:
+   - Set `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model` (nested blocks).
 5. Copy plugin templates where needed:
    - `interfaces/discord/config.example.yaml` → `interfaces/discord/config.yaml`
    - `interfaces/internal_api/config.example.yaml` → `interfaces/internal_api/config.yaml`
@@ -88,6 +106,14 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
   - Windows: `run_neyra.bat`
   - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`
   - Direct: `python main.py` (core) or `python main.py --mode console`
+
+### Docker (optional)
+
+```bash
+docker compose up --build
+```
+
+Exposes port `8787`, mounts `config.yaml`, `interfaces/`, `memory/`, `logs/`. See `docker-compose.yml`.
 
 ## Run modes (CLI)
 
@@ -130,12 +156,16 @@ Primary places to edit prompt behavior:
   - `config.yaml` -> `assistant.system_prompt`
 - Final system prompt assembly (injects memory, tools, web context, vision rules):
   - `core/agent.py` (`_build_system_prompt`)
+- Brain tool-loop and VL pipeline:
+  - `core/agent.py` (`_run_brain_tool_phase`, `_caption_vision_images`, `chat` / `chat_stream`)
 - Reflection prompts (nightly and hourly diary analysis):
   - `core/reflection.py` (`_analyze_diary_json`, `hourly_diary_note`)
 - Tool behavior and tool-facing descriptions:
   - `core/tools.py`
 - Memory-trigger and web-trigger heuristics that affect prompt context:
   - `core/agent.py` (`_collect_tool_context`, `_handle_websearch_trigger`)
+- MCP client integration (dynamic tools from MCP servers):
+  - `core/mcp_client.py`, `core/agent.py` (`start_mcp_clients`, `_execute_tool`)
 
 Recommendation:
 

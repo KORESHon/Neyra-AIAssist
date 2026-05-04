@@ -21,14 +21,16 @@ Neyra строится как переиспользуемое ядро плюс
 
 - стабильное ядро (`LLM + Memory + Reflection + Tools`),
 - поддержка облачных и локальных backend,
-- событийная интеграция и webhooks,
-- расширяемость через плагины без переписывания ядра.
+- событийная интеграция, webhooks и **MCP-native** расширения,
+- расширяемость через плагины без переписывания ядра,
+- локальный приоритет (local-first) с опциональными облачными провайдерами.
 
 Текущий стабильный runtime:
 
-- `**python main.py`** — ядро: API, дашборд, один агент, resident-плагины (например Discord при включённом конфиге),
-- `**python main.py --mode console`** — только консоль для экспериментов с промптами,
-- интерфейс `discord` (текст + музыка) и др. — плагины в `interfaces/`.
+- `python main.py` — ядро: API, дашборд, один агент, resident-плагины (например Discord при включённом конфиге),
+- `python main.py --mode console` — только консоль для экспериментов с промптами,
+- интерфейс `discord` (текст + музыка) и др. — плагины в `interfaces/`,
+- опциональный **Docker** через `Dockerfile` + `docker-compose.yml`.
 
 ### Дашборд (frontend)
 
@@ -42,21 +44,32 @@ Neyra строится как переиспользуемое ядро плюс
 
 Один resident-плагин **`interfaces/discord/`** (текст + музыка). Воспроизведение через **Lavalink 4.x** и актуальные **YouTube/source-плагины**; в конфиге Lavalink часто задают клиент вроде **ANDROID_VR**, если провайдер режет доступ.
 
-### Модели (примеры)
+### Модели — четыре роли, вложенный конфиг
 
-Всё задаётся в `config.yaml`. Типичный стек — мощные **MoE** для диалога (класс **Qwen3 235B** через OpenRouter) и более тяжёлые модели для рефлексии/дневника (класс **gpt-oss-120b**). Конкретные ID — по вашим ключам и провайдеру.
+Всё задаётся в `config.yaml` во вложенных блоках `openrouter.talk_model`, `brain_model`, `memory_model`, `vision_model`:
+
+- **talk** — финальный ответ пользователю (стрим, без инструментов),
+- **brain** — супервизор с `bind_tools` (MCP-aware tool-loop),
+- **memory** — рефлексия, анализ дневника, сжатие LTM,
+- **vision** — VL-описание изображений (единая модель через `openrouter.vision_model`).
+
+Типичный стек — мощные **MoE** для диалога/анализа (класс **Qwen3 235B** через OpenRouter) для talk/brain, отдельные модели для memory. Старые плоские ключи (`openrouter.model`, `reflection_model`) поддерживаются с предупреждениями.
 
 ## Архитектура (кратко)
 
-- `core/` — модель, память, рефлексия, инструменты, загрузка секретов.
-- `core/voice/` — voice-адаптеры и будущие фабрики STT/TTS.
+- `core/` — модель, память (STM/LTM/PeopleDB/Diary), рефлексия, инструменты, загрузка секретов.
+  - `core/mcp_client.py` — **MCP-клиент** (stdio + SSE, динамические инструменты LangChain).
+  - `core/ltm_maintenance.py` — жизненный цикл LTM: TTL prune, сжатие → cold archive.
+  - `core/voice/` — voice-адаптеры и будущие фабрики STT/TTS.
 - `frontend/` — исходники React+Vite+Tailwind; продакшен-сборка в `frontend/dist`.
-- `interfaces/` — плагины (`plugin.yaml` + `main.py` + опционально `config.yaml`): **`discord`** (единый текст+музыка), internal API, local voice, screen и шаблон `**000EXAMPLE**`.
+- `interfaces/` — плагины (`plugin.yaml` + `main.py` + опционально `config.yaml`): **`discord`** (единый текст+музыка), internal API, local voice, screen и шаблон `000EXAMPLE`.
+- `tools/mcp_server/` — **MCP debug-сервер** (stdio MCP для Cursor): логи, API, fire_event, снимок памяти.
 - **Документация Plugin SDK** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md) (русский туториал), [HELP.md](interfaces/000EXAMPLE/HELP.md) (English).
-- `scripts/` — эксплуатационные скрипты (healthcheck и вспомогательные утилиты).
+- `scripts/` — эксплуатационные скрипты (healthcheck и вспомогательные утилиты, `inject_memes_2026.py`).
 - `main.py` — точка входа (`core` или `console`).
 - `run_neyra.bat` — меню на Windows.
 - `run_neyra.sh` — меню на Linux/macOS (статус, остановка, git).
+- `Dockerfile` + `docker-compose.yml` — контейнерный деплой (порт `8787`, опционально Lavalink, тома для `config.yaml`, `interfaces/`, `memory/`, `logs/`).
 
 ## Продуктовый вектор
 
@@ -66,11 +79,15 @@ Neyra развивается как персональный публичный 
 - mobile-lite клиент (чат/уведомления через API),
 - микро-сайт с дашбордом, статусами и документацией API,
 - внешние хранилища (в первую очередь Google Drive) для backup/restore,
-- модульное расширение (voice/screen/music/plugins).
+- модульное расширение (voice/screen/music/plugins),
+- **MCP-native интеграции** — внешние возможности через стандартные MCP-серверы,
+- **vision pipeline** — понимание экрана через VL-модели (caption → brain tool-loop → ответ talk).
 
-Форм-фактор “ИИ-станции” оставлен в future backlog и не входит в текущую реализацию.
+Форм-фактор "ИИ-станции" оставлен в future backlog и не входит в текущую реализацию.
 
 ## Быстрый старт
+
+### Python (напрямую)
 
 1. Создай и активируй venv:
   - `python -m venv .venv`
@@ -79,7 +96,8 @@ Neyra развивается как персональный публичный 
 2. Установи зависимости:
   - `pip install -r requirements.txt`
 3. Создай `.env` из `.env.example` и заполни секреты.
-4. Создай `config.yaml` из `config.example.yaml`.
+4. Создай `config.yaml` из `config.example.yaml` и настрой:
+   - укажи вложенные блоки `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model`.
 5. Скопируй шаблоны конфигов плагинов:
    - `interfaces/discord/config.example.yaml` → `interfaces/discord/config.yaml`
    - `interfaces/internal_api/config.example.yaml` → `interfaces/internal_api/config.yaml`
@@ -90,10 +108,18 @@ Neyra развивается как персональный публичный 
   - Linux/macOS: `chmod +x run_neyra.sh && ./run_neyra.sh`
   - Напрямую: `python main.py` (ядро) или `python main.py --mode console`
 
+### Docker (опционально)
+
+```bash
+docker compose up --build
+```
+
+Открывает порт `8787`, монтирует `config.yaml`, `interfaces/`, `memory/`, `logs/`. См. `docker-compose.yml`.
+
 ## Режимы CLI
 
-- `**core`** (по умолчанию) — HTTP, дашборд, resident-плагины.
-- `**console`** — только консоль.
+- `core` (по умолчанию) — HTTP, дашборд, resident-плагины.
+- `console` — только консоль.
 
 Отдельных `--mode discord` и т.п. больше нет: плагины поднимаются вместе с ядром по конфигу.
 
