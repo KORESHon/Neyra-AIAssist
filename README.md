@@ -1,7 +1,6 @@
-<!-- co-authored-cursor-badge -->
-[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
+[Cursor AI assist](https://cursor.com)
 
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).
 
 ---
 
@@ -42,7 +41,7 @@ Optional **Model Context Protocol** debug server in `tools/mcp_server/` (stdio M
 
 ### Discord and music
 
-Single resident plugin **`interfaces/discord/`** (text gateway + music service). Music path uses **Lavalink 4.x** with up-to-date **YouTube / source plugins**; deployments often set Lavalink client identifiers such as **ANDROID_VR** where needed to avoid provider-side breakage.
+Single resident plugin `**interfaces/discord/`** (text gateway + music service). Music path uses **Lavalink 4.x** with up-to-date **YouTube / source plugins**; deployments often set Lavalink client identifiers such as **ANDROID_VR** where needed to avoid provider-side breakage.
 
 ### Models — four roles, nested config
 
@@ -62,7 +61,7 @@ Typical stacks pair large **MoE** chat models (e.g. **Qwen3 235B** through OpenR
   - `core/ltm_maintenance.py` — LTM lifecycle: TTL prune, summarization → cold archive.
   - `core/voice/` — voice adapters and factories (cloud/local evolution path).
 - `frontend/` — React+Vite+Tailwind sources; production bundle in `frontend/dist`.
-- `interfaces/` — plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: **`discord`** (unified text+music), `internal_api`, `local_voice`, `laptop_screen`; template `**000EXAMPLE/`** (see Plugin SDK links below).
+- `interfaces/` — plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: `**discord`** (unified text+music), `internal_api`, `local_voice`, `laptop_screen`; template `**000EXAMPLE/`** (see Plugin SDK links below).
 - `tools/mcp_server/` — **MCP debug server** (stdio MCP for Cursor): logs, API calls, fire_event, memory snapshot.
 - `scripts/` — ops helpers (health checks, maintenance, `inject_memes_2026.py`).
 - `main.py` — entrypoint (`core` vs `console` only).
@@ -96,11 +95,11 @@ Long-term hardware "assistant station" form factor is tracked as a future backlo
   - `pip install -r requirements.txt`
 3. Create `.env` from `.env.example` and fill secrets.
 4. Create `config.yaml` from `config.example.yaml` and adjust runtime values:
-   - Set `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model` (nested blocks).
+  - Set `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model` (nested blocks).
 5. Copy plugin templates where needed:
-   - `interfaces/discord/config.example.yaml` → `interfaces/discord/config.yaml`
-   - `interfaces/internal_api/config.example.yaml` → `interfaces/internal_api/config.yaml`
-   - other plugins: `interfaces/<id>/config.example.yaml` → `interfaces/<id>/config.yaml`
+  - `interfaces/discord/config.example.yaml` → `interfaces/discord/config.yaml`
+  - `interfaces/internal_api/config.example.yaml` → `interfaces/internal_api/config.yaml`
+  - other plugins: `interfaces/<id>/config.example.yaml` → `interfaces/<id>/config.yaml`
 6. Preflight (example): `python scripts/healthcheck.py --mode console --skip-http`
 7. Run:
   - Windows: `run_neyra.bat`
@@ -118,7 +117,7 @@ Exposes port `8787`, mounts `config.yaml`, `interfaces/`, `memory/`, `logs/`. Se
 ## Run modes (CLI)
 
 - `**core`** (default) — HTTP API, dashboard, resident plugins.
-- `**console**` — terminal chat only.
+- `**console`** — terminal chat only.
 
 Plugins start **with** the core from root `config.yaml`, optional per-plugin `interfaces/<id>/config.yaml`, and `**plugin.yaml`** (enable/disable and lifecycle only there). There is no separate `--mode discord` CLI.
 

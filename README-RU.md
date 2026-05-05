@@ -1,7 +1,6 @@
-<!-- co-authored-cursor-badge -->
-[![Cursor AI assist](https://img.shields.io/badge/Cursor-AI_assist-141414?style=flat-square)](https://cursor.com)
+[Cursor AI assist](https://cursor.com)
 
-<sub>Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).</sub>
+Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).
 
 ---
 
@@ -42,7 +41,7 @@ Neyra строится как переиспользуемое ядро плюс
 
 ### Discord и музыка
 
-Один resident-плагин **`interfaces/discord/`** (текст + музыка). Воспроизведение через **Lavalink 4.x** и актуальные **YouTube/source-плагины**; в конфиге Lavalink часто задают клиент вроде **ANDROID_VR**, если провайдер режет доступ.
+Один resident-плагин `**interfaces/discord/`** (текст + музыка). Воспроизведение через **Lavalink 4.x** и актуальные **YouTube/source-плагины**; в конфиге Lavalink часто задают клиент вроде **ANDROID_VR**, если провайдер режет доступ.
 
 ### Модели — четыре роли, вложенный конфиг
 
@@ -62,7 +61,7 @@ Neyra строится как переиспользуемое ядро плюс
   - `core/ltm_maintenance.py` — жизненный цикл LTM: TTL prune, сжатие → cold archive.
   - `core/voice/` — voice-адаптеры и будущие фабрики STT/TTS.
 - `frontend/` — исходники React+Vite+Tailwind; продакшен-сборка в `frontend/dist`.
-- `interfaces/` — плагины (`plugin.yaml` + `main.py` + опционально `config.yaml`): **`discord`** (единый текст+музыка), internal API, local voice, screen и шаблон `000EXAMPLE`.
+- `interfaces/` — плагины (`plugin.yaml` + `main.py` + опционально `config.yaml`): `**discord`** (единый текст+музыка), internal API, local voice, screen и шаблон `000EXAMPLE`.
 - `tools/mcp_server/` — **MCP debug-сервер** (stdio MCP для Cursor): логи, API, fire_event, снимок памяти.
 - **Документация Plugin SDK** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md) (русский туториал), [HELP.md](interfaces/000EXAMPLE/HELP.md) (English).
 - `scripts/` — эксплуатационные скрипты (healthcheck и вспомогательные утилиты, `inject_memes_2026.py`).
@@ -97,11 +96,11 @@ Neyra развивается как персональный публичный 
   - `pip install -r requirements.txt`
 3. Создай `.env` из `.env.example` и заполни секреты.
 4. Создай `config.yaml` из `config.example.yaml` и настрой:
-   - укажи вложенные блоки `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model`.
+  - укажи вложенные блоки `openrouter.talk_model.model`, `brain_model.model`, `memory_model.model`, `vision_model.model`.
 5. Скопируй шаблоны конфигов плагинов:
-   - `interfaces/discord/config.example.yaml` → `interfaces/discord/config.yaml`
-   - `interfaces/internal_api/config.example.yaml` → `interfaces/internal_api/config.yaml`
-   - при необходимости другие: `interfaces/<id>/config.example.yaml` → `interfaces/<id>/config.yaml`
+  - `interfaces/discord/config.example.yaml` → `interfaces/discord/config.yaml`
+  - `interfaces/internal_api/config.example.yaml` → `interfaces/internal_api/config.yaml`
+  - при необходимости другие: `interfaces/<id>/config.example.yaml` → `interfaces/<id>/config.yaml`
 6. Preflight (пример): `python scripts/healthcheck.py --mode console --skip-http`
 7. Запуск:
   - Windows: `run_neyra.bat`
@@ -154,3 +153,4 @@ docker compose up --build
 - `PLAN.md` — дорожная карта (если ведёте в репозитории).
 - `docs/en/README.md` / `docs/ru/README.md` — индекс документации (архитектура, настройка, API, эксплуатация, плагины, MCP, Web UI).
 - **Как писать плагины** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md), [HELP.md](interfaces/000EXAMPLE/HELP.md).
+

@@ -1,20 +1,22 @@
 import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-type EmptyStateProps = {
+type Props = {
   icon: LucideIcon
   title: string
-  description: string
+  description?: string
   action?: ReactNode
 }
 
-export function EmptyState({ icon: Icon, title, description, action }: EmptyStateProps) {
+export function EmptyState({ icon: Icon, title, description, action }: Props) {
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-5 py-6 text-center">
-      <Icon className="mx-auto mb-3 h-8 w-8 text-zinc-500" />
-      <p className="text-sm font-semibold tracking-tight text-zinc-200">{title}</p>
-      <p className="mt-1 text-sm text-zinc-400">{description}</p>
-      {action ? <div className="mt-4 flex justify-center">{action}</div> : null}
+    <div className="empty-state">
+      <div className="empty-state-icon">
+        <Icon size={24} />
+      </div>
+      <p style={{ fontWeight: 600, color: 'var(--text)', fontSize: '0.9rem' }}>{title}</p>
+      {description && <p style={{ fontSize: '0.8rem', maxWidth: 320 }}>{description}</p>}
+      {action}
     </div>
   )
 }

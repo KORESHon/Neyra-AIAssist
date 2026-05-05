@@ -4,29 +4,18 @@ import { cn } from '../../lib/utils'
 
 type Tone = 'error' | 'success' | 'info'
 
-const toneStyles: Record<Tone, string> = {
-  error: 'border-rose-500/40 bg-rose-500/10 text-rose-200',
-  success: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200',
-  info: 'border-cyan-500/35 bg-cyan-500/10 text-cyan-100',
+const cls: Record<Tone, string> = {
+  error:   'feedback feedback-error',
+  success: 'feedback feedback-success',
+  info:    'feedback feedback-info',
 }
+const Icon = { error: AlertCircle, success: CheckCircle2, info: Info } satisfies Record<Tone, typeof Info>
 
-const toneIcon = {
-  error: AlertCircle,
-  success: CheckCircle2,
-  info: Info,
-} satisfies Record<Tone, typeof Info>
-
-type InlineFeedbackProps = {
-  tone: Tone
-  children: ReactNode
-  className?: string
-}
-
-export function InlineFeedback({ tone, children, className }: InlineFeedbackProps) {
-  const Icon = toneIcon[tone]
+export function InlineFeedback({ tone, children, className }: { tone: Tone; children: ReactNode; className?: string }) {
+  const I = Icon[tone]
   return (
-    <div className={cn('flex items-start gap-2 rounded-xl border px-4 py-3 text-sm', toneStyles[tone], className)}>
-      <Icon className="mt-0.5 h-4 w-4 shrink-0" />
+    <div className={cn(cls[tone], className)}>
+      <I size={16} style={{ marginTop: 2, flexShrink: 0 }} />
       <div>{children}</div>
     </div>
   )
