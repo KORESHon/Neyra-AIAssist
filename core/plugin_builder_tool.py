@@ -158,6 +158,24 @@ def create_or_edit_plugin_impl(
     if pid in set(settings.plugin_blacklist):
         return {"ok": False, "error": f"Access denied: plugin '{pid}' is blacklisted"}
 
+    # Базовая защита: не генерируем плагины для харассмента/травли/спама.
+    task_lower = (task or "").lower()
+    abuse_markers = (
+        "иди нах",
+        "нахуй",
+        "пошел нах",
+        "уеб",
+        "уёб",
+        "пидор",
+        "спам",
+        "спамить",
+        "каждую минуту",
+        "раз в минут",
+        "раз в 5 минут",
+    )
+    if any(m in task_lower for m in abuse_markers):
+        return {"ok": False, "error": "Refused: abusive/harassment/spam plugin behavior is not allowed"}
+
     root = _repo_root()
     interfaces = _interfaces_dir(root)
     plugin_dir = (interfaces / pid).resolve()
@@ -196,7 +214,10 @@ def create_or_edit_plugin_impl(
         "ВЫХОД СТРОГО: JSON вида {\"files\": [{\"path\": \"relative/path\", \"content\": \"...\"}], \"notes\": \"...\"}.\n"
         "Запрещено менять что-либо вне interfaces/<plugin_id>.\n"
         "Не трогай плагины: discord, internal_api, laptop_screen.\n"
-        "Если создаёшь новый плагин: добавь plugin.yaml и минимальный main.py с run_plugin(ctx).\n"
+        "ВАЖНО: Все пути files[].path должны быть ОТНОСИТЕЛЬНЫМИ к корню плагина (НЕ включать interfaces/<id>/).\n"
+        "Если создаёшь новый плагин: добавь interfaces/<plugin_id>/plugin.yaml и interfaces/<plugin_id>/main.py.\n"
+        "В plugin.yaml ОБЯЗАТЕЛЬНО укажи main_script: \"main.py\" (не пустой).\n"
+        "Запрещено генерировать плагины, которые оскорбляют людей, травят, или спамят сообщения.\n"
         "Не добавляй бинарные данные.\n"
     )
     user = json.dumps(
@@ -264,7 +285,18 @@ def create_or_edit_plugin_impl(
         raw_manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
         main_script = str(raw_manifest.get("main_script") or "").strip()
         if not main_script:
-            raise ValueError("plugin.yaml has empty main_script")
+            # Авто-ремонт: если модель забыла main_script, но положила main.py — подставим дефолт.
+            candidate = (plugin_dir / "main.py").resolve()
+            if candidate.exists():
+                raw_manifest["main_script"] = "main.py"
+                manifest_path.write_text(
+                    yaml.safe_dump(raw_manifest, allow_unicode=True, sort_keys=False),
+                    encoding="utf-8",
+                )
+                logger.warning("PluginBuilder: fixed empty main_script -> main.py | plugin_id=%s", pid)
+                main_script = "main.py"
+            else:
+                raise ValueError("plugin.yaml has empty main_script")
         main_abs = (plugin_dir / main_script).resolve()
         _path_jail_check(main_abs, plugin_dir)
         if not main_abs.exists():

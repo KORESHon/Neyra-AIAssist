@@ -29,6 +29,7 @@ memory/thoughts.log
 memory/people_db/*.json
 memory/neyra_diary.jsonl
 memory/reflection_last.json
+memory/plugin_backups/
 logs/*.log
 logs/*.json
 logs/*.txt
