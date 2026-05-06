@@ -292,14 +292,17 @@ def create_or_edit_plugin(plugin_id: str, task: str, api_key: str = "") -> str:
     api_key: опционально. Если пусто — берётся из OPENROUTER_API_KEY (env/.env).
     """
     try:
+        logger.info("Tool create_or_edit_plugin: start | plugin_id=%s", (plugin_id or "").strip())
         from core.plugin_builder_tool import create_or_edit_plugin_impl
 
         out = create_or_edit_plugin_impl(plugin_id=plugin_id, task=task, api_key=api_key or None)
         # Возвращаем строку (для tool-calls), но в JSON-формате для наглядности.
         import json
 
+        logger.info("Tool create_or_edit_plugin: done | ok=%s", bool(out.get("ok")))
         return json.dumps(out, ensure_ascii=False)
     except Exception as e:
+        logger.exception("Tool create_or_edit_plugin: failed | plugin_id=%s", (plugin_id or "").strip())
         return f"create_or_edit_plugin failed: {e}"
 
 

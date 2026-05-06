@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 import os
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from typing import Any
 import httpx
 
 from core.plugin_loader import PluginLoader
+
+logger = logging.getLogger("neyra.plugin_builder")
 
 
 @dataclass(frozen=True)
@@ -109,6 +112,7 @@ def _call_openrouter_chat(
     timeout_s: float = 120.0,
 ) -> str:
     url = f"{settings.base_url.rstrip('/')}/chat/completions"
+    logger.info("PluginBuilder: call OpenRouter coder | model=%s", settings.model)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -165,10 +169,12 @@ def create_or_edit_plugin_impl(
 
     loader = PluginLoader(root=root)
     existed = plugin_dir.exists()
+    logger.info("PluginBuilder: start | plugin_id=%s existed=%s", pid, existed)
     backup_ok = False
     backup_path = None
     if existed:
         backup_ok, backup_path = loader.create_plugin_backup(pid)
+        logger.info("PluginBuilder: backup | ok=%s path=%s", backup_ok, backup_path)
 
     # Подготовим минимальный контекст: существующие файлы (только верхний уровень, без рекурсии).
     existing_files: dict[str, str] = {}
@@ -207,6 +213,7 @@ def create_or_edit_plugin_impl(
         plan = json.loads(raw)
     except Exception as e:
         # При плохом JSON не пишем ничего
+        logger.warning("PluginBuilder: model output invalid JSON | plugin_id=%s err=%s", pid, e)
         return {"ok": False, "error": f"Model output is not valid JSON: {e}", "raw": raw[:4000]}
 
     files = plan.get("files")
@@ -236,11 +243,14 @@ def create_or_edit_plugin_impl(
             loader.rollback_plugin(pid, backup_path=backup_path)
         return {"ok": False, "error": f"Write failed: {e}", "written": written}
 
+    logger.info("PluginBuilder: wrote files | plugin_id=%s count=%s", pid, len(written))
+
     # Структурная валидация: tool должен класть plugin.yaml в корень plugin_dir.
     manifest_path = (plugin_dir / "plugin.yaml").resolve()
     if not manifest_path.exists():
         if existed and backup_ok and backup_path:
             loader.rollback_plugin(pid, backup_path=backup_path)
+        logger.warning("PluginBuilder: missing plugin.yaml after write | plugin_id=%s", pid)
         return {
             "ok": False,
             "error": "Plugin manifest missing at interfaces/<plugin_id>/plugin.yaml (model wrote files into a wrong subdir)",
@@ -262,13 +272,16 @@ def create_or_edit_plugin_impl(
     except Exception as e:
         if existed and backup_ok and backup_path:
             loader.rollback_plugin(pid, backup_path=backup_path)
+        logger.warning("PluginBuilder: invalid plugin manifest | plugin_id=%s err=%s", pid, e)
         return {"ok": False, "error": f"Invalid plugin manifest: {e}", "written": written}
 
     # Reload: если reload упадёт, откатываемся (если есть бэкап)
     ok, msg = loader.reload_plugin(pid)
+    logger.info("PluginBuilder: reload | plugin_id=%s ok=%s msg=%s", pid, ok, msg)
     if not ok and existed and backup_ok and backup_path:
         loader.rollback_plugin(pid, backup_path=backup_path)
         ok2, msg2 = loader.reload_plugin(pid)
+        logger.warning("PluginBuilder: rollback+reload | plugin_id=%s ok=%s msg=%s", pid, ok2, msg2)
         return {
             "ok": False,
             "error": f"Reload failed: {msg}. Rolled back: {msg2}",

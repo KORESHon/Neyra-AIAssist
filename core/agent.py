@@ -1714,6 +1714,26 @@ class NeyraAgent:
     def _handle_websearch_trigger(self, text: str) -> str:
         """Эвристический веб-поиск: актуальные темы/новости/фактуальные вопросы без явных триггеров."""
         text_lower = text.lower()
+
+        # Guard: не запускаем авто-websearch для внутренних задач разработки/плагинов.
+        # Такие запросы должны обрабатываться tool-loop (например, create_or_edit_plugin), а не “гуглением”.
+        internal_dev_markers = (
+            "create_or_edit_plugin",
+            "plugin.yaml",
+            "main_script",
+            "hot-reload",
+            "hot reload",
+            "rollback",
+            "плагин",
+            "плагины",
+            "interfaces/",
+            "interfaces\\",
+            "core/",
+            "core\\",
+            "нейра",
+        )
+        if any(m in text_lower for m in internal_dev_markers):
+            return ""
         
         # Спец-обработка для точной погоды
         if "погода" in text_lower:
