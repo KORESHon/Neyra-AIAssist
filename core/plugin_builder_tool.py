@@ -158,24 +158,6 @@ def create_or_edit_plugin_impl(
     if pid in set(settings.plugin_blacklist):
         return {"ok": False, "error": f"Access denied: plugin '{pid}' is blacklisted"}
 
-    # Базовая защита: не генерируем плагины для харассмента/травли/спама.
-    task_lower = (task or "").lower()
-    abuse_markers = (
-        "иди нах",
-        "нахуй",
-        "пошел нах",
-        "уеб",
-        "уёб",
-        "пидор",
-        "спам",
-        "спамить",
-        "каждую минуту",
-        "раз в минут",
-        "раз в 5 минут",
-    )
-    if any(m in task_lower for m in abuse_markers):
-        return {"ok": False, "error": "Refused: abusive/harassment/spam plugin behavior is not allowed"}
-
     root = _repo_root()
     interfaces = _interfaces_dir(root)
     plugin_dir = (interfaces / pid).resolve()
@@ -217,7 +199,6 @@ def create_or_edit_plugin_impl(
         "ВАЖНО: Все пути files[].path должны быть ОТНОСИТЕЛЬНЫМИ к корню плагина (НЕ включать interfaces/<id>/).\n"
         "Если создаёшь новый плагин: добавь interfaces/<plugin_id>/plugin.yaml и interfaces/<plugin_id>/main.py.\n"
         "В plugin.yaml ОБЯЗАТЕЛЬНО укажи main_script: \"main.py\" (не пустой).\n"
-        "Запрещено генерировать плагины, которые оскорбляют людей, травят, или спамят сообщения.\n"
         "Не добавляй бинарные данные.\n"
     )
     user = json.dumps(

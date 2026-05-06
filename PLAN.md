@@ -83,8 +83,8 @@
 
 Механизм перезагрузки живёт нативно в ядре. В `core/plugin_loader.py` планируется добавить методы:
 
-- **`reload_plugin(plugin_id)`** — для безопасной остановки плагина, очистки его подписок в Event Bus и повторной загрузки «на горячую» без остановки `core`.
-- **`rollback_plugin(plugin_id)`** — для отката файлов плагина из бэкапа в случае критической ошибки (`Exception`) при загрузке.
+- `**reload_plugin(plugin_id)`** — для безопасной остановки плагина, очистки его подписок в Event Bus и повторной загрузки «на горячую» без остановки `core`.
+- `**rollback_plugin(plugin_id)**` — для отката файлов плагина из бэкапа в случае критической ошибки (`Exception`) при загрузке.
 
 ### Нативный инструмент (Builder Tool)
 
@@ -111,28 +111,28 @@
 
 ### Чек-лист реализации
 
-- [ ] **Sandbox policy:**
-  - [ ] Разрешить self-coding только в `interfaces/`.
-  - [ ] Запретить модификации `core/` автоматическими агентными операциями.
-- [ ] **Механика ядра (core/plugin_loader.py):**
-  - [ ] `reload_plugin(plugin_id)` — stop, cleanup Event Bus subscriptions, re-import.
-  - [ ] `rollback_plugin(plugin_id)` — restore from backup on critical Exception.
-- [ ] **Нативный инструмент (brain_model):**
-  - [ ] `create_or_edit_plugin` (MCP-compatible).
-  - [ ] Path Jail: `os.path.abspath`, strict `interfaces/` only, block `../core/`.
-  - [ ] Blacklist: block edits for `["discord", "internal_api", "laptop_screen"]`, return access error.
-  - [ ] Делегирование: внешний LLM/Sub-agent генерирует изменения; инструмент сохраняет файлы и вызывает `reload_plugin`.
-- [ ] **Hot-reload плагинов:**
-  - [ ] Обновление кода/конфигов и обработчиков Event Bus без остановки `core`.
-- [ ] **Rollback:**
-  - [ ] Откат файлов плагина при критической ошибке загрузки.
+- **Sandbox policy:**
+  - Разрешить self-coding только в `interfaces/`.
+  - Запретить модификации `core/` автоматическими агентными операциями.
+- **Механика ядра (core/plugin_loader.py):**
+  - `reload_plugin(plugin_id)` — stop, cleanup Event Bus subscriptions, re-import.
+  - `rollback_plugin(plugin_id)` — restore from backup on critical Exception.
+- **Нативный инструмент (brain_model):**
+  - `create_or_edit_plugin` (MCP-compatible).
+  - Path Jail: `os.path.abspath`, strict `interfaces/` only, block `../core/`.
+  - Blacklist: block edits for `["discord", "internal_api", "laptop_screen"]`, return access error.
+  - Делегирование: внешний LLM/Sub-agent генерирует изменения; инструмент сохраняет файлы и вызывает `reload_plugin`.
+- **Hot-reload плагинов:**
+  - Обновление кода/конфигов и обработчиков Event Bus без остановки `core`.
+- **Rollback:**
+  - Откат файлов плагина при критической ошибке загрузки.
 
 **Критерии приемки:**
 
-- [ ] Самопрограммирование ограничено sandbox-границами (`interfaces/` only).
-- [ ] Hot-reload/rollback воспроизводимы в тестах.
-- [ ] Path Traversal блокируется на уровне инструмента.
-- [ ] Чёрный список плагинов невозможно модифицировать через агента.
+- Самопрограммирование ограничено sandbox-границами (`interfaces/` only).
+- Hot-reload/rollback воспроизводимы в тестах.
+- Path Traversal блокируется на уровне инструмента.
+- Чёрный список плагинов невозможно модифицировать через агента.
 
 ---
 
@@ -297,6 +297,7 @@
 ## 8) Backlog (дальний горизонт)
 
 - **Интеграция с Obsidian** — экспорт LTM/Diary/PeopleDB в vault как `.md` (через MCP или Python CLI).
+- **Полировка и чистка мусора по всему проекту** — пройтись по репозиторию повторно: убрать временные файлы/артефакты тестов, выровнять стили, привести конфиги/доки в порядок, зачистить устаревшие ветки fallback и лишние логи.
 - Desktop и mobile-lite клиенты.
 - Standalone `.exe` сборка / `server-core + lightweight clients`.
 - **Настройка LLM из Web UI** (выбор модели, правка system prompt) — после hot-reload.
