@@ -272,6 +272,31 @@ def get_character_profile() -> str:
     )
 
 
+# ─── Plugin Builder Tool (E3) ─────────────────────────────────────────────────
+
+@tool
+def create_or_edit_plugin(plugin_id: str, task: str, api_key: str = "") -> str:
+    """
+    Личный инструмент для генерации/правки плагина в `interfaces/<plugin_id>`.
+
+    - Пишет СТРОГО внутри `interfaces/<plugin_id>` (Path Jail).
+    - Блокирует изменения критических плагинов: discord, internal_api, laptop_screen.
+    - Генерация кода делегируется облачной модели OpenRouter.
+
+    api_key: опционально. Если пусто — берётся из OPENROUTER_API_KEY (env/.env).
+    """
+    try:
+        from core.plugin_builder_tool import create_or_edit_plugin_impl
+
+        out = create_or_edit_plugin_impl(plugin_id=plugin_id, task=task, api_key=api_key or None)
+        # Возвращаем строку (для tool-calls), но в JSON-формате для наглядности.
+        import json
+
+        return json.dumps(out, ensure_ascii=False)
+    except Exception as e:
+        return f"create_or_edit_plugin failed: {e}"
+
+
 # ─── Список всех инструментов для агента ─────────────────────────────────────
 
 ALL_TOOLS = [
@@ -283,4 +308,5 @@ ALL_TOOLS = [
     update_person_fact,
     get_person_info,
     get_character_profile,
+    create_or_edit_plugin,
 ]

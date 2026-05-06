@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import shutil
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -42,6 +45,7 @@ class PluginLoader:
     def __init__(self, root: Path):
         self.root = Path(root)
         self.interfaces_dir = self.root / "interfaces"
+        self._backups_dir = self.root / "memory" / "plugin_backups"
 
     def discover_manifests(self) -> list[PluginManifest]:
         out: list[PluginManifest] = []
@@ -131,6 +135,104 @@ class PluginLoader:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
+
+    def _normalize_plugin_id(self, plugin_id: str) -> str:
+        return (plugin_id or "").strip().lower()
+
+    def _find_manifest(self, plugin_id: str) -> PluginManifest | None:
+        pid = self._normalize_plugin_id(plugin_id)
+        if not pid:
+            return None
+        for m in self.discover_manifests():
+            if m.id.strip().lower() == pid:
+                return m
+        return None
+
+    def _module_name_for_plugin(self, plugin_id: str) -> str:
+        pid = self._normalize_plugin_id(plugin_id)
+        return f"neyra_plugin_{pid.replace('-', '_')}"
+
+    def _backup_root_for_plugin(self, plugin_id: str) -> Path:
+        pid = self._normalize_plugin_id(plugin_id)
+        return (self._backups_dir / pid).resolve()
+
+    def create_plugin_backup(self, plugin_id: str) -> tuple[bool, str]:
+        """Сделать файловый бэкап interfaces/<plugin_id> в memory/plugin_backups/<plugin_id>/<ts>."""
+        manifest = self._find_manifest(plugin_id)
+        if manifest is None:
+            return False, f"Plugin not found: {plugin_id}"
+
+        src = manifest.plugin_dir.resolve()
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        dst_root = self._backup_root_for_plugin(plugin_id)
+        dst = (dst_root / ts).resolve()
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(src, dst)
+            return True, str(dst)
+        except Exception as e:
+            return False, f"Backup failed: {e}"
+
+    def rollback_plugin(self, plugin_id: str, backup_path: str | None = None) -> tuple[bool, str]:
+        """Откатить interfaces/<plugin_id> из бэкапа (последнего или явно указанного)."""
+        manifest = self._find_manifest(plugin_id)
+        if manifest is None:
+            return False, f"Plugin not found: {plugin_id}"
+
+        src_dir = manifest.plugin_dir.resolve()
+        chosen: Path | None = None
+        try:
+            if backup_path:
+                chosen = Path(backup_path).resolve()
+            else:
+                root = self._backup_root_for_plugin(plugin_id)
+                if not root.exists():
+                    return False, "No backups found"
+                candidates = [p for p in root.iterdir() if p.is_dir()]
+                if not candidates:
+                    return False, "No backups found"
+                chosen = sorted(candidates, key=lambda p: p.name)[-1]
+
+            if chosen is None or not chosen.is_dir():
+                return False, "Backup path is invalid"
+
+            # Recreate target directory from backup.
+            if src_dir.exists():
+                shutil.rmtree(src_dir, ignore_errors=True)
+            shutil.copytree(chosen, src_dir)
+            return True, f"Rolled back from {chosen}"
+        except Exception as e:
+            return False, f"Rollback failed: {e}"
+
+    def reload_plugin(self, plugin_id: str) -> tuple[bool, str]:
+        """Перезагрузить модуль плагина «на горячую» (re-import main_script).
+
+        Примечание: это перезагружает Python-модуль для будущих вызовов (CLI/invoke/internal_api).
+        Для resident-плагинов, которые уже запущены в отдельном потоке, требуется отдельный lifecycle stop/start.
+        """
+        manifest = self._find_manifest(plugin_id)
+        if manifest is None:
+            return False, f"Plugin not found: {plugin_id}"
+
+        mod_name = self._module_name_for_plugin(plugin_id)
+        try:
+            # Drop cached module.
+            if mod_name in sys.modules:
+                del sys.modules[mod_name]
+            # Invalidate caches so file changes are visible.
+            try:
+                import importlib
+
+                importlib.invalidate_caches()
+            except Exception:
+                pass
+
+            _ = self.import_plugin_module(manifest)
+            return True, "Reloaded"
+        except Exception as e:
+            return False, f"Reload failed: {e}"
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> bool:
         plugin_id = (plugin_id or "").strip().lower()

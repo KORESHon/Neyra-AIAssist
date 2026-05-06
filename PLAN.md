@@ -31,6 +31,7 @@
 ## 3) Текущее состояние (сводно)
 
 ### Стабильные подсистемы
+
 - Режимы `console` / `core`, Plugin Loader и Event Bus стабильны.
 - **Internal API** + **дашборд** (React + Vite + Tailwind, `frontend/`) + WebSocket `/v1/ws/` работают.
 - Скрипты запуска (`run_neyra.*`), healthcheck и загрузка Lavalink усилены.
@@ -42,6 +43,7 @@
 Единый плагин `interfaces/discord/` (text + music), один Discord-клиент, Lavalink 4.x, YouTube-обход (ANDROID_VR).
 
 **Этап B — Контекст, память, безопасность** ✅
+
 - B1: Speaker ID Injection (PeopleDB, `_resolve_speaker_label`).
 - B2: Динамическое взвешивание памяти (`_build_system_prompt`, 6 секций).
 - B3: LTM lifecycle (`core/ltm_maintenance.py`, TTL prune, cold archive, API endpoints).
@@ -55,6 +57,7 @@
 `core/mcp_client.py` (MCPClientManager, stdio + SSE, динамические LangChain tools, tool-loop на brain-модели).
 
 **Этап F — Brain→Talk, 4 роли моделей** ✅
+
 - 4 роли: talk / brain / memory / vision.
 - Вложенный `openrouter` (talk_model, brain_model, memory_model, vision_model).
 - VL pipeline: caption → brain tool-loop → talk stream.
@@ -65,6 +68,7 @@
 ## 4) Очередь этапов (обновлено)
 
 **Порядок реализации:**
+
 1. **E3** — Безопасное самопрограммирование + hot-reload (фундамент для всех плагинов)
 2. **D** — Полная локальная автономность (Voice + Runtime)
 3. **C** — Web UI как WebSocket-мост (оставлен на конец, после стабилизации плагинов)
@@ -95,9 +99,11 @@
 
 **Чёрный список (Blacklist):**
 Инструмент должен аппаратно блокировать любые изменения в критически важных плагинах:
+
 ```
 ["discord", "internal_api", "laptop_screen"]
 ```
+
 При попытке их изменить инструмент возвращает ошибку доступа.
 
 **Делегирование (Личный кодер):**
@@ -108,20 +114,21 @@
 - [ ] **Sandbox policy:**
   - [ ] Разрешить self-coding только в `interfaces/`.
   - [ ] Запретить модификации `core/` автоматическими агентными операциями.
-- [ ] **Ядро (core/plugin_loader.py):**
-  - [ ] Метод `reload_plugin(plugin_id)` — stop, cleanup Event Bus subscriptions, re-import.
-  - [ ] Метод `rollback_plugin(plugin_id)` — restore from backup on critical Exception.
+- [ ] **Механика ядра (core/plugin_loader.py):**
+  - [ ] `reload_plugin(plugin_id)` — stop, cleanup Event Bus subscriptions, re-import.
+  - [ ] `rollback_plugin(plugin_id)` — restore from backup on critical Exception.
 - [ ] **Нативный инструмент (brain_model):**
-  - [ ] `create_or_edit_plugin` MCP-compatible tool.
+  - [ ] `create_or_edit_plugin` (MCP-compatible).
   - [ ] Path Jail: `os.path.abspath`, strict `interfaces/` only, block `../core/`.
   - [ ] Blacklist: block edits for `["discord", "internal_api", "laptop_screen"]`, return access error.
-  - [ ] Delegation: call external LLM (Sub-agent) for code generation, save files, call `reload_plugin`.
+  - [ ] Делегирование: внешний LLM/Sub-agent генерирует изменения; инструмент сохраняет файлы и вызывает `reload_plugin`.
 - [ ] **Hot-reload плагинов:**
-  - [ ] Обновление конфигов, обработчиков Event Bus без остановки `core`.
+  - [ ] Обновление кода/конфигов и обработчиков Event Bus без остановки `core`.
 - [ ] **Rollback:**
-  - [ ] Откат версии плагина при критической ошибке загрузки.
+  - [ ] Откат файлов плагина при критической ошибке загрузки.
 
 **Критерии приемки:**
+
 - [ ] Самопрограммирование ограничено sandbox-границами (`interfaces/` only).
 - [ ] Hot-reload/rollback воспроизводимы в тестах.
 - [ ] Path Traversal блокируется на уровне инструмента.
@@ -134,22 +141,26 @@
 **Цель:** 100% автономная работа системы на железе пользователя без интернета. **Второй по списку.**
 
 ### D — Локальный Voice Stack (не выполнено)
-- [ ] **Локальный STT:** Whisper / faster-whisper в `local_voice`.
-- [ ] **Локальный TTS (GPU):** CosyVoice 3.0 (Zero-shot Voice Cloning, эмоции).
-- [ ] **Локальный TTS (CPU):** Silero TTS или Piper TTS.
-- [ ] Облачные STT/TTS (Deepgram/Yandex) как fallback.
+
+- **Локальный STT:** Whisper / faster-whisper в `local_voice`.
+- **Локальный TTS (GPU):** CosyVoice 3.0 (Zero-shot Voice Cloning, эмоции).
+- **Локальный TTS (CPU):** Silero TTS или Piper TTS.
+- Облачные STT/TTS (Deepgram/Yandex) как fallback.
 
 ### D — Автономный стек (не выполнено)
-- [ ] Local LLM + Local STT + Local TTS + локальная память.
-- [ ] Доработать `laptop_screen` под безопасный локальный screen/vision pipeline.
+
+- Local LLM + Local STT + Local TTS + локальная память.
+- Доработать `laptop_screen` под безопасный локальный screen/vision pipeline.
 
 **Критерии приемки:**
-- [ ] Основные сценарии работы агента доступны в оффлайн-режиме.
-- [ ] Voice pipeline переключается между ресурсоёмкими и легковесными движками.
+
+- Основные сценарии работы агента доступны в оффлайн-режиме.
+- Voice pipeline переключается между ресурсоёмкими и легковесными движками.
 
 ### D1 — Docker (базовый контур выполнен)
-- [x] Dockerfile + docker-compose.yml (порты `8787`, тома для `config.yaml`, `interfaces/`, `memory/`, `logs/`).
-- [ ] Решение "переходим ли на Docker" (приоритет — Windows one-click `run_neyra.bat` или Linux CI).
+
+- Dockerfile + docker-compose.yml (порты `8787`, тома для `config.yaml`, `interfaces/`, `memory/`, `logs/`).
+- Решение "переходим ли на Docker" (приоритет — Windows one-click `run_neyra.bat` или Linux CI).
 
 ---
 
@@ -157,29 +168,30 @@
 
 **Цель:** сделать браузер нативным real-time клиентом шины событий. **Делаем самым последним.**
 
-- [ ] Реализовать двусторонний WS-мост `Web UI <-> Event Bus`.
-- [ ] Браузер публикует события напрямую (чат, музыка, плагины).
-- [ ] Браузер подписывается на stream-ответы и статусные события.
-- [ ] Управление плагинами и чатом в едином transport-контуре.
+- Реализовать двусторонний WS-мост `Web UI <-> Event Bus`.
+- Браузер публикует события напрямую (чат, музыка, плагины).
+- Браузер подписывается на stream-ответы и статусные события.
+- Управление плагинами и чатом в едином transport-контуре.
 
 **Критерии приемки:**
-- [ ] CLI не обязателен для повседневной эксплуатации.
-- [ ] Реакция UI на операции/события идет в real-time.
+
+- CLI не обязателен для повседневной эксплуатации.
+- Реакция UI на операции/события идет в real-time.
 
 ---
 
 ## 5) Архитектурные артефакты (не выполнено)
 
-- [ ] **ADR-документы:**
-  - [ ] Единый `discord` плагин.
-  - [ ] Memory lifecycle policy.
-  - [ ] MCP integration model.
-  - [ ] Sandbox/hot-reload/rollback policy.
-- [ ] **Тестовые сценарии:**
-  - [ ] e2e Discord text+music.
-  - [ ] Memory prune/summarize flows.
-  - [ ] WS bridge pub/sub.
-  - [ ] MCP debug and client connectivity.
+- **ADR-документы:**
+  - Единый `discord` плагин.
+  - Memory lifecycle policy.
+  - MCP integration model.
+  - Sandbox/hot-reload/rollback policy.
+- **Тестовые сценарии:**
+  - e2e Discord text+music.
+  - Memory prune/summarize flows.
+  - WS bridge pub/sub.
+  - MCP debug and client connectivity.
 
 ---
 
@@ -211,40 +223,48 @@
 *Обновлено по анализу `logs/system.log` после ночного стресса (2026-05-02 … 2026-05-03).*
 
 ### BUG-001 — Discord lyrics mode (форматирование)
+
 - **Зона:** `interfaces/discord/bot.py` (стрим, превью, чанки) + `core/agent.py` (постобработка после стрима).
 - **Статус:** ❌ Открыт.
 - **Направление:** исправить постобработку после стрима, сохранение `\n` в `_extract_sound_tags`.
 
 ### BUG-002 — VL (vision): Alibaba `DataInspectionFailed`
+
 - **Лог:** `Upstream error from Alibaba: InternalError.Algo.DataInspectionFailed: Input text data may contain inappropriate content`.
 - **Статус:** ❌ Открыт.
 - **Направление:** fallback VL-модель, смягчение промпта, другой vision-провайдер.
 
 ### BUG-003 — Vision (free): HTTP 429 и rate limit
+
 - **Лог:** `google/gemma-4-26b-a4b-it:free is temporarily rate-limited upstream`.
 - **Статус:** ❌ Открыт.
 - **Направление:** платная/BYOK ключ, другая vision-модель, backoff.
 
 ### BUG-004 — LLM: first-token timeout (6s)
+
 - **Лог:** `LLM first-token timeout | attempt=1/2 | timeout=6.0s`.
 - **Статус:** ⚠️ Watch.
 - **Направление:** поднять `primary_first_token_timeout_seconds` или оставить.
 
 ### BUG-005 — Discord Gateway: обрывы WebSocket
+
 - **Лог:** `Attempting a reconnect`, `Cannot connect to host gateway-*.discord.gg:443`.
 - **Статус:** ⚠️ Monitor.
 - **Направление:** сеть, VPN, firewall.
 
 ### BUG-006 — Музыка: `music.play => failed`
+
 - **Статус:** ❌ Открыт.
 - **Направление:** санитизация query (убирать `<…>` эмодзи), Soundcloud источник.
 
 ### BUG-007 — Стабильность рантайма: частые перезапуски ядра
+
 - **Лог:** несколько подряд полных стартов ядра за короткий интервал.
 - **Статус:** ❌ Открыт.
 - **Направление:** собрать exit-код, Windows Event, воспроизведение.
 
 ### Наблюдения (не регистрируем как баг)
+
 - `davey is not installed, voice will NOT be supported` — ожидаемое предупреждение.
 - **Health monitor OK** — периодические записи штатны.
 
@@ -254,18 +274,21 @@
 
 Перед полным отказом от обратной совместимости удалить ветки после миграции всех деплоев:
 
-| Механизм | Назначение |
-|-----------|-------------|
-| `openrouter.model` / `primary_model` | Старый «главный» id → talk, с **warning** |
-| `openrouter.reflection_model` | Fallback для memory, **warning** |
-| `async_reflection.model` в YAML | Игнорируется в пользу `memory_model` |
-| Плоские ключи `openrouter.*` без вложенности | Работают параллельно с вложенными блоками |
-| `self.llm_primary` / `llm_primary_model` | Совместимость со старым кодом; = talk |
-| Корневой YAML-блок `vision:` | Ниже приоритета чем `openrouter.vision_model`, с **warning** |
-| `DEPRECATED_MODEL_MAP` | Подмена устаревших id моделей OpenRouter |
-| `SCREEN_PROXY_SECRET` → `screen_proxy_plugin` | Заглушка под будущий плагин |
+
+| Механизм                                      | Назначение                                                   |
+| --------------------------------------------- | ------------------------------------------------------------ |
+| `openrouter.model` / `primary_model`          | Старый «главный» id → talk, с **warning**                    |
+| `openrouter.reflection_model`                 | Fallback для memory, **warning**                             |
+| `async_reflection.model` в YAML               | Игнорируется в пользу `memory_model`                         |
+| Плоские ключи `openrouter.`* без вложенности  | Работают параллельно с вложенными блоками                    |
+| `self.llm_primary` / `llm_primary_model`      | Совместимость со старым кодом; = talk                        |
+| Корневой YAML-блок `vision:`                  | Ниже приоритета чем `openrouter.vision_model`, с **warning** |
+| `DEPRECATED_MODEL_MAP`                        | Подмена устаревших id моделей OpenRouter                     |
+| `SCREEN_PROXY_SECRET` → `screen_proxy_plugin` | Заглушка под будущий плагин                                  |
+
 
 **Технический долг:**
+
 - Упоминания «VL-ход» в логах — не влияют на конфиг.
 - `interfaces/laptop_screen/` — заглушка, не связана с текущим `vision_model`.
 
@@ -273,10 +296,11 @@
 
 ## 8) Backlog (дальний горизонт)
 
-- [ ] **Интеграция с Obsidian** — экспорт LTM/Diary/PeopleDB в vault как `.md` (через MCP или Python CLI).
-- [ ] Desktop и mobile-lite клиенты.
-- [ ] Standalone `.exe` сборка / `server-core + lightweight clients`.
-- [ ] **Настройка LLM из Web UI** (выбор модели, правка system prompt) — после hot-reload.
-- [ ] Device-mode (AI station).
-- [ ] Open-core модель расширений.
-- [ ] Публичный demo/BYOK режим.
+- **Интеграция с Obsidian** — экспорт LTM/Diary/PeopleDB в vault как `.md` (через MCP или Python CLI).
+- Desktop и mobile-lite клиенты.
+- Standalone `.exe` сборка / `server-core + lightweight clients`.
+- **Настройка LLM из Web UI** (выбор модели, правка system prompt) — после hot-reload.
+- Device-mode (AI station).
+- Open-core модель расширений.
+- Публичный demo/BYOK режим.
+
