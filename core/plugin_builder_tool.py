@@ -24,7 +24,7 @@ class PluginBuilderSettings:
     # OpenRouter OpenAI-compatible endpoint
     base_url: str = "https://openrouter.ai/api/v1"
     # Минимально-адекватная дефолтная модель для код-генерации. Меняй здесь при необходимости.
-    model: str = "qwen/qwen3-coder"
+    model: str = "tencent/hy3-preview:free"
     # Защита: блокируем изменение этих плагинов из tool-а
     plugin_blacklist: tuple[str, ...] = ("discord", "internal_api", "laptop_screen")
 
@@ -52,6 +52,44 @@ def _path_jail_check(abs_path: Path, allowed_root: Path) -> None:
         abs_path.relative_to(allowed_root)
     except Exception as e:
         raise PermissionError(f"Path jail violation: {abs_path} is outside {allowed_root}") from e
+
+
+def _normalize_rel_path(rel: str, *, plugin_id: str) -> str:
+    """
+    Нормализует путь, который вернула модель, к относительному пути ВНУТРИ plugin_dir.
+
+    Фикс для бага "матрёшки": если модель вернула `interfaces/<id>/main.py` или `<id>/main.py`,
+    мы выкидываем этот префикс, чтобы не писать в `interfaces/<id>/interfaces/<id>/...`.
+    """
+
+    s = (rel or "").replace("\\", "/").strip()
+    s = s.lstrip("/")
+    if not s:
+        return ""
+
+    pid = (plugin_id or "").strip().lower()
+
+    # Запрещаем любые попытки traversal на уровне сегментов.
+    parts = [p for p in s.split("/") if p not in ("", ".")]
+    if any(p == ".." for p in parts):
+        raise PermissionError("Path traversal is not allowed")
+
+    # Срезаем частые "ошибочные" префиксы от модели.
+    # 1) interfaces/<pid>/...
+    if len(parts) >= 2 and parts[0].lower() == "interfaces" and parts[1].lower() == pid:
+        parts = parts[2:]
+    # 2) <pid>/...
+    elif len(parts) >= 1 and parts[0].lower() == pid:
+        parts = parts[1:]
+    # 3) interfaces/...
+    elif len(parts) >= 1 and parts[0].lower() == "interfaces":
+        # Если модель вернула просто interfaces/main.py — это невалидно для нашего tool-а
+        raise PermissionError("Path must be relative to interfaces/<plugin_id>/ (no 'interfaces/' prefix)")
+
+    if not parts:
+        return ""
+
+    return "/".join(parts)
 
 
 def _openrouter_key(explicit_key: str | None) -> str | None:
@@ -181,9 +219,12 @@ def create_or_edit_plugin_impl(
         for f in files:
             if not isinstance(f, dict):
                 continue
-            rel = str(f.get("path") or "").replace("\\", "/").lstrip("/")
+            rel_raw = str(f.get("path") or "")
             content = f.get("content")
-            if not rel or not isinstance(content, str):
+            if not rel_raw or not isinstance(content, str):
+                continue
+            rel = _normalize_rel_path(rel_raw, plugin_id=pid)
+            if not rel:
                 continue
             target = (plugin_dir / rel).resolve()
             _path_jail_check(target, plugin_dir)
@@ -195,6 +236,34 @@ def create_or_edit_plugin_impl(
             loader.rollback_plugin(pid, backup_path=backup_path)
         return {"ok": False, "error": f"Write failed: {e}", "written": written}
 
+    # Структурная валидация: tool должен класть plugin.yaml в корень plugin_dir.
+    manifest_path = (plugin_dir / "plugin.yaml").resolve()
+    if not manifest_path.exists():
+        if existed and backup_ok and backup_path:
+            loader.rollback_plugin(pid, backup_path=backup_path)
+        return {
+            "ok": False,
+            "error": "Plugin manifest missing at interfaces/<plugin_id>/plugin.yaml (model wrote files into a wrong subdir)",
+            "written": written,
+        }
+
+    # Валидация main_script из manifest: должен указывать на файл внутри plugin_dir.
+    try:
+        import yaml
+
+        raw_manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        main_script = str(raw_manifest.get("main_script") or "").strip()
+        if not main_script:
+            raise ValueError("plugin.yaml has empty main_script")
+        main_abs = (plugin_dir / main_script).resolve()
+        _path_jail_check(main_abs, plugin_dir)
+        if not main_abs.exists():
+            raise FileNotFoundError(f"main_script not found: {main_script}")
+    except Exception as e:
+        if existed and backup_ok and backup_path:
+            loader.rollback_plugin(pid, backup_path=backup_path)
+        return {"ok": False, "error": f"Invalid plugin manifest: {e}", "written": written}
+
     # Reload: если reload упадёт, откатываемся (если есть бэкап)
     ok, msg = loader.reload_plugin(pid)
     if not ok and existed and backup_ok and backup_path:
@@ -205,6 +274,10 @@ def create_or_edit_plugin_impl(
             "error": f"Reload failed: {msg}. Rolled back: {msg2}",
             "written": written,
         }
+
+    # Если это новый плагин и reload не удался — вернуть явную ошибку (чтобы агент видел, что E3 не завершён).
+    if not ok and not existed:
+        return {"ok": False, "error": f"Reload failed: {msg}", "written": written}
 
     return {
         "ok": True,

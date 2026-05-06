@@ -277,7 +277,13 @@ def get_character_profile() -> str:
 @tool
 def create_or_edit_plugin(plugin_id: str, task: str, api_key: str = "") -> str:
     """
-    Личный инструмент для генерации/правки плагина в `interfaces/<plugin_id>`.
+    Личный инструмент для **создания/редактирования плагинов Neyra** в `interfaces/<plugin_id>`.
+
+    **ВАЖНО ДЛЯ МОДЕЛИ (brain_model):**
+    - Если пользователь просит *создать / написать / изменить / исправить / сгенерировать* плагин/модуль Neyra
+      (всё, что относится к `interfaces/`), **нужно вызывать ТОЛЬКО этот инструмент**.
+    - **КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО** делать web-поиск, Wikipedia, “как написать плагин” и т.п. — это внутренняя задача проекта.
+      Не трать tool-calls на `web_search` для таких запросов.
 
     - Пишет СТРОГО внутри `interfaces/<plugin_id>` (Path Jail).
     - Блокирует изменения критических плагинов: discord, internal_api, laptop_screen.
