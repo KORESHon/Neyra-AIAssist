@@ -272,6 +272,32 @@ class LongTermMemory:
             logger.error("Ошибка add_knowledge: %s", e)
             return False, str(e)[:500]
 
+    def encode_texts(self, texts: list[str]) -> list[list[float]]:
+        """Пакетные эмбеддинги для офлайн-кластеризации LTM (CPU, тот же embedder что и RAG)."""
+        self._init()
+        if self._collection is None or self._embedder is None:
+            return []
+        if not texts:
+            return []
+        try:
+            raw = self._embedder.encode(
+                texts,
+                show_progress_bar=False,
+                batch_size=min(32, max(1, len(texts))),
+            )
+            if hasattr(raw, "tolist"):
+                raw = raw.tolist()
+            out: list[list[float]] = []
+            for row in raw:
+                if isinstance(row, (int, float)):
+                    out.append([float(row)])
+                else:
+                    out.append([float(x) for x in row])
+            return out
+        except Exception as e:
+            logger.error("encode_texts failed: %s", e)
+            return []
+
     def search(self, query: str, n_results: Optional[int] = None) -> list[str]:
         """Ищет похожие диалоги по запросу. Возвращает список текстов."""
         self._init()
@@ -376,6 +402,61 @@ class LongTermMemory:
         logger.info("LTM prune: удалено %s записей (старше %s дн.)", deleted, older_than_days)
         return {"dry_run": False, "matched": len(ids), "deleted": deleted}
 
+    def archive_row_tuples(
+        self,
+        rows: list[tuple[str, dict[str, Any], str]],
+        archive_dir: Path,
+        *,
+        file_name_suffix: str = "",
+    ) -> dict[str, Any]:
+        """
+        Cold archive для явного набора (id, meta, document): JSONL + delete из Chroma.
+        Используется консолидацией LTM по кластерам (частичный откат = не трогаем неуспешные id).
+        """
+        self._init()
+        if self._collection is None:
+            return {"dry_run": False, "archived": 0, "deleted_from_chroma": 0, "archive_path": None, "error": "no_collection"}
+        ids = [r[0] for r in rows]
+        if not ids:
+            return {"dry_run": False, "archived": 0, "deleted_from_chroma": 0, "archive_path": None}
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        safe_suffix = re.sub(r"[^\w.\-]+", "_", (file_name_suffix or "")[:80]).strip("_")
+        mid = f"_{safe_suffix}" if safe_suffix else ""
+        path = archive_dir / f"ltm_archive{mid}_{stamp}.jsonl"
+        with path.open("w", encoding="utf-8") as f:
+            for doc_id, meta, doc in rows:
+                rec = {"id": doc_id, "metadata": meta, "document": doc}
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        deleted = 0
+        with self._write_lock:
+            for i in range(0, len(ids), 400):
+                part = ids[i : i + 400]
+                self._collection.delete(ids=part)
+                deleted += len(part)
+        logger.info("LTM archive: %s строк → %s, удалено из Chroma: %s", len(ids), path, deleted)
+        return {
+            "dry_run": False,
+            "archived": len(ids),
+            "deleted_from_chroma": deleted,
+            "archive_path": str(path),
+        }
+
+    def delete_document_ids(self, doc_ids: list[str]) -> int:
+        """Удаление документов по id (откат частично добавленных digest при ошибке)."""
+        self._init()
+        if self._collection is None or not doc_ids:
+            return 0
+        deleted = 0
+        with self._write_lock:
+            for i in range(0, len(doc_ids), 400):
+                part = doc_ids[i : i + 400]
+                self._collection.delete(ids=part)
+                deleted += len(part)
+        if deleted:
+            logger.info("LTM delete_document_ids: удалено %s записей", deleted)
+        return deleted
+
     def archive_older_than(
         self,
         older_than_days: float,
@@ -402,26 +483,7 @@ class LongTermMemory:
             }
         if not ids:
             return {"dry_run": False, "archived": 0, "deleted_from_chroma": 0, "archive_path": None}
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        path = archive_dir / f"ltm_archive_{stamp}.jsonl"
-        with path.open("w", encoding="utf-8") as f:
-            for doc_id, meta, doc in rows:
-                rec = {"id": doc_id, "metadata": meta, "document": doc}
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        deleted = 0
-        with self._write_lock:
-            for i in range(0, len(ids), 400):
-                part = ids[i : i + 400]
-                self._collection.delete(ids=part)
-                deleted += len(part)
-        logger.info("LTM archive: %s строк → %s, удалено из Chroma: %s", len(ids), path, deleted)
-        return {
-            "dry_run": False,
-            "archived": len(ids),
-            "deleted_from_chroma": deleted,
-            "archive_path": str(path),
-        }
+        return self.archive_row_tuples(rows, archive_dir, file_name_suffix="bulk")
 
 
 # ─── PeopleDB — досье на людей ───────────────────────────────────────────────
@@ -487,16 +549,19 @@ class PeopleDB:
                 result[name.lower()] = pid
         return result
 
-    def update_fact(self, person_id: str, fact: str) -> bool:
-        """Добавляет новый динамический факт о человеке."""
+    def update_fact(self, person_id: str, fact: str, emotion: Optional[str] = None) -> bool:
+        """Добавляет новый динамический факт о человеке; опционально — реакция персонажа (эмоция)."""
         if person_id not in self._cache:
             logger.warning(f"PeopleDB: человек не найден: {person_id}")
             return False
 
-        entry = {
+        entry: dict[str, Any] = {
             "date": datetime.now().strftime("%Y-%m-%d"),
             "fact": fact,
         }
+        em = (emotion or "").strip()
+        if em:
+            entry["emotion"] = em[:500]
         self._cache[person_id].setdefault("dynamic_facts", []).append(entry)
         self._cache[person_id]["last_seen"] = datetime.now().isoformat()
         self._save(person_id)
@@ -552,7 +617,12 @@ class PeopleDB:
             lines.append("  Новые факты:")
             # Последние 5 фактов
             for fact_entry in person["dynamic_facts"][-5:]:
-                lines.append(f"    [{fact_entry['date']}] {fact_entry['fact']}")
+                fact_line = str(fact_entry.get("fact") or "")
+                emo = str(fact_entry.get("emotion") or "").strip()
+                if emo:
+                    lines.append(f"    [{fact_entry['date']}] {fact_line} (настроение Нейры при записи: {emo})")
+                else:
+                    lines.append(f"    [{fact_entry['date']}] {fact_line}")
 
         return "\n".join(lines)
 
@@ -643,5 +713,8 @@ class NeyraDiary:
             src = e.get("source", "manual")
             txt = str(e.get("text", "")).strip()
             if txt:
-                lines.append(f"[{ts} | {src}] {txt}")
+                meta = e.get("meta") or {}
+                emo = str(meta.get("emotion") or meta.get("assistant_mood") or "").strip()
+                suf = f" | настр.: {emo}" if emo else ""
+                lines.append(f"[{ts} | {src}{suf}] {txt}")
         return "\n".join(lines)

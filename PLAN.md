@@ -47,6 +47,9 @@
 - Speaker ID Injection (PeopleDB, `_resolve_speaker_label`).
 - Динамическое взвешивание памяти (`_build_system_prompt`, 6 секций).
 - LTM lifecycle (`core/ltm_maintenance.py`, TTL prune, cold archive, API endpoints).
+- **Консолидация LTM во «сне»:** кластеризация старых записей по косинусной близости эмбеддингов (`memory.ltm_cluster_merge`), несколько вызовов `memory_model` на кластер, JSON-манифесты батча в `memory/ltm_consolidation/`, в Chroma удаляются только строки успешно заархивированных кластеров; опционально запуск summarize после ночной рефлексии (`ltm_auto_summarize.run_after_nightly_reflection`). В `core/memory.py`: `encode_texts`, `archive_row_tuples`.
+- **Working memory (1–3 дня):** `core/working_memory.py` + `memory.working_memory`; markdown на пользователя (`storage_dir`) или общий файл; перепись через **`openrouter.memory_model`**; блок в промпте **до RAG** (talk + brain); фоновое обновление после успешного `chat`/`chat_stream` (каждые N ходов и при переполнении контекста); шина `memory.working_memory_updated`.
+- **Эмоциональный слой:** `core/emotional_layer.py` + `memory.emotional_layer`; после хода — запись в дневник (`emotion_turn`, **memory_model**); опционально **`ltm_emotion_sync`** — метаданные `assistant_emotion` в Chroma при сохранении диалога; PeopleDB `dynamic_facts[].emotion`; инструменты `remember_knowledge(..., affect_note)`, `update_person_fact(..., emotion_note)`; `NeyraDiary.recent_text` показывает `настр.` из `meta`.
 - Security (ролевая модель, HMAC webhooks, rate limiting).
 - Proactive Messaging (Discord, только в плагине).
 
@@ -73,54 +76,17 @@
 
 ## 4) Очередь этапов
 
-Этапы **1–4** упорядочены от более тяжёлого к более лёгкому (память и поведение прежде мелких доработок). Этапы **5–6** зафиксированы в конце очереди.
+Этап **1** — дальше точечные улучшения; этапы **2–3** зафиксированы в конце очереди.
 
 **Порядок реализации:**
 
-1. **Этап 1** — Консолидация памяти во «сне» (sleeping consolidation): усиление `ltm_auto_summarize` и ночной рефлексии.
-2. **Этап 2** — Working memory (среднесрок 1–3 дня): компактный слой между STM и долгой памятью, перезаписываемый по правилам.
-3. **Этап 3** — Эмоции в дневнике и при записи фактов (Diary / PeopleDB / LTM).
-4. **Этап 4** — Дополнительные точечные улучшения (персона, pre-context, безопасность, архив сессии).
-5. **Этап 5** — Полная локальная автономность (Voice + Runtime).
-6. **Этап 6** — Web UI как WebSocket-мост к Event Bus.
+1. **Этап 1** — Дополнительные точечные улучшения (персона, pre-context, безопасность, архив сессии).
+2. **Этап 2** — Полная локальная автономность (Voice + Runtime).
+3. **Этап 3** — Web UI как WebSocket-мост к Event Bus.
 
 ---
 
-## Этап 1 — Консолидация памяти во «сне»
-
-**Цель:** ночной или фоновый проход по дневнику и/или LTM: находить близкие по смыслу фрагменты через эмбеддинги, затем одним или несколькими вызовами **memory_model** сжимать, объединять дубли, отбрасывать шум; при необходимости выдавать новые id для свежих сводок.
-
-**Направление:** группировка по похожести перед суммаризацией (усиление текущего `ltm_auto_summarize` / async reflection), меньше повторов в retrieval.
-
-**Критерии приёмки:**
-
-- Консолидация не ломает целостность архива и даёт предсказуемый откат / логирование батчей.
-- Деградация качества контролируется (выборочная проверка retrieval).
-
----
-
-## Этап 2 — Working memory (среднесрок 1–3 дня)
-
-**Цель:** отдельный компактный слой между кратким контекстом чата и долгой памятью: текущие задачи, обещания, важные детали последних суток–пары дней — всегда в системном промпте или фиксированном блоке перед RAG.
-
-**Механика:** при росте контекста или по событию LLM **переписывает** артефакт (например `memory/working_memory.md`): убрать выполненное и устаревшее, добавить новое из диалога, сохранить структуру (даты / last updated). Хук из `chat` / `chat_stream` после успешного хода.
-
-**Критерии приёмки:**
-
-- Персона не «теряет» вчерашние договорённости, пока они не попали в RAG.
-- Размер слоя ограничен и не раздувает промпт неконтролируемо.
-
----
-
-## Этап 3 — Эмоции в дневнике и при записи фактов
-
-**Цель:** помимо фиксации факта («пользователь сказал X») записывать **реакцию персонажа** (тон, переживание, сдвиг настроения) в Diary и при записи фактов в PeopleDB/LTM (поле, суффикс строки или metadata — на усмотрение реализации).
-
-**Оговорки:** согласовать с политикой приватности и модерации; при RAG извлечённые эпизоды звучат живее и персональнее.
-
----
-
-## Этап 4 — Дополнительные улучшения (пакет мелких задач)
+## Этап 1 — Дополнительные улучшения (пакет мелких задач)
 
 Сделать по мере необходимости; можно распараллелить:
 
@@ -131,7 +97,7 @@
 
 ---
 
-## Этап 5 — Полная локальная автономность (Voice + Runtime)
+## Этап 2 — Полная локальная автономность (Voice + Runtime)
 
 **Цель:** устойчивая работа системы на железе пользователя без обязательного интернета.
 
@@ -159,7 +125,7 @@
 
 ---
 
-## Этап 6 — Web UI как WebSocket-мост к Event Bus
+## Этап 3 — Web UI как WebSocket-мост к Event Bus
 
 **Цель:** браузер как полноценный real-time клиент шины событий (после стабилизации плагинов и очереди выше).
 
@@ -183,7 +149,7 @@
   - Sandbox/hot-reload/rollback policy.
 - **Тестовые сценарии:**
   - e2e Discord text+music.
-  - Memory prune/summarize flows.
+  - Memory prune/summarize flows (включая dry-run и ветку `cluster_merge` у summarize); working memory (вкл. в конфиге, пару ходов чата, проверка файла и промпта); emotional_layer (дневник `emotion_turn`, опционально `ltm_emotion_sync`).
   - WS bridge pub/sub.
   - MCP debug and client connectivity.
 
@@ -196,7 +162,7 @@
 - Core healthcheck: `python scripts/healthcheck.py --mode core --skip-http`
 - Lavalink JAR: `python scripts/fetch_lavalink.py`
 - Event-driven smoke: chat → MUSIC_PLAY → queue → skip/pause/resume → stop/clear
-- Memory lifecycle smoke: write → search → prune → summarize → archive integrity
+- Memory lifecycle smoke: write → search → prune → summarize → archive integrity; emotional_layer (вкл., дневник + PeopleDB tool с emotion_note)
 - MCP smoke: debug-server tools + runtime MCP client calls
 
 ---

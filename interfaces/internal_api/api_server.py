@@ -835,6 +835,9 @@ def build_app(
                 "chroma_db_path": mem_cfg.get("chroma_db_path"),
                 "ltm_auto_prune": mem_cfg.get("ltm_auto_prune"),
                 "ltm_auto_summarize": mem_cfg.get("ltm_auto_summarize"),
+                "ltm_cluster_merge": mem_cfg.get("ltm_cluster_merge"),
+                "working_memory": mem_cfg.get("working_memory"),
+                "emotional_layer": mem_cfg.get("emotional_layer"),
             },
         }
 

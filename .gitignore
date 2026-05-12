@@ -20,6 +20,7 @@ __pycache__/
 .idea/
 .vscode/
 .cursor/
+kursovaya/
 
 # Runtime artifacts
 memory/chroma_db/f719d8db-4bdb-4a9d-a27e-26b831859017

@@ -264,6 +264,39 @@ memory:
   # RU: Лимит токенов digest при summarize с LLM.
   ltm_summarize_max_tokens: 2048
 
+  # EN: Embedding-similarity clustering before LTM digest (sleep consolidation). Disabling falls back to one big digest.
+  # RU: Кластеризация по эмбеддингам перед digest LTM; выключение — один общий digest как раньше.
+  ltm_cluster_merge:
+    enabled: true
+    similarity_threshold: 0.86
+    max_cluster_chars: 95000
+    log_dir: "./memory/ltm_consolidation"
+
+  # EN: Short-horizon (1–3 days) working memory: markdown file rewritten by memory_model; injected before RAG.
+  # RU: Рабочая память на 1–3 дня: markdown, переписывается memory_model; подмешивается в промпт до RAG.
+  working_memory:
+    enabled: false
+    per_user: true
+    storage_dir: "./memory/working_memory"
+    shared_file_path: "./memory/working_memory.md"
+    max_chars_in_prompt: 3500
+    update_every_n_turns: 2
+    update_after_context_trim: true
+    min_interval_seconds: 45
+    max_file_chars: 12000
+    llm_max_tokens: 1200
+
+  # EN: Persona affect in diary / PeopleDB / LTM metadata (memory_model). ltm_emotion_sync adds latency per turn.
+  # RU: Эмоции персоны в дневнике / досье / метаданные LTM; ltm_emotion_sync — доп. задержка на ход.
+  emotional_layer:
+    enabled: false
+    diary_after_turn: true
+    diary_emotion_min_interval_seconds: 90
+    max_diary_emotion_chars: 480
+    diary_emotion_max_tokens: 350
+    ltm_emotion_sync: false
+    ltm_emotion_max_tokens: 180
+
   # EN: Background LTM prune (same APScheduler as reflection).
   # RU: Фоновый prune LTM (тот же APScheduler, что и рефлексия).
   ltm_auto_prune:
@@ -281,6 +314,9 @@ memory:
     max_entries: 500
     compress_with_llm: true
     dry_run: false
+    # EN: After successful nightly diary reflection, run the same LTM summarize job (requires enabled: true).
+    # RU: После успешной ночной рефлексии запустить summarize LTM (нужно enabled: true).
+    run_after_nightly_reflection: false
 
   # EN: Nightly reflection schedule (HH:MM, local time).
   # RU: Расписание ночной рефлексии (HH:MM, локальное время).

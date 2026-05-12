@@ -172,6 +172,14 @@ class ReflectionEngine:
             self._save_journal()
             logger.info("Рефлексия за %s сохранена", date_str)
             await self._auto_sync_external_backup()
+            mem_cfg = self.config.get("memory") or {}
+            sm_cfg = mem_cfg.get("ltm_auto_summarize") if isinstance(mem_cfg.get("ltm_auto_summarize"), dict) else {}
+            if bool(sm_cfg.get("run_after_nightly_reflection")) and bool(sm_cfg.get("enabled", False)):
+                try:
+                    await self._ltm_scheduled_summarize_job()
+                    logger.info("LTM summarize после ночной рефлексии выполнен")
+                except Exception as e:
+                    logger.warning("LTM summarize после ночной рефлексии: %s", e)
 
         return summary
 

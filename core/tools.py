@@ -11,8 +11,8 @@ LLM может вызывать эти функции сама через Functi
   • SystemMonitorTool — состояние системы (безопасные команды)
   • WebSearchTool     — поиск через DuckDuckGo
   • MemorySearchTool  — поиск по ChromaDB
-  • RememberKnowledge — сохранить фрагмент в ChromaDB (любая полезная информация)
-  • UpdatePersonFact  — записать новый факт о человеке
+  • RememberKnowledge — сохранить фрагмент в ChromaDB (опционально affect_note)
+  • UpdatePersonFact  — записать новый факт о человеке (опционально emotion_note)
   • GetPersonInfo     — получить досье на человека
 """
 
@@ -184,7 +184,7 @@ def search_memory(query: str) -> str:
 
 
 @tool
-def remember_knowledge(text: str, category: str = "general") -> str:
+def remember_knowledge(text: str, category: str = "general", affect_note: str = "") -> str:
     """
     Сохраняет фрагмент в долгосрочную векторную память (RAG), чтобы позже найти через search_memory.
 
@@ -198,11 +198,15 @@ def remember_knowledge(text: str, category: str = "general") -> str:
 
     text — что запомнить (кратко, 1–5 предложений, своими словами).
     category — необязательная метка: general, news, situation, meme, fact, шутки и т.п.
+    affect_note — необязательно: короткая пометка «как Нейра это переживает» (тон), для богаче RAG; можно оставить пустым.
     """
     if _long_memory is None:
         return "Долгосрочная память не инициализирована."
 
     meta = {"source": "agent_tool", "category": (category or "general").strip()[:120]}
+    aff = (affect_note or "").strip()
+    if aff:
+        meta["affect"] = aff[:500]
     ok, info = _long_memory.add_knowledge(text.strip(), meta)
     if ok:
         return f"Запомнила в долгую память (документ {info})."
@@ -212,24 +216,26 @@ def remember_knowledge(text: str, category: str = "general") -> str:
 # ─── UpdatePersonFact ────────────────────────────────────────────────────────
 
 @tool
-def update_person_fact(person_id: str, fact: str) -> str:
+def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str:
     """
     Записывает новый факт о человеке в базу досье (PeopleDB).
     Используй когда узнала что-то новое о друге или знакомом.
     person_id — ID человека (maxim, kutyr, timofey, andrey_griniks, bogdan, foxy, erik).
     fact — что именно узнала (кратко, своими словами).
+    emotion_note — по желанию: как ты это переживаешь (коротко), сохранится рядом с фактом в досье.
     """
     if _people_db is None:
         return "PeopleDB не инициализирована."
 
-    success = _people_db.update_fact(person_id, fact)
+    emo = (emotion_note or "").strip() or None
+    success = _people_db.update_fact(person_id, fact, emotion=emo)
     if success:
         return f"Записала. Теперь знаю про {person_id}: {fact}"
     else:
         # Попробуем найти по нечёткому совпадению
         person = _people_db.find(person_id)
         if person:
-            _people_db.update_fact(person["id"], fact)
+            _people_db.update_fact(person["id"], fact, emotion=emo)
             return f"Нашла по имени и записала про {person['names'][0]}: {fact}"
         return f"Не нашла человека '{person_id}' в базе. Проверь ID."
 

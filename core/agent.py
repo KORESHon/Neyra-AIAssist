@@ -75,6 +75,10 @@ class NeyraAgent:
         self._setup_memory()
         self._setup_tools()
         self._setup_logs()
+        self._project_root = Path(__file__).resolve().parent.parent
+        self._wm_turns_since_refresh = 0
+        self._wm_last_refresh_mono = 0.0
+        self._emotion_last_mono = 0.0
         logger.info(f"NeyraAgent инициализирован | mode={self.mode}")
 
     # ─── Инициализация ─────────────────────────────────────────────────────
@@ -507,6 +511,7 @@ class NeyraAgent:
         mcp_tools_catalog: str = "",
         brain_router_context: str = "",
         attached_image_caption: str = "",
+        working_memory_context: str = "",
     ) -> str:
         """Собирает системный промпт. Порядок (B2): роль → активный → упомянутые → правила → RAG → остальное."""
         base = self.config["assistant"]["system_prompt"]
@@ -590,6 +595,14 @@ class NeyraAgent:
                 )
         sections.append("\n# ПРАВИЛА ПОВЕДЕНИЯ И СТИЛЬ ОТВЕТА\n" + "\n\n".join(rule_chunks))
 
+        if (working_memory_context or "").strip():
+            sections.append(
+                "\n# РАБОЧАЯ ПАМЯТЬ (1–3 дня, сжатый слой)\n"
+                "Краткие договорённости и задачи из недавних суток; если противоречит RAG — приоритет у фактов из RAG, "
+                "но не игнорируй явные «свежие» обещания из этого блока без причины.\n"
+                f"{working_memory_context.strip()}"
+            )
+
         if extra_memories:
             memories_text = "\n".join(f"- {m[:300]}" for m in extra_memories)
             sections.append(
@@ -671,6 +684,7 @@ class NeyraAgent:
         tool_context: str = "",
         mcp_tools_catalog: str = "",
         last_image_context: Optional[str] = None,
+        working_memory_context: str = "",
     ) -> str:
         """Компактный системный промпт для brain: инструменты и факты, без личности talk-модели."""
         lines: list[str] = [
@@ -686,6 +700,8 @@ class NeyraAgent:
             lines.append("# Активный собеседник\n" + people_context_active.strip())
         if people_context_mentioned:
             lines.append("# Упомянутые люди\n" + people_context_mentioned.strip())
+        if (working_memory_context or "").strip():
+            lines.append("# Рабочая память (1–3 дня)\n" + working_memory_context.strip())
         if extra_memories:
             mt = "\n".join(f"- {m[:400]}" for m in extra_memories)
             lines.append("# Фрагменты памяти (RAG)\n" + mt)
@@ -1026,6 +1042,136 @@ class NeyraAgent:
             )
         except Exception as e:
             logger.warning("Не удалось запланировать async reflection: %s", e)
+
+    def _format_stm_tail(self, max_messages: int = 12) -> str:
+        lines: list[str] = []
+        for m in self.short_memory.get_history()[-max_messages:]:
+            role = str(m.get("role") or "")
+            content = str(m.get("content") or "")
+            label = "Пользователь" if role == "user" else "Нейра"
+            chunk = content if len(content) <= 1600 else content[:1597] + "…"
+            lines.append(f"{label}: {chunk}")
+        return "\n".join(lines)
+
+    def _read_working_memory_for_prompt(self, internal_user_id: str) -> str:
+        from core import working_memory as wm
+
+        return wm.read_snippet_for_prompt(self.config, self._project_root, internal_user_id)
+
+    async def _run_working_memory_refresh(
+        self,
+        *,
+        internal_user_id: str,
+        user_message: str,
+        assistant_text: str,
+        speaker_label: str,
+        reason: str,
+    ) -> None:
+        from core import working_memory as wm
+
+        await wm.refresh_working_memory_async(
+            self,
+            self.config,
+            root=self._project_root,
+            internal_user_id=internal_user_id,
+            user_message=user_message,
+            assistant_text=assistant_text,
+            stm_tail=self._format_stm_tail(12),
+            speaker_label=speaker_label,
+            reason=reason,
+        )
+
+    def _schedule_working_memory_refresh(
+        self,
+        *,
+        internal_user_id: str,
+        user_message: str,
+        assistant_text: str,
+        speaker_label: str,
+        stm_trimmed: bool = False,
+    ) -> None:
+        from core import working_memory as wm
+
+        if not wm.wm_enabled(self.config):
+            return
+        cfg = wm.wm_config(self.config)
+        force = bool(stm_trimmed and cfg.get("update_after_context_trim", True))
+        self._wm_turns_since_refresh += 1
+        every = max(1, int(cfg.get("update_every_n_turns", 2)))
+        should = force or self._wm_turns_since_refresh >= every
+        if not should:
+            return
+        gap = float(cfg.get("min_interval_seconds", 30))
+        if gap > 0 and not force and (time.monotonic() - self._wm_last_refresh_mono) < gap:
+            return
+        self._wm_turns_since_refresh = 0
+        self._wm_last_refresh_mono = time.monotonic()
+        try:
+            asyncio.create_task(
+                self._run_working_memory_refresh(
+                    internal_user_id=internal_user_id,
+                    user_message=user_message,
+                    assistant_text=assistant_text,
+                    speaker_label=speaker_label,
+                    reason="context_trim" if stm_trimmed else f"every_{every}_turns",
+                )
+            )
+        except Exception as e:
+            logger.warning("Не удалось запланировать working_memory: %s", e)
+
+    async def _save_dialog_to_ltm_with_emotion(
+        self,
+        user_message: str,
+        clean_text: str,
+        metadata: dict,
+        speaker_label: str,
+    ) -> None:
+        from core import emotional_layer as el
+
+        md = dict(metadata)
+        if el.layer_enabled(self.config) and el.layer_cfg(self.config).get("ltm_emotion_sync"):
+            tag = await el.compact_emotion_for_ltm(
+                self,
+                self.config,
+                user_message=user_message,
+                assistant_text=clean_text,
+                speaker_label=speaker_label,
+            )
+            if tag:
+                md["assistant_emotion"] = tag
+        self.long_memory.save(user_message, clean_text, md)
+
+    def _schedule_emotion_diary(
+        self,
+        *,
+        user_message: str,
+        assistant_text: str,
+        speaker_label: str,
+        username: Optional[str],
+        discord_user_id: Optional[str],
+    ) -> None:
+        from core import emotional_layer as el
+
+        if not el.layer_enabled(self.config) or not el.layer_cfg(self.config).get("diary_after_turn", True):
+            return
+        gap = float(el.layer_cfg(self.config).get("diary_emotion_min_interval_seconds", 90))
+        if gap > 0 and (time.monotonic() - self._emotion_last_mono) < gap:
+            return
+        self._emotion_last_mono = time.monotonic()
+        try:
+            asyncio.create_task(
+                el.diary_emotion_after_turn_async(
+                    self,
+                    self.config,
+                    user_message=user_message,
+                    assistant_text=assistant_text,
+                    speaker_label=speaker_label,
+                    username=username,
+                    discord_user_id=discord_user_id,
+                )
+            )
+        except Exception as e:
+            logger.warning("Не удалось запланировать emotional_layer diary: %s", e)
 
     async def _ainvoke_text_with_fallback(self, messages: list[Any], *, llm=None):
         """Обычный нестриминговый вызов (одна модель)."""
@@ -1913,6 +2059,8 @@ class NeyraAgent:
 
         speaker_label = self._resolve_speaker_label(username, discord_user_id, author_display_name)
 
+        wm_snip = self._read_working_memory_for_prompt(internal_uid)
+
         has_vis = bool(vision_images)
         last_img_ctx = self._last_image_context_for_prompt(channel_id, vision_images)
         lyrics_mode = LYRICS_REQUEST_MARKER in (user_message or "")
@@ -1951,6 +2099,7 @@ class NeyraAgent:
             tool_context=tool_ctx,
             mcp_tools_catalog=mcp_catalog,
             last_image_context=last_img_ctx,
+            working_memory_context=wm_snip,
         )
         brain_context = ""
         try:
@@ -1979,6 +2128,7 @@ class NeyraAgent:
             mcp_tools_catalog=mcp_catalog,
             brain_router_context=brain_context or "",
             attached_image_caption=caption_ok,
+            working_memory_context=wm_snip,
         )
 
         # 4. Строим список сообщений
@@ -2064,7 +2214,7 @@ class NeyraAgent:
             "discord_id": discord_user_id or "",
             "user_id": internal_uid,
         }
-        self.long_memory.save(user_message, clean_text, metadata)
+        await self._save_dialog_to_ltm_with_emotion(user_message, clean_text, metadata, speaker_label)
 
         # 10. Логи
         self._log_thought(thoughts, user_message)
@@ -2073,6 +2223,20 @@ class NeyraAgent:
         self._schedule_async_reflection(
             user_message=user_message,
             assistant_text=clean_text,
+            username=username,
+            discord_user_id=discord_user_id,
+        )
+        self._schedule_working_memory_refresh(
+            internal_user_id=internal_uid,
+            user_message=user_message,
+            assistant_text=clean_text,
+            speaker_label=speaker_label,
+            stm_trimmed=False,
+        )
+        self._schedule_emotion_diary(
+            user_message=user_message,
+            assistant_text=clean_text,
+            speaker_label=speaker_label,
             username=username,
             discord_user_id=discord_user_id,
         )
@@ -2157,6 +2321,8 @@ class NeyraAgent:
 
         speaker_label = self._resolve_speaker_label(username, discord_user_id, author_display_name)
 
+        wm_snip = self._read_working_memory_for_prompt(internal_uid)
+
         has_vis = bool(vision_images)
         last_img_ctx = self._last_image_context_for_prompt(channel_id, vision_images)
         lyrics_mode = LYRICS_REQUEST_MARKER in (user_message or "")
@@ -2195,6 +2361,7 @@ class NeyraAgent:
             tool_context=tool_ctx,
             mcp_tools_catalog=mcp_catalog_s,
             last_image_context=last_img_ctx,
+            working_memory_context=wm_snip,
         )
         brain_context = ""
         try:
@@ -2222,6 +2389,7 @@ class NeyraAgent:
             mcp_tools_catalog=mcp_catalog_s,
             brain_router_context=brain_context or "",
             attached_image_caption=caption_ok,
+            working_memory_context=wm_snip,
         )
 
         stream_llm = self.llm_talk
@@ -2310,6 +2478,7 @@ class NeyraAgent:
                     mcp_tools_catalog="",
                     brain_router_context=brain_context or "",
                     attached_image_caption=caption_ok,
+                    working_memory_context=wm_snip,
                 )
 
                 # Повторный запрос
@@ -2406,13 +2575,27 @@ class NeyraAgent:
             "discord_id": discord_user_id or "",
             "user_id": internal_uid,
         }
-        self.long_memory.save(user_message, clean_text, metadata)
+        await self._save_dialog_to_ltm_with_emotion(user_message, clean_text, metadata, speaker_label)
         self._log_thought(thoughts, user_message)
         self._log_chat(user_message, clean_text, metadata)
         self._store_vision_note_if_needed(channel_id, vision_images, thoughts, clean_text)
         self._schedule_async_reflection(
             user_message=user_message,
             assistant_text=clean_text,
+            username=username,
+            discord_user_id=discord_user_id,
+        )
+        self._schedule_working_memory_refresh(
+            internal_user_id=internal_uid,
+            user_message=user_message,
+            assistant_text=clean_text,
+            speaker_label=speaker_label,
+            stm_trimmed=context_exceeded,
+        )
+        self._schedule_emotion_diary(
+            user_message=user_message,
+            assistant_text=clean_text,
+            speaker_label=speaker_label,
             username=username,
             discord_user_id=discord_user_id,
         )
@@ -2453,10 +2636,11 @@ class NeyraAgent:
             "raw": raw_response,
         }
 
-    async def summarize_ltm_corpus(self, combined_dialog_text: str) -> str:
+    async def summarize_ltm_corpus(self, combined_dialog_text: str, *, consolidation: bool = False) -> str:
         """
         Сжимает пакет выгружаемых диалогов LTM в короткий digest для последующей записи в RAG.
         Использует reflection-модель с умеренным лимитом токенов (обслуживание памяти, не чат).
+        consolidation=True — режим ночной консолидации: слияние дублей, отсечение шума.
         """
         from langchain_core.messages import HumanMessage
 
@@ -2469,12 +2653,21 @@ class NeyraAgent:
 
         mem_cfg = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
         max_out = int(mem_cfg.get("ltm_summarize_max_tokens", min(self.reflection_max_tokens * 2, 4096)))
-        prompt = (
-            "Ниже — фрагменты старых диалогов из долговременной памяти. "
-            "Сожми их в один связный markdown-текст на русском: темы, имена, факты, без воды и без выдумок. "
-            "Если данных мало — дай 2–4 предложения.\n\n---\n\n"
-            f"{raw}"
-        )
+        if consolidation:
+            prompt = (
+                "Ниже — близкие по смыслу фрагменты долговременной памяти (один кластер). "
+                "Объедини явные дубли и повторы одной мысли; убери шум и пустяки без потери фактов. "
+                "Если темы разные — структурируй короткими подзаголовками (markdown ##). "
+                "Только русский; не выдумывай факты; если мало сигнала — 2–4 предложения.\n\n---\n\n"
+                f"{raw}"
+            )
+        else:
+            prompt = (
+                "Ниже — фрагменты старых диалогов из долговременной памяти. "
+                "Сожми их в один связный markdown-текст на русском: темы, имена, факты, без воды и без выдумок. "
+                "Если данных мало — дай 2–4 предложения.\n\n---\n\n"
+                f"{raw}"
+            )
         llm = getattr(self, "llm_memory", None) or getattr(self, "llm_reflection", None) or self.llm_talk
         call = llm.bind(max_tokens=max_out) if hasattr(llm, "bind") else llm
         resp = await call.ainvoke([HumanMessage(content=prompt)])
@@ -2499,6 +2692,9 @@ class NeyraAgent:
                 "connected_servers": self.mcp_manager.connected_servers(),
                 "errors": self.mcp_manager.last_errors(),
             }
+        from core import emotional_layer as em
+        from core import working_memory as wm
+
         return {
             "mode": self.mode,
             "llm_provider": self.backend,
@@ -2512,4 +2708,6 @@ class NeyraAgent:
             "tools_count": len(self.tools),
             "event_bus": self.event_bus.handler_counts(),
             "mcp": mcp_info,
+            "working_memory_enabled": wm.wm_enabled(self.config),
+            "emotional_layer_enabled": em.layer_enabled(self.config),
         }
