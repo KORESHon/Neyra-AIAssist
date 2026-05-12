@@ -29,7 +29,7 @@ class PluginBuilderSettings:
     # Минимально-адекватная дефолтная модель для код-генерации. Меняй здесь при необходимости.
     model: str = "tencent/hy3-preview:free"
     # Защита: блокируем изменение этих плагинов из tool-а
-    plugin_blacklist: tuple[str, ...] = ("discord", "internal_api", "laptop_screen")
+    plugin_blacklist: tuple[str, ...] = ("discord", "internal_api")
 
 
 def _repo_root() -> Path:
@@ -195,7 +195,7 @@ def create_or_edit_plugin_impl(
         "Нужно сгенерировать изменения плагина в interfaces/<plugin_id>.\n"
         "ВЫХОД СТРОГО: JSON вида {\"files\": [{\"path\": \"relative/path\", \"content\": \"...\"}], \"notes\": \"...\"}.\n"
         "Запрещено менять что-либо вне interfaces/<plugin_id>.\n"
-        "Не трогай плагины: discord, internal_api, laptop_screen.\n"
+        "Не трогай плагины: discord, internal_api.\n"
         "ВАЖНО: Все пути files[].path должны быть ОТНОСИТЕЛЬНЫМИ к корню плагина (НЕ включать interfaces/<id>/).\n"
         "Если создаёшь новый плагин: добавь interfaces/<plugin_id>/plugin.yaml и interfaces/<plugin_id>/main.py.\n"
         "В plugin.yaml ОБЯЗАТЕЛЬНО укажи main_script: \"main.py\" (не пустой).\n"

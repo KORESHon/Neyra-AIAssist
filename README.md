@@ -61,7 +61,7 @@ Typical stacks pair large **MoE** chat models (e.g. **Qwen3 235B** through OpenR
   - `core/ltm_maintenance.py` — LTM lifecycle: TTL prune, summarization → cold archive.
   - `core/voice/` — voice adapters and factories (cloud/local evolution path).
 - `frontend/` — React+Vite+Tailwind sources; production bundle in `frontend/dist`.
-- `interfaces/` — plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: `**discord`** (unified text+music), `internal_api`, `local_voice`, `laptop_screen`; template `**000EXAMPLE/`** (see Plugin SDK links below).
+- `interfaces/` — plugins (`interfaces/<id>/plugin.yaml` + `main.py`); shipped: `**discord`** (unified text+music), `internal_api`, `local_voice`; template `**000EXAMPLE/`** (see Plugin SDK links below).
 - `tools/mcp_server/` — **MCP debug server** (stdio MCP for Cursor): logs, API calls, fire_event, memory snapshot.
 - `scripts/` — ops helpers (health checks, maintenance, `inject_memes_2026.py`).
 - `main.py` — entrypoint (`core` vs `console` only).

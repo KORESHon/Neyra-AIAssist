@@ -227,7 +227,7 @@ interfaces/000EXAMPLE/
     main.py
 ```
 
-Shipped: `discord/` (unified text + music), `internal_api/`, `local_voice/`, `laptop_screen/`.
+Shipped: `discord/` (unified text + music), `internal_api/`, `local_voice/`.
 
 ### `plugin.yaml` fields
 
@@ -303,7 +303,7 @@ Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for 
 | ------------------------------------------- | ----------------------------------------- |
 | `interfaces/discord/`                       | Discord (text + music); uses injected `ctx.agent`. |
 | `interfaces/internal_api/`                  | FastAPI routes; app built in core (`build_app`). |
-| `interfaces/local_voice/`, `laptop_screen/` | Stubs.                                    |
+| `interfaces/local_voice/` | Stub.                                    |
 
 
 ---

@@ -298,7 +298,7 @@ def run_plugin(ctx: PluginContext) -> None:
 | ------------------------------------------------------ | ------------------------------------------------------------------- |
 | `interfaces/discord/`                                  | Discord (текст + музыка); в `run_plugin` передаётся `ctx.agent` из `main.py`. |
 | `interfaces/internal_api/`                             | Маршруты FastAPI; приложение собирается в ядре (`build_app`). |
-| `interfaces/local_voice/`, `interfaces/laptop_screen/` | Заглушки под будущую реализацию.                                    |
+| `interfaces/local_voice/` | Заглушка под будущую реализацию.                                    |
 
 
 ---
