@@ -1,6 +1,4 @@
-[Cursor AI assist](https://cursor.com)
-
-Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).
+![Cursor](https://img.shields.io/badge/Cursor-%23000000?style=for-the-badge&logo=Cursor&logoColor=white)
 
 ---
 
