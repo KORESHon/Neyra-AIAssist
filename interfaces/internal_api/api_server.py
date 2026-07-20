@@ -27,6 +27,10 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from core.win_runtime import apply_runtime_patches
+
+apply_runtime_patches()
+
 from core.agent import NeyraAgent
 from core.backup_manager import BackupManager
 from core.event_bus import CoreEvent
@@ -1157,6 +1161,7 @@ def build_app(
             "openrouter.talk_model.temperature",
             "openrouter.talk_model.timeout_seconds",
             "openrouter.brain_model.model",
+            "openrouter.brain_model.model_deep",
             "openrouter.brain_model.max_tokens",
             "openrouter.brain_model.temperature",
             "openrouter.brain_model.timeout_seconds",
@@ -1168,6 +1173,7 @@ def build_app(
             "openrouter.vision_model.temperature",
             "openrouter.vision_model.timeout_seconds",
             "openrouter.vision_model.enabled",
+            "openrouter.vision_model.use_brain_model_for_vision",
             "openrouter.vision_model.use_main_model_for_vision",
             "openrouter.vision_model.max_images_per_message",
             "openrouter.vision_model.max_image_bytes",

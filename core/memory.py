@@ -188,7 +188,7 @@ class LongTermMemory:
                 torch.set_num_interop_threads(1)
             except Exception:
                 pass
-            logger.info("Embedding модель загружена ✓ (CPU, без CUDA)")
+            logger.info("Embedding модель загружена (CPU, без CUDA)")
 
         except ImportError as e:
             logger.warning(f"ChromaDB/sentence-transformers не установлены: {e}. RAG отключён.")

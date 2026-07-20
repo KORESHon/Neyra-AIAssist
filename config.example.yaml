@@ -88,16 +88,21 @@ openrouter:
     primary_first_token_timeout_seconds: 8.0
 
   brain_model:
-    model: "qwen/qwen3-235b-a22b-2507"
-    max_tokens: 8192
+    # Левое полушарие: быстрый мультимодальный маршрутизатор + tool-loop
+    model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+    # Правое полушарие: глубокая логика (инструмент delegate_to_deep_logic)
+    model_deep: "openai/gpt-oss-120b:free"
+    # max_tokens не задан — нативный лимит генерации провайдера
     temperature: 0.35
     top_p: 1.0
     timeout_seconds: 30.0
     max_retries: 1
 
   memory_model:
+    # Гиппокамп: LTM, working memory, рефлексии (большой контекст; retry при 429)
+    # Если openrouter/owl-alpha даёт 404 — замените на qwen/qwen3-next-80b-a3b-instruct:free
     model: "qwen/qwen3-next-80b-a3b-instruct:free"
-    max_tokens: 900
+    # max_tokens не задан — нативный лимит провайдера
     temperature: 0.6
     timeout_seconds: 60.0
     max_retries: 1
@@ -106,7 +111,7 @@ openrouter:
   # RU: VL-модель и весь контур зрения — только здесь (корневого vision: больше нет).
   vision_model:
     enabled: true
-    use_main_model_for_vision: false
+    use_brain_model_for_vision: true
     model: "qwen/qwen3.5-flash-02-23"
     max_tokens: 800
     temperature: 0.75

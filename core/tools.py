@@ -14,6 +14,7 @@ LLM может вызывать эти функции сама через Functi
   • RememberKnowledge — сохранить фрагмент в ChromaDB (опционально affect_note)
   • UpdatePersonFact  — записать новый факт о человеке (опционально emotion_note)
   • GetPersonInfo     — получить досье на человека
+  • delegate_to_deep_logic — глубокая логика (brain.model_deep / GPT-OSS)
 """
 
 from __future__ import annotations
@@ -35,14 +36,22 @@ logger = logging.getLogger("neyra.tools")
 _long_memory: "LongTermMemory | None" = None
 _people_db: "PeopleDB | None" = None
 _assistant_cfg: dict | None = None
+_neyra_config: dict | None = None
 
 
-def init_tools(long_memory, people_db, assistant_cfg: dict | None = None) -> None:
-    """Инициализирует ссылки на модули памяти."""
-    global _long_memory, _people_db, _assistant_cfg
+def init_tools(
+    long_memory,
+    people_db,
+    assistant_cfg: dict | None = None,
+    *,
+    neyra_config: dict | None = None,
+) -> None:
+    """Инициализирует ссылки на модули памяти и корневой конфиг (для delegate_to_deep_logic)."""
+    global _long_memory, _people_db, _assistant_cfg, _neyra_config
     _long_memory = long_memory
     _people_db = people_db
     _assistant_cfg = assistant_cfg or {}
+    _neyra_config = neyra_config if isinstance(neyra_config, dict) else {}
 
 
 # ─── TimeContextTool ─────────────────────────────────────────────────────────
@@ -278,6 +287,70 @@ def get_character_profile() -> str:
     )
 
 
+# ─── Deep logic delegation (правое полушарие) ─────────────────────────────────
+
+@tool
+async def delegate_to_deep_logic(detailed_prompt: str) -> str:
+    """
+    Используй этот инструмент, если пользователь запрашивает написание программного кода,
+    создание или модификацию плагинов ядра Neyra, решение сложных многоуровневых логических
+    или математических задач. Передай в detailed_prompt развёрнутое техническое задание
+    (контекст, ограничения, ожидаемый формат ответа). Инструмент вызывает глубокую модель
+    (openrouter.brain_model.model_deep) и возвращает готовый код или аналитику.
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_openai import ChatOpenAI
+
+    from core.llm_profile import (
+        merge_llm_tuning_options,
+        resolve_openai_compatible_connection,
+        resolved_brain_model_deep,
+    )
+
+    cfg = _neyra_config or {}
+    if not cfg:
+        return "delegate_to_deep_logic: конфиг ядра не инициализирован (init_tools)."
+    try:
+        conn = resolve_openai_compatible_connection(cfg)
+        tuning = merge_llm_tuning_options(cfg)
+        deep_id = resolved_brain_model_deep(cfg, conn.provider)
+        brain_timeout = float(
+            tuning.get("brain_timeout_seconds", tuning.get("timeout_seconds", 120.0))
+        )
+        brain_retries = int(tuning.get("brain_max_retries", tuning.get("max_retries", 1)))
+        temperature = float(tuning.get("brain_temperature", 0.25))
+        llm_kwargs: dict = {
+            "base_url": conn.base_url,
+            "api_key": conn.api_key,
+            "model": deep_id,
+            "temperature": temperature,
+            "streaming": False,
+            "timeout": brain_timeout,
+            "max_retries": brain_retries,
+            "default_headers": {**dict(conn.default_headers), "X-Title": "Neyra Deep Logic"},
+        }
+        brain_cap = tuning.get("brain_max_tokens")
+        if brain_cap is not None:
+            llm_kwargs["max_tokens"] = int(brain_cap)
+        llm = ChatOpenAI(**llm_kwargs)
+        sys = SystemMessage(
+            content=(
+                "Ты глубокий аналитический и инженерный модуль Нейры (правое полушарие). "
+                "Дай точный, завершённый ответ по ТЗ: код, план или разбор. "
+                "Без markdown-обёрток вокруг всего ответа, если не просят; без тегов мышления."
+            )
+        )
+        human = HumanMessage(content=(detailed_prompt or "").strip()[:120000])
+        if not human.content:
+            return "delegate_to_deep_logic: detailed_prompt пуст."
+        resp = await llm.ainvoke([sys, human])
+        text = resp.content if hasattr(resp, "content") else str(resp)
+        return (text or "").strip() or "(пустой ответ глубокой модели)"
+    except Exception as e:
+        logger.exception("delegate_to_deep_logic failed")
+        return f"delegate_to_deep_logic failed: {e}"
+
+
 # ─── Plugin Builder Tool (E3) ─────────────────────────────────────────────────
 
 @tool
@@ -323,5 +396,6 @@ ALL_TOOLS = [
     update_person_fact,
     get_person_info,
     get_character_profile,
+    delegate_to_deep_logic,
     create_or_edit_plugin,
 ]

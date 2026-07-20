@@ -4,6 +4,20 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $Host.UI.RawUI.WindowTitle = "Neyra · control deck"
 
+function Ensure-WindowsToolPath {
+    # После переноса проекта / урезанного PATH в IDE cmd, netstat, chcp могут пропасть.
+    $dirs = @(
+        (Join-Path $env:SystemRoot 'System32'),
+        (Join-Path $env:SystemRoot 'SysWOW64'),
+        (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0')
+    )
+    foreach ($dir in $dirs) {
+        if ((Test-Path -LiteralPath $dir) -and ($env:Path -notlike "*$dir*")) {
+            $env:Path = "$dir;$env:Path"
+        }
+    }
+}
+
 function Enable-VtIfPossible {
     try {
         $sig = @'
@@ -40,7 +54,13 @@ function Write-Hi($msg) { Write-Host $msg -ForegroundColor Cyan }
 
 function Get-JavaMajorVersion {
     if (-not (Get-Command java -ErrorAction SilentlyContinue)) { return $null }
-    $out = (& cmd /c "java -version 2>&1" | Select-Object -First 1)
+    $oldEa = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = (& java -version 2>&1 | Select-Object -First 1)
+    } finally {
+        $ErrorActionPreference = $oldEa
+    }
     if (-not $out) { return $null }
     if ($out -match '"(?<v>[\d\.]+)') {
         $v = $Matches['v']
@@ -70,10 +90,14 @@ function Get-NodeMajorVersion {
 function Test-PythonRuntime310 {
     param([string]$Exe)
     if (-not $Exe) { return $false }
-    $exeEscaped = $Exe.Replace('"', '""')
-    # /v:off — иначе в путях вида Z:\!Others\!... cmd.exe съедает ! как delayed expansion
-    & cmd /v:off /c "`"$exeEscaped`" -c ""import sys; raise SystemExit(0 if sys.version_info>=(3,10) else 1)"" >nul 2>nul"
-    return $LASTEXITCODE -eq 0
+    $oldEa = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Exe -c "import sys; raise SystemExit(0 if sys.version_info>=(3,10) else 1)" *> $null
+        return $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $oldEa
+    }
 }
 
 function Sync-PathFromEnvironment {
@@ -87,11 +111,14 @@ function Sync-PathFromEnvironment {
 
 function Resolve-LauncherPython {
     param([string]$RepoRoot)
-    # Native Windows: отдельный venv от Linux/WSL (.venv в репо — для Unix; .venv_win — для Windows).
+    # Native Windows: .venv_win (отдельно от Linux/WSL .venv). Fallback: .venv\Scripts → PATH.
     $venvWin = Join-Path $RepoRoot '.venv_win\Scripts\python.exe'
-    $venvLegacy = Join-Path $RepoRoot '.venv\Scripts\python.exe'
+    $venvLinuxTree = Join-Path $RepoRoot '.venv\Scripts\python.exe'
     if ((Test-Path -LiteralPath $venvWin) -and (Test-PythonRuntime310 -Exe $venvWin)) { return $venvWin }
-    if ((Test-Path -LiteralPath $venvLegacy) -and (Test-PythonRuntime310 -Exe $venvLegacy)) { return $venvLegacy }
+    if ((Test-Path -LiteralPath $venvLinuxTree) -and (Test-PythonRuntime310 -Exe $venvLinuxTree)) {
+        Write-Warn "Найден .venv\Scripts (часто от WSL/Linux). Для native Windows рекомендуется: py -3 -m venv .venv_win"
+        return $venvLinuxTree
+    }
     foreach ($name in @('python', 'python3')) {
         $cmd = Get-Command $name -ErrorAction SilentlyContinue
         if (-not $cmd) { continue }
@@ -118,7 +145,7 @@ function Get-PythonInterpreterLabel {
     if (-not $ExePath) { return 'неизвестно' }
     $n = $ExePath -replace '\\', '/'
     if ($n -match '(?i)/\.venv_win/scripts/python\.exe$') { return 'локальный .venv_win (Windows)' }
-    if ($n -match '(?i)/\.venv/scripts/python\.exe$') { return 'локальный .venv legacy (Windows, лучше .venv_win)' }
+    if ($n -match '(?i)/\.venv/scripts/python\.exe$') { return 'локальный .venv\Scripts (fallback / WSL-tree)' }
     if ($n -match '(?i)/\.venv/bin/python[0-9.]*$') { return 'локальный .venv (Unix/WSL)' }
     return 'глобальный / PATH / py (не venv репозитория)'
 }
@@ -193,18 +220,29 @@ function Invoke-FrontendNpmHeal {
 
 function Ensure-ProjectVenv {
     $venvPy = Join-Path $Root '.venv_win\Scripts\python.exe'
-    if (-not (Test-Path $venvPy)) {
-        Write-Warn "Создаю локальное .venv_win для безопасной установки Python-зависимостей (отдельно от Linux .venv)..."
+    if (-not (Test-Path -LiteralPath $venvPy)) {
+        Write-Warn "Создаю .venv_win (Windows venv; Linux/WSL использует отдельный .venv/bin)..."
         $venvPath = Join-Path $Root '.venv_win'
-        $venvEc = (Invoke-PythonModule -m venv $venvPath)
+        $venvEc = Invoke-PythonModule @('-m', 'venv', $venvPath)
         if ($venvEc -ne 0) {
             Write-Err "Не удалось создать .venv_win (проверь python-venv/pip)."
             return $false
         }
+        if (-not (Test-Path -LiteralPath $venvPy)) {
+            $boot = Join-Path $env:TEMP "neyra-get-pip.py"
+            try {
+                Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $boot -UseBasicParsing
+                $null = Invoke-PythonModule @($boot)
+            } catch {
+                Write-Warn "ensurepip/get-pip не сработал — попробуй pip вручную."
+            } finally {
+                Remove-Item -LiteralPath $boot -ErrorAction SilentlyContinue
+            }
+        }
     }
     $script:Py = $venvPy
     $script:Pip = "$($script:Py) -m pip"
-    $pipUp = (Invoke-PythonModule -m pip install --upgrade pip)
+    $pipUp = Invoke-PythonModule @('-m', 'pip', 'install', '--upgrade', 'pip')
     if ($pipUp -ne 0) {
         Write-Warn "Не удалось обновить pip в .venv_win — продолжаю."
     }
@@ -213,8 +251,10 @@ function Ensure-ProjectVenv {
 }
 
 $Root = Split-Path -Parent $PSScriptRoot
-Set-Location $Root
+Set-Location -LiteralPath $Root
 
+Ensure-WindowsToolPath
+Sync-PathFromEnvironment
 Enable-VtIfPossible
 
 $Py = Resolve-LauncherPython -RepoRoot $Root
@@ -234,22 +274,79 @@ $modules = @(
 )
 
 function Test-PythonMod($name) {
-    # При $ErrorActionPreference=Stop stderr от python.exe (Traceback при failed import) может ронять скрипт.
-    $exeEscaped = $Py.Replace('"', '""')
-    & cmd /v:off /c "`"$exeEscaped`" -c ""import $name"" >nul 2>nul"
-    return $LASTEXITCODE -eq 0
-}
-
-function Invoke-PythonModule {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
     $oldEa = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $Py @Args
-        return $LASTEXITCODE
+        & $Py -c "import $name" *> $null
+        return $LASTEXITCODE -eq 0
     } finally {
         $ErrorActionPreference = $oldEa
     }
+}
+
+function Invoke-PythonModule {
+    param(
+        [Parameter(Mandatory = $true, ValueFromRemainingArguments = $true)]
+        [string[]]$PythonArgs
+    )
+    $oldEa = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Py @PythonArgs
+        if ($null -ne $LASTEXITCODE) { return [int]$LASTEXITCODE }
+        return 0
+    } finally {
+        $ErrorActionPreference = $oldEa
+    }
+}
+
+function Show-HealthcheckFailure {
+    param(
+        [string]$LogPath,
+        [int]$ExitCode,
+        [string]$Mode,
+        [switch]$SkipHttp
+    )
+    Write-Warn "Healthcheck FAIL (код выхода $ExitCode)."
+    Write-Host ""
+    if (Test-Path -LiteralPath $LogPath) {
+        Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+    }
+    Write-Host ""
+    Write-Hi "Что проверить:"
+    $hcCmd = "`"$Py`" scripts\healthcheck.py --mode $Mode"
+    if ($SkipHttp) { $hcCmd += ' --skip-http' }
+    Write-Host "  1) Повтор вручную: $hcCmd"
+    Write-Host "  2) Секреты: .env (OPENROUTER_API_KEY; core+Discord — DISCORD_TOKEN)"
+    Write-Host "  3) Конфиг: config.yaml, interfaces\discord\plugin.yaml"
+    Write-Host "  4) Лог ядра: $(Join-Path $Root 'logs\system.log')"
+    Write-Host ""
+    Write-Hi "PATH: если в логе «chcp/netstat не является командой» — добавь %SystemRoot%\System32 в PATH пользователя Windows."
+}
+
+function Invoke-NeyraHealthcheck {
+    param(
+        [string]$Mode = 'console',
+        [switch]$SkipHttp
+    )
+    $hcScript = Join-Path $Root 'scripts\healthcheck.py'
+    $log = Join-Path $env:TEMP ("neyra-healthcheck-{0}.log" -f [guid]::NewGuid().ToString('n'))
+    $pyArgs = @($hcScript, '--mode', $Mode)
+    if ($SkipHttp) { $pyArgs += '--skip-http' }
+    $oldEa = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $Py @pyArgs 2>&1
+        $ec = [int]$LASTEXITCODE
+        if ($null -eq $ec) { $ec = 1 }
+        $output | ForEach-Object { Write-Host $_ }
+        $output | Out-File -LiteralPath $log -Encoding utf8
+    } finally {
+        $ErrorActionPreference = $oldEa
+    }
+    if ($ec -eq 0) { return 0 }
+    Show-HealthcheckFailure -LogPath $log -ExitCode $ec -Mode $Mode -SkipHttp:$SkipHttp
+    return $ec
 }
 
 function Invoke-Preflight {
@@ -329,7 +426,7 @@ function Invoke-Preflight {
     $venvWinPy = Join-Path $Root '.venv_win\Scripts\python.exe'
     if ($env:OS -like '*Windows*') {
         if ((Test-Path -LiteralPath $venvBinPy) -and -not (Test-Path -LiteralPath $venvWinPy)) {
-            Write-Warn "Есть Linux/WSL venv (.venv\bin) — для native Windows нужен отдельный каталог. Создай: py -3 -m venv .venv_win"
+            Write-Warn "Есть Linux/WSL venv (.venv\bin), но нет .venv_win — для Windows: py -3 -m venv .venv_win"
         }
     }
     Write-Ok "Интерпретатор Python: $Py — $(Get-PythonInterpreterLabel -ExePath $Py)"
@@ -345,24 +442,23 @@ function Invoke-Preflight {
         if ($yn -match '^[yY]') {
             $reqFile = Join-Path $Root "requirements.txt"
             Write-Hi "pip install (может занять время, лог в консоли)..."
-            $pipEc = (Invoke-PythonModule -m pip install -r $reqFile)
+            $pipEc = Invoke-PythonModule @('-m', 'pip', 'install', '-r', $reqFile)
             if ($pipEc -ne 0) {
                 $pipLog = Join-Path $env:TEMP ("neyra-pip-{0}.log" -f [guid]::NewGuid().ToString('n'))
-                $pyq = $Py.Replace('"', '""')
-                $reqq = $reqFile.Replace('"', '""')
-                cmd /v:off /c "`"$pyq`" -m pip install -r `"$reqq`" > `"$pipLog`" 2>&1" | Out-Null
+                $pipProc = Start-Process -FilePath $Py -ArgumentList @('-m', 'pip', 'install', '-r', $reqFile) `
+                    -RedirectStandardOutput $pipLog -RedirectStandardError $pipLog -Wait -PassThru -NoNewWindow
                 $joined = ''
                 if (Test-Path -LiteralPath $pipLog) {
                     $joined = Get-Content -LiteralPath $pipLog -Raw -ErrorAction SilentlyContinue
                 }
-                if ($joined -match "externally-managed-environment|PEP 668") {
+                if ($pipProc.ExitCode -ne 0 -and $joined -match "externally-managed-environment|PEP 668") {
                     Write-Warn "PEP 668 / externally managed окружение. Перехожу на локальный .venv_win..."
                     if (-not (Ensure-ProjectVenv)) {
                         Write-Err "Не удалось авто-починить Python-окружение."
                         Read-Host "Enter для выхода"
                         exit 1
                     }
-                    $pipEc2 = (Invoke-PythonModule -m pip install -r $reqFile)
+                    $pipEc2 = Invoke-PythonModule @('-m', 'pip', 'install', '-r', $reqFile)
                     if ($pipEc2 -ne 0) {
                         Write-Err "pip install в .venv_win провалился."
                         Read-Host "Enter для выхода"
@@ -399,9 +495,9 @@ function Invoke-Preflight {
 
     Write-Host ""
     Write-Hi "Healthcheck (console)..."
-    & $Py (Join-Path $Root "scripts\healthcheck.py") --mode console --skip-http
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warn "Healthcheck ругнулся — можно продолжить, но я предупредила."
+    $hcEc = Invoke-NeyraHealthcheck -Mode console -SkipHttp
+    if ($hcEc -ne 0) {
+        Write-Warn "Healthcheck не прошёл — см. причины выше."
         $c = Read-Host "Продолжить всё равно? [y/N]"
         if ($c -notmatch '^[yY]') { exit 0 }
     } else {
@@ -440,8 +536,12 @@ function Start-LavalinkIfPossible {
         return
     }
     $lavCfg = Join-Path $LlHome 'application.yml'
-    & $Py (Join-Path $Root 'scripts\fetch_lavalink_plugins.py') --config $lavCfg --latest-youtube
-    if ($LASTEXITCODE -ne 0) {
+    $plugEc = Invoke-PythonModule @(
+        (Join-Path $Root 'scripts\fetch_lavalink_plugins.py'),
+        '--config', $lavCfg,
+        '--latest-youtube'
+    )
+    if ($plugEc -ne 0) {
         Write-Warn "Плагины Lavalink не готовы (часто Git LFS pointer). Пункт 4 меню или: $Py scripts\fetch_lavalink_plugins.py"
         return
     }
@@ -468,13 +568,13 @@ while ($true) {
     switch ($choice) {
         "1" {
             Write-Ok "Запускаю консольный режим. Удачного диалога."
-            & $Py (Join-Path $Root "main.py") --mode console
+            $null = Invoke-PythonModule @((Join-Path $Root "main.py"), '--mode', 'console')
             Write-Hi "Консоль завершилась. Возвращаюсь в меню."
         }
         "2" {
             Write-Hi "Прогоняю healthcheck для core..."
-            & $Py (Join-Path $Root "scripts\healthcheck.py") --mode core --skip-http
-            if ($LASTEXITCODE -ne 0) {
+            $coreHc = Invoke-NeyraHealthcheck -Mode core -SkipHttp
+            if ($coreHc -ne 0) {
                 Write-Warn "Healthcheck core не идеален — всё равно стартовать?"
                 $cc = Read-Host "Продолжить? [y/N]"
                 if ($cc -notmatch '^[yY]') { continue }
@@ -484,8 +584,7 @@ while ($true) {
             if ($la -match '^[yY]') { Start-LavalinkIfPossible }
             else { Write-Hi "Ок, Lavalink не трогаю — поднимай сам (п.3) или оставь уже запущенный." }
             Write-Ok "Стартую ядро: main.py --mode core"
-            & $Py (Join-Path $Root "main.py") --mode core
-            $coreEc = $LASTEXITCODE
+            $coreEc = Invoke-PythonModule @((Join-Path $Root "main.py"), '--mode', 'core')
             if ($coreEc -ne 0) {
                 Write-Warn "Ядро завершилось с кодом $coreEc (часто бывает при падении torch/OpenMP или нехватке RAM — см. консоль и logs/system.log)."
             }
@@ -497,11 +596,15 @@ while ($true) {
         }
         "4" {
             Write-Hi "Качаю Lavalink.jar и JAR-плагины..."
-            & $Py (Join-Path $Root "scripts\fetch_lavalink.py")
-            if ($LASTEXITCODE -ne 0) { Write-Err "fetch_lavalink.py завершился с ошибкой." }
+            $f1 = Invoke-PythonModule @((Join-Path $Root "scripts\fetch_lavalink.py"))
+            if ($f1 -ne 0) { Write-Err "fetch_lavalink.py завершился с ошибкой." }
             else {
-                & $Py (Join-Path $Root "scripts\fetch_lavalink_plugins.py") --config (Join-Path $Root "interfaces\discord\lavalink\application.yml") --latest-youtube
-                if ($LASTEXITCODE -ne 0) { Write-Err "fetch_lavalink_plugins.py завершился с ошибкой." }
+                $f2 = Invoke-PythonModule @(
+                    (Join-Path $Root "scripts\fetch_lavalink_plugins.py"),
+                    '--config', (Join-Path $Root "interfaces\discord\lavalink\application.yml"),
+                    '--latest-youtube'
+                )
+                if ($f2 -ne 0) { Write-Err "fetch_lavalink_plugins.py завершился с ошибкой." }
                 else { Write-Ok "Готово. Можно пункт 3 или 2." }
             }
         }

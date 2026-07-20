@@ -121,11 +121,13 @@ class NeyraAgent:
         api_key = conn.api_key
         self.reply_max_tokens = int(cfg.get("reply_max_tokens", cfg.get("max_tokens", 320)))
         self.vision_max_tokens = int(cfg.get("vision_max_tokens", cfg.get("max_tokens", 900)))
-        self.reflection_max_tokens = int(cfg.get("reflection_max_tokens", cfg.get("max_tokens", 700)))
+        _refl_cap = cfg.get("reflection_max_tokens")
+        self.reflection_max_tokens = int(_refl_cap) if _refl_cap is not None else None
         # Длинные ответы (текст песни): отдельный потолок; bind() на конкретный ход в chat_stream/chat.
         self.lyrics_reply_max_tokens = int(cfg.get("lyrics_reply_max_tokens", 4096))
         self.reflection_temperature = float(cfg.get("reflection_temperature", cfg.get("temperature", 0.75)))
-        self.brain_max_tokens = int(cfg.get("brain_max_tokens", 8192))
+        _brain_cap = cfg.get("brain_max_tokens")
+        self.brain_max_tokens = int(_brain_cap) if _brain_cap is not None else None
         self.brain_temperature = float(cfg.get("brain_temperature", 0.35))
 
         if not api_key or api_key == "ollama":
@@ -176,33 +178,37 @@ class NeyraAgent:
 
         hdr_brain = dict(conn.default_headers)
         hdr_brain["X-Title"] = "Neyra Brain"
-        self.llm_brain = ChatOpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            model=brain_model,
-            temperature=self.brain_temperature,
-            top_p=float(cfg.get("brain_top_p", cfg.get("top_p", 1.0))),
-            max_tokens=self.brain_max_tokens,
-            streaming=False,
-            timeout=brain_timeout,
-            max_retries=brain_retries,
-            model_kwargs={"extra_body": extra_body} if extra_body else {},
-            default_headers=hdr_brain,
-        )
+        brain_llm_kwargs: dict[str, Any] = {
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": brain_model,
+            "temperature": self.brain_temperature,
+            "top_p": float(cfg.get("brain_top_p", cfg.get("top_p", 1.0))),
+            "streaming": False,
+            "timeout": brain_timeout,
+            "max_retries": brain_retries,
+            "model_kwargs": {"extra_body": extra_body} if extra_body else {},
+            "default_headers": hdr_brain,
+        }
+        if self.brain_max_tokens is not None:
+            brain_llm_kwargs["max_tokens"] = self.brain_max_tokens
+        self.llm_brain = ChatOpenAI(**brain_llm_kwargs)
 
         hdr_memory = dict(conn.default_headers)
         hdr_memory["X-Title"] = "Neyra Memory"
-        self.llm_memory = ChatOpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            model=memory_model,
-            temperature=self.reflection_temperature,
-            max_tokens=self.reflection_max_tokens,
-            streaming=False,
-            timeout=reflection_timeout,
-            max_retries=reflection_retries,
-            default_headers=hdr_memory,
-        )
+        memory_llm_kwargs: dict[str, Any] = {
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": memory_model,
+            "temperature": self.reflection_temperature,
+            "streaming": False,
+            "timeout": reflection_timeout,
+            "max_retries": reflection_retries,
+            "default_headers": hdr_memory,
+        }
+        if self.reflection_max_tokens is not None:
+            memory_llm_kwargs["max_tokens"] = self.reflection_max_tokens
+        self.llm_memory = ChatOpenAI(**memory_llm_kwargs)
         self.llm_reflection = self.llm_memory
         self.llm_memory_model = memory_model
         self.llm_reflection_model = memory_model
@@ -274,11 +280,11 @@ class NeyraAgent:
         vis = self._vision_pipeline_cfg()
         self.llm_vision = None
         if vis.get("enabled"):
-            if vis.get("use_main_model_for_vision"):
-                self.llm_vision = self.llm_talk
+            if vis.get("use_brain_model_for_vision"):
+                self.llm_vision = self.llm_brain
                 logger.info(
-                    "Зрение: unified — та же модель что и talk (%s). Должна быть VL-capable модель.",
-                    talk_model,
+                    "Зрение: unified brain — нативный мультимодальный ввод (%s).",
+                    brain_model,
                 )
             else:
                 vmodel = str(vision_model_id).strip()
@@ -302,6 +308,9 @@ class NeyraAgent:
         from core.llm_profile import merged_vision_pipeline
 
         return merged_vision_pipeline(self.config)
+
+    def _uses_brain_native_vision(self) -> bool:
+        return bool(self._vision_pipeline_cfg().get("use_brain_model_for_vision"))
 
     def _setup_memory(self):
         """Инициализирует все модули памяти."""
@@ -329,7 +338,12 @@ class NeyraAgent:
         """Инициализирует инструменты (вызываются вручную, не через bind_tools)."""
         from core.tools import ALL_TOOLS, init_tools
 
-        init_tools(self.long_memory, self.people_db, self.config.get("assistant") or {})
+        init_tools(
+            self.long_memory,
+            self.people_db,
+            self.config.get("assistant") or {},
+            neyra_config=self.config,
+        )
         self.tools = {t.name: t for t in ALL_TOOLS}
         self.mcp_manager = None
         self._mcp_merge_done = False
@@ -760,6 +774,7 @@ class NeyraAgent:
         user_message: str,
         speaker_label: str,
         vision_caption: Optional[str],
+        vision_images: Optional[list[tuple[str, str]]] = None,
         brain_system: str,
         lyrics_mode: bool,
     ) -> str:
@@ -772,15 +787,30 @@ class NeyraAgent:
         if um:
             parts.append(self._format_spoken_user_message(um, speaker_label))
         vc = (vision_caption or "").strip()
-        if vc:
+        if vc and not vision_images:
             parts.append("[Конспект изображения VL]\n" + vc)
         human_content = "\n\n".join(parts) if parts else "(пустое сообщение)"
         if lyrics_mode:
             human_content += "\n\n[Оговорка] Пользователь запросил режим текста песни — учитывай для инструментов/поиска."
 
+        if vision_images:
+            human_msg = self._make_human_turn(
+                um or "Что на изображении? Учти контекст для инструментов.",
+                vision_images,
+                speaker_label=speaker_label,
+            )
+            if vc:
+                extra = "\n\n[Доп. контекст VL]\n" + vc
+                if isinstance(human_msg.content, list):
+                    human_msg.content[0]["text"] = str(human_msg.content[0].get("text", "")) + extra
+                else:
+                    human_msg = HumanMessage(content=str(human_msg.content) + extra)
+        else:
+            human_msg = HumanMessage(content=human_content)
+
         messages: list[Any] = [
             SystemMessage(content=brain_system),
-            HumanMessage(content=human_content),
+            human_msg,
         ]
 
         mcp_cfg = self.config.get("mcp_client") if isinstance(self.config.get("mcp_client"), dict) else {}
@@ -789,9 +819,10 @@ class NeyraAgent:
 
         brain_llm = self.llm_brain
         if lyrics_mode:
-            brain_llm = self.llm_brain.bind(
-                max_tokens=max(self.brain_max_tokens, self.lyrics_reply_max_tokens)
-            )
+            cap = self.lyrics_reply_max_tokens
+            if self.brain_max_tokens is not None:
+                cap = max(self.brain_max_tokens, cap)
+            brain_llm = self.llm_brain.bind(max_tokens=cap)
 
         try:
             if not use_tool_loop:
@@ -922,8 +953,8 @@ class NeyraAgent:
         use_vl = bool(vision_images) and self.llm_vision is not None
         if vision_images and not self.llm_vision:
             logger.warning(
-                "Изображения в сообщении, но llm_vision нет: vision.enabled, vision.model или use_main_model_for_vision "
-                "(или основная модель без VL)."
+                "Изображения в сообщении, но llm_vision нет: vision.enabled, vision.model или use_brain_model_for_vision "
+                "(или brain/VL без мультимодальности)."
             )
         if use_vl:
             text = (user_message or "").strip() or "Что на изображении? Коротко по-русски."
@@ -987,10 +1018,17 @@ class NeyraAgent:
             from langchain_core.messages import HumanMessage, SystemMessage
 
             ar = self.async_reflection_cfg if isinstance(self.async_reflection_cfg, dict) else {}
-            llm_ar = self.llm_memory.bind(
-                temperature=float(ar.get("temperature", self.reflection_temperature)),
-                max_tokens=int(ar.get("max_tokens", self.reflection_max_tokens)),
-            )
+            ar_bind: dict[str, Any] = {
+                "temperature": float(ar.get("temperature", self.reflection_temperature)),
+            }
+            ar_max = ar.get("max_tokens")
+            if ar_max is not None:
+                ar_bind["max_tokens"] = int(ar_max)
+            elif self.reflection_max_tokens is not None:
+                ar_bind["max_tokens"] = self.reflection_max_tokens
+            else:
+                ar_bind["max_tokens"] = 500
+            llm_ar = self.llm_memory.bind(**ar_bind)
 
             sys_prompt = (
                 "Ты внутренний аналитический модуль Нейры. "
@@ -1004,8 +1042,12 @@ class NeyraAgent:
                 f"Нейра ответила:\n{assistant_text}\n\n"
                 "Сделай полезную заметку для дневника."
             )
-            resp = await llm_ar.ainvoke(
-                [SystemMessage(content=sys_prompt), HumanMessage(content=human)]
+            from core.llm_retry import ainvoke_with_rate_limit_backoff
+
+            resp = await ainvoke_with_rate_limit_backoff(
+                llm_ar,
+                [SystemMessage(content=sys_prompt), HumanMessage(content=human)],
+                lane="memory_model",
             )
             note = (resp.content if hasattr(resp, "content") else str(resp)).strip()
             note = re.sub(r"\s+", " ", note).strip()
@@ -2072,22 +2114,27 @@ class NeyraAgent:
             if ml:
                 mcp_catalog = "\n".join(ml)
 
+        brain_native_vis = bool(vision_images) and self._uses_brain_native_vision()
         attached_caption = ""
-        if vision_images and self.llm_vision:
+        if vision_images and not brain_native_vis and self.llm_vision and self.llm_vision is not self.llm_brain:
             try:
                 attached_caption = await self._caption_vision_images(
                     user_message, vision_images, speaker_label=speaker_label
                 )
             except Exception as e:
                 logger.warning("VL caption: ошибка, продолжаю без конспекта: %s", e)
-        elif vision_images and not self.llm_vision:
+        elif vision_images and not brain_native_vis and not self.llm_vision:
             logger.warning(
                 "Изображения в сообщении, но vision/VL не настроено — ответ только по тексту."
             )
 
         caption_ok = (attached_caption or "").strip()
-        talk_vm = None if (vision_images and self.llm_vision) else vision_images
-        has_vis_prompt = bool(vision_images) and not caption_ok and self.llm_vision is None
+        if brain_native_vis:
+            talk_vm = None
+            has_vis_prompt = False
+        else:
+            talk_vm = None if (vision_images and self.llm_vision) else vision_images
+            has_vis_prompt = bool(vision_images) and not caption_ok and self.llm_vision is None
 
         brain_sys = self._build_brain_system_prompt(
             extra_memories=memories,
@@ -2107,6 +2154,7 @@ class NeyraAgent:
                 user_message=user_message,
                 speaker_label=speaker_label,
                 vision_caption=caption_ok or None,
+                vision_images=vision_images if brain_native_vis else None,
                 brain_system=brain_sys,
                 lyrics_mode=lyrics_mode,
             )
@@ -2148,7 +2196,7 @@ class NeyraAgent:
         )
         messages = self._maybe_append_micro_plan_prefill(
             messages,
-            has_vision_images=bool(vision_images) and self.llm_vision is None,
+            has_vision_images=bool(vision_images) and not brain_native_vis and self.llm_vision is None,
         )
         final_messages_used = messages
 
@@ -2334,22 +2382,27 @@ class NeyraAgent:
             if ml_s:
                 mcp_catalog_s = "\n".join(ml_s)
 
+        brain_native_vis = bool(vision_images) and self._uses_brain_native_vision()
         attached_caption = ""
-        if vision_images and self.llm_vision:
+        if vision_images and not brain_native_vis and self.llm_vision and self.llm_vision is not self.llm_brain:
             try:
                 attached_caption = await self._caption_vision_images(
                     user_message, vision_images, speaker_label=speaker_label
                 )
             except Exception as e:
                 logger.warning("VL caption (stream): ошибка — %s", e)
-        elif vision_images and not self.llm_vision:
+        elif vision_images and not brain_native_vis and not self.llm_vision:
             logger.warning(
                 "Изображения в сообщении (stream), но vision/VL не настроено — ответ только по тексту."
             )
 
         caption_ok = (attached_caption or "").strip()
-        talk_vm = None if (vision_images and self.llm_vision) else vision_images
-        has_vis_prompt = bool(vision_images) and not caption_ok and self.llm_vision is None
+        if brain_native_vis:
+            talk_vm = None
+            has_vis_prompt = False
+        else:
+            talk_vm = None if (vision_images and self.llm_vision) else vision_images
+            has_vis_prompt = bool(vision_images) and not caption_ok and self.llm_vision is None
 
         brain_sys = self._build_brain_system_prompt(
             extra_memories=memories,
@@ -2369,6 +2422,7 @@ class NeyraAgent:
                 user_message=user_message,
                 speaker_label=speaker_label,
                 vision_caption=caption_ok or None,
+                vision_images=vision_images if brain_native_vis else None,
                 brain_system=brain_sys,
                 lyrics_mode=lyrics_mode,
             )
@@ -2398,8 +2452,10 @@ class NeyraAgent:
                 max_tokens=max(self.reply_max_tokens, self.lyrics_reply_max_tokens)
             )
         if vision_images:
+            mode = "brain-native" if brain_native_vis else "caption→brain→talk"
             logger.info(
-                "Зрение: caption→brain→talk, изображений=%s | talk_model=%s",
+                "Зрение: %s, изображений=%s | talk_model=%s",
+                mode,
                 len(vision_images),
                 getattr(self, "llm_talk_model", self.llm_model),
             )
@@ -2416,7 +2472,7 @@ class NeyraAgent:
         )
         messages = self._maybe_append_micro_plan_prefill(
             messages,
-            has_vision_images=bool(vision_images) and self.llm_vision is None,
+            has_vision_images=bool(vision_images) and not brain_native_vis and self.llm_vision is None,
         )
         final_messages_used = messages
 
@@ -2652,7 +2708,11 @@ class NeyraAgent:
             raw = raw[: cap - 100] + "\n… [truncated for summarization]"
 
         mem_cfg = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
-        max_out = int(mem_cfg.get("ltm_summarize_max_tokens", min(self.reflection_max_tokens * 2, 4096)))
+        if self.reflection_max_tokens is not None:
+            default_summarize = min(self.reflection_max_tokens * 2, 4096)
+        else:
+            default_summarize = 4096
+        max_out = int(mem_cfg.get("ltm_summarize_max_tokens", default_summarize))
         if consolidation:
             prompt = (
                 "Ниже — близкие по смыслу фрагменты долговременной памяти (один кластер). "
@@ -2669,8 +2729,12 @@ class NeyraAgent:
                 f"{raw}"
             )
         llm = getattr(self, "llm_memory", None) or getattr(self, "llm_reflection", None) or self.llm_talk
+        from core.llm_retry import ainvoke_with_rate_limit_backoff
+
         call = llm.bind(max_tokens=max_out) if hasattr(llm, "bind") else llm
-        resp = await call.ainvoke([HumanMessage(content=prompt)])
+        resp = await ainvoke_with_rate_limit_backoff(
+            call, [HumanMessage(content=prompt)], lane="memory_model"
+        )
         text = getattr(resp, "content", None)
         return (str(text) if text is not None else "").strip()
 

@@ -216,12 +216,24 @@ def resolved_primary_model(cfg: dict, provider: str) -> str:
 
 
 def resolved_brain_model(cfg: dict, provider: str) -> str:
-    """Маршрутизатор с инструментами. Fallback: тот же id, что и talk."""
+    """Маршрутизатор с инструментами (левое полушарие). Fallback: тот же id, что и talk."""
     or_block = _openrouter_block(cfg)
     mid = _model_id_from_role(or_block, "brain_model")
     if mid:
         return DEPRECATED_MODEL_MAP.get(mid, mid)
     return resolved_talk_model(cfg, provider)
+
+
+def resolved_brain_model_deep(cfg: dict, provider: str) -> str:
+    """Глубокая логика (правое полушарие): brain_model.model_deep → brain_model.model → talk."""
+    or_block = _openrouter_block(cfg)
+    bm = or_block.get("brain_model")
+    if isinstance(bm, dict):
+        deep = bm.get("model_deep")
+        if deep is not None and str(deep).strip():
+            raw = str(deep).strip()
+            return DEPRECATED_MODEL_MAP.get(raw, raw)
+    return resolved_brain_model(cfg, provider)
 
 
 def resolved_memory_model(cfg: dict, provider: str) -> str:
@@ -246,6 +258,7 @@ def resolved_memory_model(cfg: dict, provider: str) -> str:
 _VISION_PIPELINE_KEYS = frozenset(
     {
         "enabled",
+        "use_brain_model_for_vision",
         "use_main_model_for_vision",
         "max_images_per_message",
         "max_image_bytes",
@@ -269,6 +282,7 @@ def merged_vision_pipeline(cfg: dict) -> dict[str, Any]:
     """
     defaults: dict[str, Any] = {
         "enabled": False,
+        "use_brain_model_for_vision": False,
         "use_main_model_for_vision": False,
         "max_images_per_message": 4,
         "max_image_bytes": 8388608,
@@ -301,7 +315,15 @@ def merged_vision_pipeline(cfg: dict) -> dict[str, Any]:
         out["enabled"] = True
 
     out["enabled"] = bool(out["enabled"])
-    out["use_main_model_for_vision"] = bool(out["use_main_model_for_vision"])
+    if out.get("use_main_model_for_vision") and not out.get("use_brain_model_for_vision"):
+        logger.warning(
+            "Deprecated: openrouter.vision_model.use_main_model_for_vision — "
+            "переименуйте в use_brain_model_for_vision."
+        )
+    out["use_brain_model_for_vision"] = bool(
+        out.get("use_brain_model_for_vision") or out.get("use_main_model_for_vision")
+    )
+    out["use_main_model_for_vision"] = out["use_brain_model_for_vision"]
     out["remember_last_image"] = bool(out["remember_last_image"])
     out["max_images_per_message"] = max(1, int(out["max_images_per_message"]))
     out["max_image_bytes"] = int(out["max_image_bytes"])

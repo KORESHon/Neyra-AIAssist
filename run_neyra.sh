@@ -99,9 +99,11 @@ ok()  { echo "${_G}[OK]${_Z} ${*}"; }
 warn(){ echo "${_Y}[WARN]${_Z} ${*}"; }
 err() { echo "${_R}[ERR]${_Z} ${*}"; }
 
-# На Linux/macOS/WSL — только .venv (на native Windows лаунчер использует .venv_win — см. scripts/neyra_win_launcher.ps1).
-if [[ "${PY}" == *"/.venv/bin/python"* ]] || [[ "${PY}" == *"/.venv/Scripts/python.exe"* ]] || [[ "${PY}" == *"\\.venv\\Scripts\\python.exe"* ]]; then
-  ok "Активный Python: ${PY} (проектный .venv — проверка импортов и pip относится к нему)"
+# Схема venv: Linux/macOS/WSL — .venv/bin/python; native Windows — .venv_win\Scripts (см. scripts/neyra_win_launcher.ps1).
+if [[ "${PY}" == *"/.venv/bin/python"* ]] || [[ "${PY}" == *"/.venv_win/Scripts/python.exe"* ]] || [[ "${PY}" == *"\\.venv_win\\Scripts\\python.exe"* ]]; then
+  ok "Активный Python: ${PY} (проектный venv — .venv Linux или .venv_win Windows)"
+elif [[ "${PY}" == *"/.venv/Scripts/python.exe"* ]] || [[ "${PY}" == *"\\.venv\\Scripts\\python.exe"* ]]; then
+  ok "Активный Python: ${PY} (fallback .venv\\Scripts — на WSL лучше .venv/bin; на Windows лучше .venv_win)"
 else
   ok "Активный Python: ${PY} (системный/PATH; pip после согласия — туда же, пока не создан/не выбран .venv)"
 fi
@@ -402,12 +404,18 @@ check_python_deps() {
 
 run_initial_healthcheck() {
   say "Healthcheck (console)..."
-  if ! "${PY}" scripts/healthcheck.py --mode console --skip-http; then
-    warn "Healthcheck ругнулся."
+  local hc_log
+  hc_log="$(mktemp)"
+  if ! "${PY}" scripts/healthcheck.py --mode console --skip-http 2>&1 | tee "${hc_log}"; then
+    warn "Healthcheck FAIL — см. строки Status: FAIL выше."
+    say "Повтор: ${PY} scripts/healthcheck.py --mode console --skip-http"
+    say "Секреты: .env | конфиг: config.yaml | лог: logs/system.log"
+    rm -f "${hc_log}" 2>/dev/null || true
     read -r -p "Продолжить всё равно? [y/N]: " yn
     [[ "${yn}" =~ ^[yY]$ ]] || return 1
   else
     ok "Healthcheck: ок."
+    rm -f "${hc_log}" 2>/dev/null || true
   fi
 }
 
@@ -453,7 +461,8 @@ while true; do
     2)
       say "Прогоняю healthcheck для core..."
       if ! "${PY}" scripts/healthcheck.py --mode core --skip-http; then
-        warn "Healthcheck core не идеален."
+        warn "Healthcheck core FAIL — см. вывод выше (Status: FAIL и подсказки ->)."
+        say "Повтор: ${PY} scripts/healthcheck.py --mode core --skip-http"
         read -r -p "Продолжить? [y/N]: " yn
         [[ "${yn}" =~ ^[yY]$ ]] || continue
       fi

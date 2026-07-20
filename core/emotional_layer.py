@@ -53,9 +53,11 @@ async def compact_emotion_for_ltm(
         )
     )
     try:
+        from core.llm_retry import ainvoke_with_rate_limit_backoff
+
         llm = getattr(agent, "llm_memory", None) or getattr(agent, "llm_reflection", None) or agent.llm_talk
         call = llm.bind(max_tokens=max_out) if hasattr(llm, "bind") else llm
-        resp = await call.ainvoke([sys, human])
+        resp = await ainvoke_with_rate_limit_backoff(call, [sys, human], lane="memory_model")
         raw = resp.content if hasattr(resp, "content") else str(resp)
         line = re.sub(r"\s+", " ", str(raw or "").strip())
         if len(line) > 220:
@@ -100,9 +102,11 @@ async def diary_emotion_after_turn_async(
         )
     )
     try:
+        from core.llm_retry import ainvoke_with_rate_limit_backoff
+
         llm = getattr(agent, "llm_memory", None) or getattr(agent, "llm_reflection", None) or agent.llm_talk
         call = llm.bind(max_tokens=max_out) if hasattr(llm, "bind") else llm
-        resp = await call.ainvoke([sys, human])
+        resp = await ainvoke_with_rate_limit_backoff(call, [sys, human], lane="memory_model")
         note = (resp.content if hasattr(resp, "content") else str(resp)).strip()
         note = re.sub(r"\s+", " ", note)
         if not note:

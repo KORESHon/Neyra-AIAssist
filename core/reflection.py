@@ -335,7 +335,11 @@ class ReflectionEngine:
             llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
                 self.agent, "llm_reflection", self.agent.llm
             )
-            response = await llm_reflect.ainvoke([HumanMessage(content=prompt)])
+            from core.llm_retry import ainvoke_with_rate_limit_backoff
+
+            response = await ainvoke_with_rate_limit_backoff(
+                llm_reflect, [HumanMessage(content=prompt)], lane="memory_model"
+            )
             note = str(response.content).strip()
             if not note:
                 return ""
@@ -435,7 +439,11 @@ class ReflectionEngine:
             llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
                 self.agent, "llm_reflection", self.agent.llm
             )
-            response = await llm_reflect.ainvoke([HumanMessage(content=prompt)])
+            from core.llm_retry import ainvoke_with_rate_limit_backoff
+
+            response = await ainvoke_with_rate_limit_backoff(
+                llm_reflect, [HumanMessage(content=prompt)], lane="memory_model"
+            )
             raw = str(response.content).strip()
             blob = self._extract_json_blob(raw)
             data = json.loads(blob)
@@ -481,7 +489,11 @@ class ReflectionEngine:
             llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
                 self.agent, "llm_reflection", self.agent.llm
             )
-            response = await llm_reflect.ainvoke([HumanMessage(content=prompt)])
+            from core.llm_retry import ainvoke_with_rate_limit_backoff
+
+            response = await ainvoke_with_rate_limit_backoff(
+                llm_reflect, [HumanMessage(content=prompt)], lane="memory_model"
+            )
             note = str(response.content).strip()
             if not note:
                 return ""

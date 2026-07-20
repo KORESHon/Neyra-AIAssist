@@ -1,9 +1,3 @@
-[Cursor AI assist](https://cursor.com)
-
-Соавторство: материал создан при поддержке ИИ-агента [Cursor](https://cursor.com) (AI coding agent).
-
----
-
 # PLAN.md — Глобальный архитектурный план Neyra-AIAssist
 
 ## 1) Стратегическая цель
@@ -25,6 +19,21 @@
 - **Secure-by-boundary:** `core` защищен от прямой саморедактируемости; расширения делаются через sandbox в плагинной зоне.
 - **Local-first runtime:** cloud-провайдеры опциональны; целевой режим — автономная работа на железе пользователя.
 - **MCP-native future:** внешние возможности подключаются стандартизированными MCP-серверами.
+
+### Двухполушарная когнитивная схема (OpenRouter)
+
+Роли моделей в `openrouter.*` разделены по «полушариям» и подсистемам:
+
+| Роль | Модель (целевой id) | Назначение |
+|------|---------------------|------------|
+| **Левое полушарие** (`brain_model.model`) | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | Быстрый мультимодальный сенсор-маршрутизатор: tool-loop, нативный ввод изображений при `use_brain_model_for_vision: true`. |
+| **Правое полушарие** (`brain_model.model_deep`) | `openai/gpt-oss-120b:free` | Глубокая аналитика, сложная логика, программирование — через инструмент `delegate_to_deep_logic`. |
+| **Гиппокамп** (`memory_model`) | `openrouter/owl-alpha` | Консолидация LTM, Working Memory, рефлексии, эмоциональный слой; без жёсткого `max_tokens` в конфиге (нативный лимит провайдера). |
+| **Talk** (`talk_model`) | без изменений (напр. Qwen3 235B) | Финальный ответ пользователю. |
+
+**Зрение:** при `openrouter.vision_model.use_brain_model_for_vision: true` изображения идут в Nemotron (brain) в мультимодальном формате OpenRouter; при `false` — классический VL-caption через `vision_model` (fallback-парсеры сохранены).
+
+**Rate limit:** вызовы `memory_model` обёрнуты в retry с экспоненциальной задержкой (HTTP 429 / таймаут), чтобы ночная консолидация и WM не роняли ядро.
 
 ---
 
@@ -48,8 +57,8 @@
 - Динамическое взвешивание памяти (`_build_system_prompt`, 6 секций).
 - LTM lifecycle (`core/ltm_maintenance.py`, TTL prune, cold archive, API endpoints).
 - **Консолидация LTM во «сне»:** кластеризация старых записей по косинусной близости эмбеддингов (`memory.ltm_cluster_merge`), несколько вызовов `memory_model` на кластер, JSON-манифесты батча в `memory/ltm_consolidation/`, в Chroma удаляются только строки успешно заархивированных кластеров; опционально запуск summarize после ночной рефлексии (`ltm_auto_summarize.run_after_nightly_reflection`). В `core/memory.py`: `encode_texts`, `archive_row_tuples`.
-- **Working memory (1–3 дня):** `core/working_memory.py` + `memory.working_memory`; markdown на пользователя (`storage_dir`) или общий файл; перепись через **`openrouter.memory_model`**; блок в промпте **до RAG** (talk + brain); фоновое обновление после успешного `chat`/`chat_stream` (каждые N ходов и при переполнении контекста); шина `memory.working_memory_updated`.
-- **Эмоциональный слой:** `core/emotional_layer.py` + `memory.emotional_layer`; после хода — запись в дневник (`emotion_turn`, **memory_model**); опционально **`ltm_emotion_sync`** — метаданные `assistant_emotion` в Chroma при сохранении диалога; PeopleDB `dynamic_facts[].emotion`; инструменты `remember_knowledge(..., affect_note)`, `update_person_fact(..., emotion_note)`; `NeyraDiary.recent_text` показывает `настр.` из `meta`.
+- **Working memory (1–3 дня):** `core/working_memory.py` + `memory.working_memory`; markdown на пользователя (`storage_dir`) или общий файл; перепись через `**openrouter.memory_model`**; блок в промпте **до RAG** (talk + brain); фоновое обновление после успешного `chat`/`chat_stream` (каждые N ходов и при переполнении контекста); шина `memory.working_memory_updated`.
+- **Эмоциональный слой:** `core/emotional_layer.py` + `memory.emotional_layer`; после хода — запись в дневник (`emotion_turn`, **memory_model**); опционально `**ltm_emotion_sync`** — метаданные `assistant_emotion` в Chroma при сохранении диалога; PeopleDB `dynamic_facts[].emotion`; инструменты `remember_knowledge(..., affect_note)`, `update_person_fact(..., emotion_note)`; `NeyraDiary.recent_text` показывает `настр.` из `meta`.
 - Security (ролевая модель, HMAC webhooks, rate limiting).
 - Proactive Messaging (Discord, только в плагине).
 
@@ -59,11 +68,13 @@
 **MCP-клиент** ✅  
 `core/mcp_client.py` (MCPClientManager, stdio + SSE, динамические LangChain tools, tool-loop на brain-модели).
 
-**Brain→Talk, четыре роли моделей** ✅
+**Brain→Talk, четыре роли моделей + двухполушарный brain** ✅ (конфиг и код)
 
-- Роли: talk / brain / memory / vision; вложенный `openrouter` и отдельные id моделей.
-- VL pipeline: caption → brain tool-loop → talk stream.
-- Legacy fallback (старые ключи `openrouter.model` и др.) с warning в лог.
+- Роли: talk / brain (`model` + `model_deep`) / memory (`owl-alpha`) / vision; вложенный `openrouter`.
+- Левое полушарие: Nemotron — маршрутизация, tools, опционально нативное зрение (`use_brain_model_for_vision`).
+- Правое полушарие: GPT-OSS-120B — `delegate_to_deep_logic`.
+- VL pipeline: при `use_brain_model_for_vision: false` — caption → brain tool-loop → talk; при `true` — картинки в brain, talk по сводке brain.
+- Legacy fallback (старые ключи `openrouter.model`, `use_main_model_for_vision`) с warning в лог.
 
 **Безопасное самопрограммирование плагинов (sandbox, hot-reload, rollback)** ✅
 
@@ -94,6 +105,13 @@
 - **Персона в двух артефактах:** разделить «базу личности» и «внешность / визуал» (актуально при генерации изображений или отдельном визуальном контуре); редактируемые файлы рядом с `assistant.system_prompt`.
 - **Контролируемое архивирование сессии:** при переполнении контекста — явная политика дампа в Diary/LTM и «чистый» старт диалога (не обязательно фиксированный порог токенов).
 - **Сверка практик безопасности:** не светить секреты, риски смешения данных между людьми — перекрёстно с `security-model.md` и документацией деплоя.
+
+**Чек-лист (двухполушарный режим и память):**
+
+- [ ] `use_brain_model_for_vision: true` — вложение уходит в Nemotron (brain), ответ talk опирается на сводку brain без отдельного VL-caption.
+- [ ] `use_brain_model_for_vision: false` — caption через `vision_model`, затем brain/talk как раньше.
+- [ ] Запрос на тестовый код / плагин — brain вызывает `delegate_to_deep_logic`, ответ возвращается в tool-loop.
+- [ ] Искусственный или реальный 429 на `memory_model` — в логе `[WARNING] memory_model rate-limited. Retrying…`, ядро не падает после исчерпания попыток только на этом вызове.
 
 ---
 
@@ -162,7 +180,8 @@
 - Core healthcheck: `python scripts/healthcheck.py --mode core --skip-http`
 - Lavalink JAR: `python scripts/fetch_lavalink.py`
 - Event-driven smoke: chat → MUSIC_PLAY → queue → skip/pause/resume → stop/clear
-- Memory lifecycle smoke: write → search → prune → summarize → archive integrity; emotional_layer (вкл., дневник + PeopleDB tool с emotion_note)
+- Memory lifecycle smoke: write → search → prune → summarize → archive integrity; emotional_layer (вкл., дневник + PeopleDB tool с emotion_note); memory_model backoff (429 в логе, повтор)
+- Two-hemisphere smoke: brain native vision / VL fallback; `delegate_to_deep_logic` на задаче с кодом
 - MCP smoke: debug-server tools + runtime MCP client calls
 
 ---
@@ -258,7 +277,7 @@
 
 - **Интеграция с Obsidian** — экспорт LTM/Diary/PeopleDB в vault как `.md` (через MCP или Python CLI).
 - **Полировка и чистка мусора по всему проекту** — пройтись по репозиторию повторно: убрать временные файлы/артефакты тестов, выровнять стили, привести конфиги/доки в порядок, зачистить устаревшие ветки fallback и лишние логи.
-- Desktop и mobile-lite клиенты.
+- **Клиенты (desktop / mobile-lite)** — полное ТЗ по созданию приложений и целевому виду в продакшене: [Google Docs](https://docs.google.com/document/d/10wjeJefCRuF1ujJ0bWCwKw2tB9BwjV2ejqqd1f-vMhg/edit?tab=t.0).
 - Standalone `.exe` сборка / `server-core + lightweight clients`.
 - **Настройка LLM из Web UI** (выбор модели, правка system prompt) — после hot-reload.
 - Device-mode (AI station).

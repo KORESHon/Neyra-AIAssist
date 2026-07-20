@@ -31,6 +31,9 @@ import threading
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
+from core.win_runtime import apply_runtime_patches
+
+apply_runtime_patches()
 # Секреты из .env (см. .env.example) — до CUDA и до загрузки config.yaml
 from core.secrets_loader import apply_env_secrets, load_dotenv_file
 

@@ -1,7 +1,16 @@
 @echo off
-REM Thin wrapper: all logic in UTF-8 PowerShell (avoids cmd.exe + Cyrillic + parenthesis bugs).
+REM Thin wrapper: UTF-8 PowerShell menu (scripts\neyra_win_launcher.ps1).
+setlocal EnableExtensions
 cd /d "%~dp0"
-chcp 65001 >nul
-title Neyra · control deck
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\neyra_win_launcher.ps1"
+
+set "_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%_PS%" set "_PS=%SystemRoot%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%_PS%" (
+  echo [ERR] PowerShell not found under %%SystemRoot%%\System32
+  pause
+  exit /b 1
+)
+
+title Neyra control deck
+"%_PS%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\neyra_win_launcher.ps1"
 exit /b %ERRORLEVEL%

@@ -130,6 +130,22 @@ def check_llm_models_probe(cfg: dict) -> list[str]:
     return errs
 
 
+def _hint_for_error(msg: str) -> str | None:
+    """Короткая подсказка «куда смотреть» для типовых ошибок preflight."""
+    m = msg.lower()
+    if "missing required file" in m:
+        return "Репозиторий скопирован не полностью — сверь с git / архивом."
+    if "api key missing" in m or "openrouter" in m:
+        return "Секреты: .env → OPENROUTER_API_KEY (шаблон .env.example)."
+    if "discord" in m and "token" in m:
+        return "Секреты: .env → DISCORD_TOKEN; или отключи discord в interfaces/discord/plugin.yaml."
+    if "llm config invalid" in m:
+        return "Конфиг: config.yaml → openrouter.* / llm.* (см. config.example.yaml)."
+    if "models probe failed" in m or "probe exception" in m:
+        return "Сеть/API: ключ OpenRouter, base_url, доступ к https://openrouter.ai/api/v1/models."
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Neyra 2.0 healthcheck")
     parser.add_argument(
@@ -162,6 +178,15 @@ def main() -> int:
         print("Status: FAIL")
         for e in errors:
             print(f"- {e}")
+            hint = _hint_for_error(e)
+            if hint:
+                print(f"  -> {hint}")
+        print()
+        print("Повтор: python scripts/healthcheck.py --mode", args.mode, end="")
+        if args.skip_http:
+            print(" --skip-http", end="")
+        print()
+        print("Лог ядра (после запуска): logs/system.log")
         return 1
 
     print("Status: OK")
