@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -151,11 +152,33 @@ def import_working_memory_dir(hub: Any, wm_dir: Path) -> dict[str, int]:
     return stats
 
 
-def run_hub_legacy_import(hub: Any, config: dict[str, Any]) -> dict[str, Any]:
+def _legacy_import_marker_path(hub: Any) -> Path:
+    sqlite_path = Path(getattr(getattr(hub, "sqlite", None), "path", None) or "./memory/neyra_memory.db")
+    return Path(str(sqlite_path) + ".legacy_import_done")
+
+
+def run_hub_legacy_import(
+    hub: Any,
+    config: dict[str, Any],
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
     """
     Import legacy on-disk stores into SQLite via Hub.
     Paths follow current memory.* config (same as PeopleDB / Diary / journal / WM).
+
+    Idempotent by default: after a successful run a marker file is written next to
+    the Hub SQLite DB. Subsequent calls skip unless force=True.
     """
+    marker = _legacy_import_marker_path(hub)
+    if marker.is_file() and not force:
+        logger.info("hub_legacy_import skipped (marker exists): %s", marker)
+        return {
+            "skipped": True,
+            "reason": "already_imported",
+            "marker": str(marker),
+        }
+
     mem = config.get("memory") if isinstance(config.get("memory"), dict) else {}
     chroma = Path(str(mem.get("chroma_db_path") or "./memory/chroma_db"))
     base = chroma.parent
@@ -164,11 +187,34 @@ def run_hub_legacy_import(hub: Any, config: dict[str, Any]) -> dict[str, Any]:
     journal_path = Path(str(mem.get("journal_path") or "./memory/journal.json"))
     wm_dir = Path(str((mem.get("working_memory") or {}).get("storage_dir") or "./memory/working_memory"))
 
-    report = {
+    report: dict[str, Any] = {
         "people": import_people_dir(hub, people_dir),
         "diary": import_diary_jsonl(hub, diary_path),
         "journal": import_journal_json(hub, journal_path),
         "working_memory": import_working_memory_dir(hub, wm_dir),
+        "skipped": False,
+        "forced": bool(force),
+        "marker": str(marker),
     }
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps(
+                {
+                    "imported_at": datetime.now(timezone.utc).isoformat(),
+                    "forced": bool(force),
+                    "report": {
+                        k: report[k]
+                        for k in ("people", "diary", "journal", "working_memory")
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.warning("hub_legacy_import: failed to write marker %s: %s", marker, e)
     logger.info("hub_legacy_import done: %s", report)
     return report

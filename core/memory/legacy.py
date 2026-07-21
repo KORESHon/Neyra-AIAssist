@@ -697,10 +697,13 @@ class NeyraDiary:
         try:
             hub = getattr(self, "memory_hub", None)
             dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
+            legacy_ok = False
+            hub_ok = False
             if dual:
                 with open(self.path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 self._trim_if_needed()
+                legacy_ok = True
             if hub is not None:
                 try:
                     emo = None
@@ -713,12 +716,17 @@ class NeyraDiary:
                         meta=meta,
                         ts=entry["timestamp"],
                     )
+                    hub_ok = True
                 except Exception as e:
                     logger.warning("NeyraDiary→Hub dual-write failed: %s", e)
-            elif not dual:
-                logger.error("NeyraDiary: no Hub and dual_write disabled — entry dropped")
-                return False
-            return True
+            if hub is not None and not dual:
+                if not hub_ok:
+                    logger.error(
+                        "NeyraDiary: Hub write failed and dual_write disabled — entry dropped"
+                    )
+                    return False
+                return True
+            return legacy_ok or hub_ok
         except Exception as e:
             logger.error(f"NeyraDiary: ошибка записи: {e}")
             return False

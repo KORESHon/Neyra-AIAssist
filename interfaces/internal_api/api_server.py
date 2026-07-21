@@ -902,19 +902,34 @@ def build_app(
 
     @app.post("/v1/memory/import-legacy")
     async def v1_memory_import_legacy(request: Request, api_role: str = Depends(dep_admin)):
-        """One-shot import of legacy json/jsonl/md into SQLite Hub (admin)."""
+        """One-shot import of legacy json/jsonl/md into SQLite Hub (admin).
+
+        Query/body: force=true to re-run even if the import marker already exists.
+        """
         trace_id = _trace_id(request)
         hub = getattr(agent, "memory_hub", None)
         if hub is None:
             raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
 
+        force = False
+        try:
+            q = request.query_params.get("force")
+            if q is not None:
+                force = str(q).strip().lower() in {"1", "true", "yes", "on"}
+            elif request.headers.get("content-type", "").startswith("application/json"):
+                body = await request.json()
+                if isinstance(body, dict) and "force" in body:
+                    force = bool(body.get("force"))
+        except Exception:
+            force = False
+
         def _run() -> dict[str, Any]:
             from core.memory.legacy_import import run_hub_legacy_import
 
-            return run_hub_legacy_import(hub, config)
+            return run_hub_legacy_import(hub, config, force=force)
 
         report = await asyncio.to_thread(_run)
-        _audit("memory_import_legacy", trace_id, api_role, {"ok": True})
+        _audit("memory_import_legacy", trace_id, api_role, {"ok": True, "force": force})
         return {"ok": True, "trace_id": trace_id, "data": report}
 
     @app.get("/v1/memory/policies")

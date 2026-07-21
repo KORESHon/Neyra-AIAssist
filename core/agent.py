@@ -353,7 +353,7 @@ class NeyraAgent:
         # Создаём начальные досье если их нет
         self._init_people_db()
 
-    def _append_turn_to_chat_log(
+    async def _append_turn_to_chat_log(
         self,
         *,
         user_text: str,
@@ -370,35 +370,36 @@ class NeyraAgent:
         base_meta = dict(meta or {})
         asst_cfg = self.config.get("assistant") if isinstance(self.config.get("assistant"), dict) else {}
         assistant_name = str(asst_cfg.get("name") or "").strip() or None
+        rows = [
+            {
+                "role": "user",
+                "text": user_text,
+                "user_id": internal_user_id,
+                "display_name": display_name,
+                "channel_id": channel_id,
+                "source": source or "agent",
+                "turn_id": turn_id,
+                "meta": base_meta,
+            },
+            {
+                "role": "assistant",
+                "text": assistant_text,
+                "user_id": internal_user_id,
+                "display_name": assistant_name,
+                "channel_id": channel_id,
+                "source": source or "agent",
+                "turn_id": turn_id,
+                "latency_ms": latency_ms,
+                "meta": base_meta,
+            },
+        ]
         try:
-            self.memory_hub.append_chat_batch(
-                [
-                    {
-                        "role": "user",
-                        "text": user_text,
-                        "user_id": internal_user_id,
-                        "display_name": display_name,
-                        "channel_id": channel_id,
-                        "source": source or "agent",
-                        "turn_id": turn_id,
-                        "meta": base_meta,
-                    },
-                    {
-                        "role": "assistant",
-                        "text": assistant_text,
-                        "user_id": internal_user_id,
-                        "display_name": assistant_name,
-                        "channel_id": channel_id,
-                        "source": source or "agent",
-                        "turn_id": turn_id,
-                        "latency_ms": latency_ms,
-                        "meta": base_meta,
-                    },
-                ]
-            )
+            # Offload blocking SQLite IMMEDIATE txn off the event loop (ADR-0001).
+            await asyncio.to_thread(self.memory_hub.append_chat_batch, rows)
         except Exception as e:
             logger.exception("MemoryHub chat_log append failed: %s", e)
         return turn_id
+
     def _setup_tools(self):
         """Инициализирует инструменты (вызываются вручную, не через bind_tools)."""
         from core.tools import ALL_TOOLS, init_tools
@@ -2326,13 +2327,13 @@ class NeyraAgent:
         )
         self.short_memory.add("assistant", clean_text)
 
-        # 9. Сохраняем в RAG и логах (не ждём — fire and forget)
+        # 9. Сохраняем в RAG и логах (chat_log — to_thread; LTM — отдельно)
         metadata = {
             "username": username or "unknown",
             "discord_id": discord_user_id or "",
             "user_id": internal_uid,
         }
-        self._append_turn_to_chat_log(
+        await self._append_turn_to_chat_log(
             user_text=self._format_spoken_user_message(user_message, speaker_label),
             assistant_text=clean_text,
             internal_user_id=internal_uid,
@@ -2710,7 +2711,7 @@ class NeyraAgent:
             "discord_id": discord_user_id or "",
             "user_id": internal_uid,
         }
-        self._append_turn_to_chat_log(
+        await self._append_turn_to_chat_log(
             user_text=self._format_spoken_user_message(user_message, speaker_label),
             assistant_text=clean_text,
             internal_user_id=internal_uid,
