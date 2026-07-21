@@ -326,6 +326,8 @@ class NeyraAgent:
             self.config,
             long_memory=self.long_memory,
             event_bus=self.event_bus,
+            people_db=self.people_db,
+            diary=self.diary,
         )
         self.people_db.memory_hub = self.memory_hub
         self.diary.memory_hub = self.memory_hub
@@ -977,7 +979,7 @@ class NeyraAgent:
         u = (username or "").strip()
         disp = (author_display_name or "").strip()
         if u:
-            person = self.people_db.find(u, discord_id=discord_user_id)
+            person = self.memory_hub.find_person(u, discord_id=discord_user_id)
             if person and person.get("names"):
                 return f"{person['names'][0]} (Discord-ник: {u})"
             return disp or u
@@ -1151,9 +1153,9 @@ class NeyraAgent:
         return "\n".join(lines)
 
     def _read_working_memory_for_prompt(self, internal_user_id: str) -> str:
-        from core import working_memory as wm
-
-        return wm.read_snippet_for_prompt(self.config, self._project_root, internal_user_id)
+        return self.memory_hub.working_memory_for_prompt(
+            internal_user_id, root=self._project_root
+        )
 
     async def _run_working_memory_refresh(
         self,
@@ -1702,7 +1704,7 @@ class NeyraAgent:
         """Определение известных имён/ников с учетом русских окончаний (падежей)."""
         import re
         text_lower = text.lower()
-        name_map = self.people_db.get_all_names_map()
+        name_map = self.memory_hub.get_all_names_map()
         found = []
         for name_lower, pid in name_map.items():
             if pid in found:
@@ -1734,14 +1736,14 @@ class NeyraAgent:
         active_pid: Optional[str] = None
         u = (username or "").strip()
         if u:
-            ap = self.people_db.find(u, discord_id=discord_user_id)
+            ap = self.memory_hub.find_person(u, discord_id=discord_user_id)
             if ap:
                 active_pid = ap["id"]
-        active_block = (self.people_db.get_summary(active_pid) or "").strip() if active_pid else ""
+        active_block = (self.memory_hub.get_person_summary(active_pid) or "").strip() if active_pid else ""
         other_ids = [pid for pid in mentioned if not active_pid or pid != active_pid]
         if not other_ids:
             return active_block, ""
-        summaries = [self.people_db.get_summary(pid) for pid in other_ids]
+        summaries = [self.memory_hub.get_person_summary(pid) for pid in other_ids]
         others = "\n\n".join(s for s in summaries if s)
         return active_block, others
 
@@ -1934,7 +1936,7 @@ class NeyraAgent:
 
             # Кому сохраняем? Если в тексте упомянуты конкретные люди, сохраняем ИМ.
             # Иначе сохраняем самому отправителю.
-            author_p = self.people_db.find(username) if username else None
+            author_p = self.memory_hub.find_person(username) if username else None
             
             # Автор сам всегда попадает в mentioned из-за логики chat_stream, вычистим его для поиска "кого упомянули"
             mentioned_others = [m for m in mentioned if not (author_p and m == author_p["id"])]
@@ -1956,7 +1958,7 @@ class NeyraAgent:
         return self.diary.add_entry(text=text, source=source, meta=meta)
 
     def get_recent_diary(self, limit: int = 12) -> str:
-        return self.diary.recent_text(limit=limit) or "Дневник пока пуст."
+        return self.memory_hub.diary_recent_text(limit=limit) or "Дневник пока пуст."
 
     def _handle_websearch_trigger(self, text: str) -> str:
         """Эвристический веб-поиск: актуальные темы/новости/фактуальные вопросы без явных триггеров."""
@@ -2142,7 +2144,7 @@ class NeyraAgent:
         # 2. Ищем упомянутых людей
         mentioned = self._detect_mentioned_names(user_message)
         if username:
-            person = self.people_db.find(username, discord_id=discord_user_id)
+            person = self.memory_hub.find_person(username, discord_id=discord_user_id)
             if person and person["id"] not in mentioned:
                 mentioned.append(person["id"])
 
@@ -2152,7 +2154,7 @@ class NeyraAgent:
         people_active, people_others = self._split_people_context_for_prompt(
             mentioned, username, discord_user_id
         )
-        diary_ctx = self.diary.recent_text(limit=6)
+        diary_ctx = self.memory_hub.diary_recent_text(limit=6)
 
         # Эвристический веб-поиск
         web_ctx = self._handle_websearch_trigger(user_message)
@@ -2419,7 +2421,7 @@ class NeyraAgent:
         memories = self.long_memory.search(user_message)
         mentioned = self._detect_mentioned_names(user_message)
         if username:
-            person = self.people_db.find(username, discord_id=discord_user_id)
+            person = self.memory_hub.find_person(username, discord_id=discord_user_id)
             if person and person["id"] not in mentioned:
                 mentioned.append(person["id"])
 
@@ -2429,7 +2431,7 @@ class NeyraAgent:
         people_active, people_others = self._split_people_context_for_prompt(
             mentioned, username, discord_user_id
         )
-        diary_ctx = self.diary.recent_text(limit=6)
+        diary_ctx = self.memory_hub.diary_recent_text(limit=6)
 
         # Эвристический веб-поиск
         web_ctx = self._handle_websearch_trigger(user_message)

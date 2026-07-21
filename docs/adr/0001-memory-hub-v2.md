@@ -48,4 +48,5 @@ After Phase 1A green: json/jsonl/md people/diary/journal/WM are not primary. Opt
 ## Consequences
 
 - Agents, Internal API `/v1/memory/*`, tools (`recall_chat`, `search_memory`, …), MCP debug, and dashboard must talk to Hub.
+- Prompt injection (people / diary / WM / semantic) goes through Hub; during cutover Hub may fall back to legacy stores for reads until SQLite is fully populated.
 - Phase 1B may rearrange packages; import shims stay stable (`from core.memory import …`).
