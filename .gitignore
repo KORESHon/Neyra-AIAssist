@@ -31,6 +31,13 @@ memory/people_db/*.json
 memory/neyra_diary.jsonl
 memory/reflection_last.json
 memory/plugin_backups/
+memory/memory.zip
+memory/neyra_memory.db
+memory/neyra_memory.db-*
+memory/*.db-wal
+memory/*.db-shm
+memory/working_memory/
+memory/ltm_consolidation/
 logs/*.log
 logs/*.json
 logs/*.txt

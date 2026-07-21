@@ -10,7 +10,8 @@ LLM может вызывать эти функции сама через Functi
   • TimeContextTool   — текущее время и дата
   • SystemMonitorTool — состояние системы (безопасные команды)
   • WebSearchTool     — поиск через DuckDuckGo
-  • MemorySearchTool  — поиск по ChromaDB
+  • MemorySearchTool  — семантический поиск (Hub / Chroma)
+  • RecallChat        — хронологический chat_log (SQLite Hub)
   • RememberKnowledge — сохранить фрагмент в ChromaDB (опционально affect_note)
   • UpdatePersonFact  — записать новый факт о человеке (опционально emotion_note)
   • GetPersonInfo     — получить досье на человека
@@ -37,6 +38,7 @@ _long_memory: "LongTermMemory | None" = None
 _people_db: "PeopleDB | None" = None
 _assistant_cfg: dict | None = None
 _neyra_config: dict | None = None
+_memory_hub = None
 
 
 def init_tools(
@@ -45,14 +47,15 @@ def init_tools(
     assistant_cfg: dict | None = None,
     *,
     neyra_config: dict | None = None,
+    memory_hub=None,
 ) -> None:
     """Инициализирует ссылки на модули памяти и корневой конфиг (для delegate_to_deep_logic)."""
-    global _long_memory, _people_db, _assistant_cfg, _neyra_config
+    global _long_memory, _people_db, _assistant_cfg, _neyra_config, _memory_hub
     _long_memory = long_memory
     _people_db = people_db
     _assistant_cfg = assistant_cfg or {}
     _neyra_config = neyra_config if isinstance(neyra_config, dict) else {}
-
+    _memory_hub = memory_hub
 
 # ─── TimeContextTool ─────────────────────────────────────────────────────────
 
@@ -177,11 +180,15 @@ def search_memory(query: str) -> str:
     Ищет в долгосрочной памяти по смыслу: прошлые фрагменты диалогов и сохранённые знания (RAG).
     Используй, когда нужно вспомнить факты, о чём договаривались, что сохраняли через remember_knowledge.
     query — суть того, что нужно найти.
+    Для хронологии («что было N сообщений назад») используй recall_chat, не search_memory.
     """
-    if _long_memory is None:
+    if _memory_hub is not None:
+        results = _memory_hub.search_semantic(query)
+    elif _long_memory is not None:
+        results = _long_memory.search(query)
+    else:
         return "Долгосрочная память не инициализирована."
 
-    results = _long_memory.search(query)
     if not results:
         return "Ничего не нашла в памяти. Либо мы это ещё не обсуждали, либо память пустая."
 
@@ -190,6 +197,43 @@ def search_memory(query: str) -> str:
         lines.append(f"[{i}] {r[:400]}")
 
     return "\n\n".join(lines)
+
+
+@tool
+def recall_chat(
+    limit: int = 10,
+    offset: int = 0,
+    user_id: str = "",
+    channel_id: str = "",
+) -> str:
+    """
+    Хронологический recall из полного chat log (SQLite), без семантического RAG.
+    Используй для «что было N сообщений назад», «повтори что я сказал раньше», ленты канала.
+    limit — сколько сообщений вернуть (1–100), offset — сколько пропустить от самых новых.
+    user_id / channel_id — опциональные фильтры (оставьте пустыми, если не нужны).
+    """
+    if _memory_hub is None:
+        return "Memory Hub не инициализирован."
+    lim = max(1, min(int(limit or 10), 100))
+    off = max(0, int(offset or 0))
+    rows = _memory_hub.list_chat(
+        user_id=(user_id or None) or None,
+        channel_id=(channel_id or None) or None,
+        limit=lim,
+        offset=off,
+        newest_first=True,
+    )
+    if not rows:
+        return "В chat log пока пусто по этим фильтрам."
+    # newest_first from SQL — show oldest→newest for reading
+    rows = list(reversed(rows))
+    lines = [f"Chat log (limit={lim}, offset={off}), oldest→newest:"]
+    for r in rows:
+        ts = str(r.get("ts") or "")[:19]
+        role = r.get("role") or "?"
+        text = str(r.get("text") or "").replace("\n", " ")[:300]
+        lines.append(f"[{ts}] {role}: {text}")
+    return "\n".join(lines)
 
 
 @tool
@@ -392,6 +436,7 @@ ALL_TOOLS = [
     check_system,
     web_search,
     search_memory,
+    recall_chat,
     remember_knowledge,
     update_person_fact,
     get_person_info,

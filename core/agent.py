@@ -314,16 +314,22 @@ class NeyraAgent:
 
     def _setup_memory(self):
         """Инициализирует все модули памяти."""
-        from core.memory import LongTermMemory, NeyraDiary, PeopleDB, ShortTermMemory
+        from core.memory import LongTermMemory, MemoryHub, NeyraDiary, PeopleDB, ShortTermMemory
 
-        self.short_memory = ShortTermMemory(max_messages=10)
+        mem_cfg = self.config.get("memory", {}) or {}
+        stm_max = int(mem_cfg.get("stm_max_messages") or 10)
+        self.short_memory = ShortTermMemory(max_messages=max(2, stm_max))
         self.long_memory = LongTermMemory(self.config)
         self.people_db = PeopleDB(self.config)
         self.diary = NeyraDiary(self.config)
+        self.memory_hub = MemoryHub(
+            self.config,
+            long_memory=self.long_memory,
+            event_bus=self.event_bus,
+        )
 
         # Не блокируем старт бота тяжёлой загрузкой embedder'а:
         # RAG поднимется в фоне, а при первом запросе есть ленивый fallback.
-        mem_cfg = self.config.get("memory", {}) or {}
         if bool(mem_cfg.get("rag_init_in_background", True)):
             logger.info("Инициализирую долгосрочную память в фоне...")
             self.long_memory.initialize_async()
@@ -334,6 +340,50 @@ class NeyraAgent:
         # Создаём начальные досье если их нет
         self._init_people_db()
 
+    def _append_turn_to_chat_log(
+        self,
+        *,
+        user_text: str,
+        assistant_text: str,
+        internal_user_id: str,
+        display_name: Optional[str],
+        channel_id: Optional[str],
+        source: Optional[str],
+        meta: Optional[dict] = None,
+        latency_ms: Optional[float] = None,
+    ) -> str:
+        """Dual-write full turn into SQLite chat_log (Memory Hub). Returns turn_id."""
+        turn_id = self.memory_hub.new_turn_id()
+        base_meta = dict(meta or {})
+        try:
+            self.memory_hub.append_chat_batch(
+                [
+                    {
+                        "role": "user",
+                        "text": user_text,
+                        "user_id": internal_user_id,
+                        "display_name": display_name,
+                        "channel_id": channel_id,
+                        "source": source or "agent",
+                        "turn_id": turn_id,
+                        "meta": base_meta,
+                    },
+                    {
+                        "role": "assistant",
+                        "text": assistant_text,
+                        "user_id": internal_user_id,
+                        "display_name": display_name,
+                        "channel_id": channel_id,
+                        "source": source or "agent",
+                        "turn_id": turn_id,
+                        "latency_ms": latency_ms,
+                        "meta": base_meta,
+                    },
+                ]
+            )
+        except Exception as e:
+            logger.exception("MemoryHub chat_log append failed: %s", e)
+        return turn_id
     def _setup_tools(self):
         """Инициализирует инструменты (вызываются вручную, не через bind_tools)."""
         from core.tools import ALL_TOOLS, init_tools
@@ -343,6 +393,7 @@ class NeyraAgent:
             self.people_db,
             self.config.get("assistant") or {},
             neyra_config=self.config,
+            memory_hub=self.memory_hub,
         )
         self.tools = {t.name: t for t in ALL_TOOLS}
         self.mcp_manager = None
@@ -2262,6 +2313,15 @@ class NeyraAgent:
             "discord_id": discord_user_id or "",
             "user_id": internal_uid,
         }
+        self._append_turn_to_chat_log(
+            user_text=self._format_spoken_user_message(user_message, speaker_label),
+            assistant_text=clean_text,
+            internal_user_id=internal_uid,
+            display_name=username or speaker_label,
+            channel_id=channel_id,
+            source="chat",
+            meta=metadata,
+        )
         await self._save_dialog_to_ltm_with_emotion(user_message, clean_text, metadata, speaker_label)
 
         # 10. Логи
@@ -2631,6 +2691,15 @@ class NeyraAgent:
             "discord_id": discord_user_id or "",
             "user_id": internal_uid,
         }
+        self._append_turn_to_chat_log(
+            user_text=self._format_spoken_user_message(user_message, speaker_label),
+            assistant_text=clean_text,
+            internal_user_id=internal_uid,
+            display_name=username or speaker_label,
+            channel_id=channel_id,
+            source="chat_stream",
+            meta=metadata,
+        )
         await self._save_dialog_to_ltm_with_emotion(user_message, clean_text, metadata, speaker_label)
         self._log_thought(thoughts, user_message)
         self._log_chat(user_message, clean_text, metadata)

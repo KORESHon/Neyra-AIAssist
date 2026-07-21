@@ -210,6 +210,16 @@ class MemorySearchRequest(BaseModel):
     top_k: int = Field(default=3, ge=1, le=20)
 
 
+class MemoryRecallRequest(BaseModel):
+    """Chronological chat_log recall (SQLite), not semantic RAG."""
+
+    limit: int = Field(default=20, ge=1, le=200)
+    offset: int = Field(default=0, ge=0, le=100_000)
+    user_id: Optional[str] = Field(default=None, max_length=120)
+    channel_id: Optional[str] = Field(default=None, max_length=120)
+    newest_first: bool = True
+
+
 class MemoryWriteRequest(BaseModel):
     user_text: str = Field(min_length=1, max_length=6000)
     assistant_text: str = Field(min_length=1, max_length=6000)
@@ -659,8 +669,32 @@ def build_app(
     @app.post("/v1/memory/search")
     async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
-        rows = agent.long_memory.search(body.query, n_results=body.top_k)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is not None:
+            rows = hub.search_semantic(body.query, n_results=body.top_k)
+        else:
+            rows = agent.long_memory.search(body.query, n_results=body.top_k)
         return {"ok": True, "trace_id": trace_id, "data": {"results": rows}}
+
+    @app.post("/v1/memory/chat/recall")
+    async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_viewer)):
+        """Chronological list from SQLite chat_log (Memory Hub)."""
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> list[dict[str, Any]]:
+            return hub.list_chat(
+                user_id=body.user_id,
+                channel_id=body.channel_id,
+                limit=body.limit,
+                offset=body.offset,
+                newest_first=body.newest_first,
+            )
+
+        rows = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": {"messages": rows, "count": len(rows)}}
 
     @app.post("/v1/memory/write")
     async def v1_memory_write(body: MemoryWriteRequest, request: Request, api_role: str = Depends(dep_admin)):
@@ -789,17 +823,22 @@ def build_app(
                 )
                 break
         mem_cfg = (config.get("memory") or {}) if isinstance(config.get("memory"), dict) else {}
+        hub = getattr(agent, "memory_hub", None)
+        hub_stats = hub.stats() if hub is not None else {}
         return {
             "ok": True,
             "trace_id": trace_id,
             "data": {
                 "short_term_messages": trimmed,
                 "agent_stats": agent.get_stats(),
+                "hub": hub_stats,
                 "rag": {
                     "enabled": bool(getattr(agent.long_memory, "rag_enabled", True)),
                     "records": agent.long_memory.count(),
                     "embedding_model": mem_cfg.get("embedding_model"),
                     "chroma_db_path": mem_cfg.get("chroma_db_path"),
+                    "rag_write_mode": mem_cfg.get("rag_write_mode"),
+                    "sqlite_path": mem_cfg.get("sqlite_path"),
                 },
             },
         }
@@ -813,15 +852,15 @@ def build_app(
     @app.get("/v1/memory/stats")
     async def v1_memory_stats(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
-        return {
-            "ok": True,
-            "trace_id": trace_id,
-            "data": {
-                "short_memory_size": len(agent.short_memory),
-                "long_memory_records": agent.long_memory.count(),
-                "people_records": len(agent.people_db._cache),
-            },
+        hub = getattr(agent, "memory_hub", None)
+        data: dict[str, Any] = {
+            "short_memory_size": len(agent.short_memory),
+            "long_memory_records": agent.long_memory.count(),
+            "people_records": len(agent.people_db._cache),
         }
+        if hub is not None:
+            data["hub"] = hub.stats()
+        return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/memory/policies")
     async def v1_memory_policies(request: Request, _: None = Depends(dep_viewer)):
@@ -832,6 +871,11 @@ def build_app(
             "trace_id": trace_id,
             "data": {
                 "rag_enabled": bool(mem_cfg.get("rag_enabled", True)),
+                "rag_write_mode": mem_cfg.get("rag_write_mode"),
+                "sqlite_path": mem_cfg.get("sqlite_path"),
+                "stm_max_messages": mem_cfg.get("stm_max_messages"),
+                "chat_log_retention_days": mem_cfg.get("chat_log_retention_days"),
+                "hub_legacy_import": mem_cfg.get("hub_legacy_import"),
                 "max_records_target": mem_cfg.get("max_records"),
                 "ltm_archive_dir": str(mem_cfg.get("ltm_archive_dir", "ltm_archive")),
                 "ltm_summarize_max_tokens": mem_cfg.get("ltm_summarize_max_tokens"),
