@@ -43,7 +43,9 @@ During cutover, people/diary/journal/WM **dual-write** SQLite + legacy files; SQ
 
 ## Cutover
 
-After Phase 1A green: json/jsonl/md people/diary/journal/WM are not primary. Optional one-shot `memory.hub_legacy_import`, then `false`.
+After Phase 1A green: json/jsonl/md people/diary/journal/WM are not primary.  
+Optional one-shot `memory.hub_legacy_import`, then set `hub_legacy_import`, `hub_legacy_fallback`, and `hub_dual_write_legacy` to `false`.  
+**Legacy file stores and dual-write shims must be deleted at the end of Phase 1A** (temporary for migration/tests only). Chroma semantic index + STM remain.
 
 ## Consequences
 

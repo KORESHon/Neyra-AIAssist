@@ -53,6 +53,8 @@ class MemoryHub:
         if self.rag_write_mode not in {"off", "digest", "important_only", "legacy_dialog"}:
             logger.warning("Unknown rag_write_mode=%r — using important_only", self.rag_write_mode)
             self.rag_write_mode = "important_only"
+        self.hub_legacy_fallback = bool(mem.get("hub_legacy_fallback", True))
+        self.hub_dual_write_legacy = bool(mem.get("hub_dual_write_legacy", True))
         if semantic is not None:
             self.semantic: SemanticIndex = semantic
         elif long_memory is not None:
@@ -60,10 +62,12 @@ class MemoryHub:
         else:
             self.semantic = ChromaSemanticIndex(_NullLTM())
         logger.info(
-            "MemoryHub ready | sqlite=%s | schema_v%s | rag_write_mode=%s",
+            "MemoryHub ready | sqlite=%s | schema_v%s | rag_write_mode=%s | legacy_fallback=%s | dual_write=%s",
             path,
             self.sqlite.schema_version(),
             self.rag_write_mode,
+            self.hub_legacy_fallback,
+            self.hub_dual_write_legacy,
         )
 
     def close(self) -> None:
@@ -381,7 +385,7 @@ class MemoryHub:
                 else:
                     lines.append(f"    [{ts}] {fact_line}")
             return "\n".join(lines)
-        if self._people_db is not None:
+        if self._people_db is not None and self.hub_legacy_fallback:
             return self._people_db.get_summary(pid) or ""
         return ""
 
@@ -405,7 +409,7 @@ class MemoryHub:
                 lines.append(f"[{ts} | {src}{suf}] {txt}")
             if lines:
                 return "\n".join(lines)
-        if self._diary is not None:
+        if self._diary is not None and self.hub_legacy_fallback:
             return self._diary.recent_text(limit=lim) or ""
         return ""
 
@@ -428,7 +432,7 @@ class MemoryHub:
             if cut > 0 and cut < 400:
                 tail = tail[cut + 1 :]
             return "[…фрагмент рабочей памяти (SQLite), хвост…]\n" + tail.strip()
-        if not wm.wm_enabled(self.config):
+        if not self.hub_legacy_fallback or not wm.wm_enabled(self.config):
             return ""
         project_root = Path(root) if root is not None else Path(__file__).resolve().parents[2]
         return wm.read_snippet_for_prompt(self.config, project_root, internal_user_id)
@@ -439,6 +443,8 @@ class MemoryHub:
             "schema_version": self.sqlite.schema_version(),
             "rag_write_mode": self.rag_write_mode,
             "allows_raw_dialog_embed": self.allows_raw_dialog_embed(),
+            "hub_legacy_fallback": self.hub_legacy_fallback,
+            "hub_dual_write_legacy": self.hub_dual_write_legacy,
             "chat_log": self.sqlite.count_table("chat_log"),
             "people": self.sqlite.count_table("people"),
             "person_facts": self.sqlite.count_table("person_facts"),

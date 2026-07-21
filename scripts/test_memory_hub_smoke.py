@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -111,6 +112,52 @@ def main() -> int:
         hub2.close()
 
     assert MEMORY_CHAT_LOG_APPEND in events, events
+
+    # legacy import smoke
+    with tempfile.TemporaryDirectory() as tmp2:
+        root = Path(tmp2)
+        people = root / "people_db"
+        people.mkdir()
+        (people / "alice.json").write_text(
+            json.dumps(
+                {
+                    "id": "alice",
+                    "names": ["Алиса"],
+                    "discord_ids": ["123456789012345678"],
+                    "dynamic_facts": [{"date": "2026-01-01", "fact": "любит чай"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        diary = root / "neyra_diary.jsonl"
+        diary.write_text(
+            json.dumps({"timestamp": "2026-01-01T00:00:00", "source": "t", "text": "из jsonl"}, ensure_ascii=False)
+            + "\n",
+            encoding="utf-8",
+        )
+        cfg = {
+            "memory": {
+                "sqlite_path": str(root / "import.db"),
+                "chroma_db_path": str(root / "chroma_db"),
+                "diary_path": str(diary),
+                "journal_path": str(root / "missing_journal.json"),
+                "working_memory": {"storage_dir": str(root / "wm")},
+                "hub_legacy_fallback": False,
+                "hub_dual_write_legacy": False,
+            }
+        }
+        (root / "chroma_db").mkdir()
+        hub_i = MemoryHub(cfg)
+        from core.memory.legacy_import import run_hub_legacy_import
+
+        rep = run_hub_legacy_import(hub_i, cfg)
+        assert rep["people"]["people"] == 1, rep
+        assert rep["diary"]["notes"] == 1, rep
+        assert hub_i.stats()["people"] >= 1
+        assert "из jsonl" in hub_i.diary_recent_text(5)
+        hub_i.close()
+
     print("OK memory hub smoke v2", st)
     return 0
 

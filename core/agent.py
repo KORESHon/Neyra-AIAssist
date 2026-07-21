@@ -332,6 +332,15 @@ class NeyraAgent:
         self.people_db.memory_hub = self.memory_hub
         self.diary.memory_hub = self.memory_hub
 
+        if bool(mem_cfg.get("hub_legacy_import", False)):
+            try:
+                from core.memory.legacy_import import run_hub_legacy_import
+
+                report = run_hub_legacy_import(self.memory_hub, self.config)
+                logger.info("hub_legacy_import completed: %s", report)
+            except Exception as e:
+                logger.exception("hub_legacy_import failed: %s", e)
+
         # Не блокируем старт бота тяжёлой загрузкой embedder'а:
         # RAG поднимется в фоне, а при первом запросе есть ленивый fallback.
         if bool(mem_cfg.get("rag_init_in_background", True)):

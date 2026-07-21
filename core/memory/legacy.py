@@ -515,8 +515,11 @@ class PeopleDB:
         logger.info(f"PeopleDB загружена: {len(self._cache)} записей")
 
     def _save(self, person_id: str) -> None:
-        """Сохраняет досье на диск."""
+        """Сохраняет досье на диск (можно отключить через memory.hub_dual_write_legacy)."""
         if person_id not in self._cache:
+            return
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None and not getattr(hub, "hub_dual_write_legacy", True):
             return
         path = self.db_dir / f"{person_id}.json"
         path.write_text(
@@ -692,10 +695,12 @@ class NeyraDiary:
             "meta": meta or {},
         }
         try:
-            with open(self.path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            self._trim_if_needed()
             hub = getattr(self, "memory_hub", None)
+            dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
+            if dual:
+                with open(self.path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                self._trim_if_needed()
             if hub is not None:
                 try:
                     emo = None
@@ -710,6 +715,9 @@ class NeyraDiary:
                     )
                 except Exception as e:
                     logger.warning("NeyraDiary→Hub dual-write failed: %s", e)
+            elif not dual:
+                logger.error("NeyraDiary: no Hub and dual_write disabled — entry dropped")
+                return False
             return True
         except Exception as e:
             logger.error(f"NeyraDiary: ошибка записи: {e}")

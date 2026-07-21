@@ -110,7 +110,9 @@
 | `memory.rag_write_mode` | `off` \| `digest` \| `important_only` (запрет legacy «каждый dialog raw») |
 | `memory.chat_log_retention_days` | опц. TTL/prune лога (0 = без автоудаления) |
 | `memory.stm_max_messages` | размер STM-окна |
-| `memory.hub_legacy_import` | one-shot import json/jsonl при наличии (после обнуления — `false`) |
+| `memory.hub_legacy_import` | one-shot import json/jsonl при старте (после cutover — `false`) |
+| `memory.hub_legacy_fallback` | читать промпт из legacy-файлов, если SQLite пуст (`false` перед удалением legacy) |
+| `memory.hub_dual_write_legacy` | писать people/diary ещё и в json/jsonl (`false` когда истина только SQLite) |
 | `memory.working_memory.*` / `emotional_layer.*` / prune-summarize | перевести на Hub, не на файлы |
 
 Документировать в ADR + example; синхронизировать корневой `config.yaml` по правилу репо.
@@ -195,17 +197,27 @@
 
 ### Cutover: что перестаёт быть primary на диске
 
+**Политика legacy (важно):** поддержка json/jsonl/md и dual-write — **временная** (миграция / тестовый контур на ветке 1A).  
+К **концу фазы 1A** (перед merge в `main` или сразу после зелёного cutover) нужно:
+
+1. Прогнать `memory.hub_legacy_import: true` один раз (или API/скрипт импорта) → данные в SQLite.
+2. Выставить `hub_legacy_import: false`, `hub_legacy_fallback: false`, `hub_dual_write_legacy: false`.
+3. **Удалить legacy-структуры кода и диска:** файловые PeopleDB/Diary/journal/WM как store, dual-write shims, `core/memory/legacy_import.py` после финального импорта (или оставить скрипт только в `scripts/` archive). Chroma semantic + STM остаются — это не «legacy json».
+
+Пока cutover не закрыт, legacy можно держать включённым для тестов.
+
 После зелёного 1A **не** использовать как source of truth:
 
 | Было | Статус после cutover |
 |------|----------------------|
-| `memory/people_db/*.json` | не primary (удалить или archive-only) |
-| `memory/neyra_diary.jsonl` | не primary |
-| `memory/journal.json`, `reflection_last.json` как истина | не primary (экспорт опционален) |
+| `memory/people_db/*.json` | не primary → удалить/archive |
+| `memory/neyra_diary.jsonl` | не primary → удалить/archive |
+| `memory/journal.json`, `reflection_last.json` как истина | не primary |
 | `memory/working_memory*.md` | не primary |
 | Raw dialog rows в Chroma «на каждый ход» | запрещены |
+| Код dual-write / file PeopleDB+Diary | **удалить** к концу 1A |
 
-Допустимо: one-shot `hub_legacy_import`, затем флаги off; пустые keep-файлы каталогов для git — ок.
+Допустимо на время разработки: one-shot `hub_legacy_import`, fallback/dual-write flags; пустые keep-файлы каталогов для git — ок.
 
 ---
 
@@ -235,16 +247,17 @@
 
 - [x] SQLite init/migrate; chat_log на каждый ход параллельно STM. *(пакет `core/memory/`, dual-write из agent)*
 - [x] Tool/API `recall_chat` / chronological list — «N сообщений назад» без RAG. *(фильтр `user_id` и/или `channel_id` обязателен)*
-- [~] People / diary / journal / WM через Hub → SQLite. *(dual-write + **prompt reads via Hub** с fallback на legacy; json/jsonl/md ещё не выключены как store)*
+- [~] People / diary / journal / WM через Hub → SQLite. *(dual-write + prompt via Hub; флаги `hub_dual_write_legacy` / `hub_legacy_fallback`)*
 - [x] Chroma: raw full-chat embed выключен по умолчанию (`rag_write_mode` ≠ `legacy_dialog`); knowledge через Hub.
 - [x] `rag_write_mode` и пути из конфига (`sqlite_path`, `stm_max_messages`, …); example + local синхронизированы.
 - [x] Event Bus: `memory.chat_log_append`; прежние `memory.*` сохранены (journal/WM/STM/LTM).
 - [~] `/v1/memory/*`, `/v1/debug/memory` — Hub stats / recall / search. *(MCP inspect + dashboard widgets под Hub — ещё нет)*
-- [ ] Legacy json/jsonl/md **не** primary; cutover + `hub_legacy_import` off после импорта.
+- [~] Cutover: `hub_legacy_import` + флаги fallback/dual-write есть; **legacy ещё не удалён** (удаление — обязательный финал 1A).
 - [x] Backup учитывает `.db` (+ wal/shm) и Chroma (`backup_manifest.json`).
 - [x] Промпт talk/brain читает people / diary / WM через Hub (fallback legacy внутри Hub на время cutover).
 - [~] Smoke: `scripts/test_memory_hub_smoke.py` зелёный; полный e2e chat→healthcheck на стенде — по мере merge.
 - [x] Fast-Path умного дома — **отложено в этап 2** (решение зафиксировано: не блокирует cutover 1A; edge — с колонкой на этапе 4).
+- [ ] Финал 1A: выключить legacy flags → удалить file PeopleDB/Diary/journal/WM stores и dual-write shims из кода.
 
 **Фаза 1B**
 

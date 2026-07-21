@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from core.memory.hub import MemoryHub
 from core.memory.legacy import LongTermMemory, NeyraDiary, PeopleDB, ShortTermMemory
+from core.memory.legacy_import import run_hub_legacy_import
 from core.memory.semantic_index import ChromaSemanticIndex, SemanticIndex
 from core.memory.sqlite_store import SqliteStore
 
@@ -21,4 +22,5 @@ __all__ = [
     "LongTermMemory",
     "PeopleDB",
     "NeyraDiary",
+    "run_hub_legacy_import",
 ]

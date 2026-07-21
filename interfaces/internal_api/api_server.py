@@ -900,6 +900,23 @@ def build_app(
             data["hub"] = hub_stats
         return {"ok": True, "trace_id": trace_id, "data": data}
 
+    @app.post("/v1/memory/import-legacy")
+    async def v1_memory_import_legacy(request: Request, api_role: str = Depends(dep_admin)):
+        """One-shot import of legacy json/jsonl/md into SQLite Hub (admin)."""
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            from core.memory.legacy_import import run_hub_legacy_import
+
+            return run_hub_legacy_import(hub, config)
+
+        report = await asyncio.to_thread(_run)
+        _audit("memory_import_legacy", trace_id, api_role, {"ok": True})
+        return {"ok": True, "trace_id": trace_id, "data": report}
+
     @app.get("/v1/memory/policies")
     async def v1_memory_policies(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
@@ -914,6 +931,8 @@ def build_app(
                 "stm_max_messages": mem_cfg.get("stm_max_messages"),
                 "chat_log_retention_days": mem_cfg.get("chat_log_retention_days"),
                 "hub_legacy_import": mem_cfg.get("hub_legacy_import"),
+                "hub_legacy_fallback": mem_cfg.get("hub_legacy_fallback"),
+                "hub_dual_write_legacy": mem_cfg.get("hub_dual_write_legacy"),
                 "max_records_target": mem_cfg.get("max_records"),
                 "ltm_archive_dir": str(mem_cfg.get("ltm_archive_dir", "ltm_archive")),
                 "ltm_summarize_max_tokens": mem_cfg.get("ltm_summarize_max_tokens"),
