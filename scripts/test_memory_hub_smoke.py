@@ -153,8 +153,9 @@ def main() -> int:
 
         rep = run_hub_legacy_import(hub_i, cfg)
         assert rep["people"]["people"] == 1, rep
+        assert rep["people"]["facts"] == 1, rep
         assert rep["diary"]["notes"] == 1, rep
-        assert hub_i.stats()["people"] >= 1
+        assert hub_i.stats()["person_facts"] >= 1
         assert "из jsonl" in hub_i.diary_recent_text(5)
         hub_i.close()
 

@@ -245,6 +245,7 @@ class MemoryHub:
         person_meta: Optional[dict[str, Any]] = None,
         aliases: Optional[list[str]] = None,
         display_name: Optional[str] = None,
+        created_at: Optional[str] = None,
     ) -> int:
         if person_meta or aliases or display_name:
             self.upsert_person(
@@ -263,6 +264,7 @@ class MemoryHub:
             emotion_note=emotion_note,
             source=source,
             meta=meta,
+            created_at=created_at,
         )
 
     def get_person(self, person_id: str) -> Optional[dict[str, Any]]:
