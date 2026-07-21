@@ -367,7 +367,10 @@ class MemoryHub:
             meta = person.get("meta") if isinstance(person.get("meta"), dict) else {}
             discord_ids = meta.get("discord_ids") if isinstance(meta, dict) else None
             if isinstance(discord_ids, list) and discord_ids:
-                lines.append(f"  Discord пинг (ИСПОЛЬЗУЙ ЧТОБЫ ТЕГНУТЬ ЕГО): <@{discord_ids[0]}>")
+                raw_id = str(discord_ids[0] or "").strip()
+                # Discord snowflake: digits only (avoid prompt injection / malformed <@...>)
+                if raw_id.isdigit() and 5 <= len(raw_id) <= 32:
+                    lines.append(f"  Discord пинг (ИСПОЛЬЗУЙ ЧТОБЫ ТЕГНУТЬ ЕГО): <@{raw_id}>")
             lines.append("  Новые факты:")
             for f in reversed(facts):
                 fact_line = str(f.get("fact") or "")
@@ -385,8 +388,8 @@ class MemoryHub:
     def diary_recent_text(self, limit: int = 10) -> str:
         """Diary for prompt: SQLite first if rows exist, else legacy JSONL."""
         lim = max(1, int(limit))
-        if self.sqlite.count_table("diary_notes") > 0:
-            rows = self.list_diary_notes(limit=lim, newest_first=True)
+        rows = self.list_diary_notes(limit=lim, newest_first=True)
+        if rows:
             rows = list(reversed(rows))
             lines: list[str] = []
             for e in rows:

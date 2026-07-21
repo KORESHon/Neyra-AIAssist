@@ -336,22 +336,30 @@ class SqliteStore:
             return int(cur.lastrowid)
 
     def latest_wm_snapshot(self, user_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+        """
+        Latest WM row.
+        - user_id is None → global latest (any user)
+        - user_id is str (including empty/whitespace) → filter by that id; empty → no match
+        """
         with self._lock:
-            if user_id:
+            if user_id is None:
+                cur = self._conn.execute(
+                    """
+                    SELECT * FROM working_memory_snapshots
+                    ORDER BY ts DESC, id DESC LIMIT 1
+                    """
+                )
+            else:
+                uid = str(user_id).strip()
+                if not uid:
+                    return None
                 cur = self._conn.execute(
                     """
                     SELECT * FROM working_memory_snapshots
                     WHERE user_id = ?
                     ORDER BY ts DESC, id DESC LIMIT 1
                     """,
-                    (user_id,),
-                )
-            else:
-                cur = self._conn.execute(
-                    """
-                    SELECT * FROM working_memory_snapshots
-                    ORDER BY ts DESC, id DESC LIMIT 1
-                    """
+                    (uid,),
                 )
             row = cur.fetchone()
             return self._row_to_dict(row) if row else None
