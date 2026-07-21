@@ -60,7 +60,13 @@
 
 **Цель:** пересобрать базу памяти и структуру ядра: один Memory API, SQLite как source of truth для основного контента, Chroma только как семантический индекс «что вспомнить», полный chat log в БД; затем — чистка дублей и раскладка `core/` по папкам. Фундамент должен быть жёстким: без полуlegacy-путей и без «файлов-призраков» рядом с Hub.
 
-**Статус:** не выполнено (очередь №1).
+**Статус:** в работе на ветке `feat/memory-hub-1a` ([PR #1](https://github.com/KORESHon/Neyra-AIAssist/pull/1)) — **ещё не в `main`**. После merge в `main` заменить эту строку на «1A принято в main» и снять пометки «на ветке».
+
+### Прогресс фазы 1A (факт по ветке, не по main)
+
+Легенда чек-листа ниже: `[x]` = сделано **на ветке PR #1**; `[ ]` = не сделано / cutover не закрыт. Частичное — `[~]` с пояснением.
+
+---
 
 ### Фазы внутри этапа (обязательный порядок)
 
@@ -225,20 +231,20 @@
 
 ### Критерии приёмки
 
-**Фаза 1A**
+**Фаза 1A** *(трек: `feat/memory-hub-1a` / PR #1 — не в main)*
 
-- [ ] SQLite init/migrate; chat_log на каждый ход параллельно STM.
-- [ ] Tool/API `recall_chat` / chronological list — «N сообщений назад» без RAG.
-- [ ] People / diary / journal / WM только через Hub → SQLite.
-- [ ] Chroma только semantic `type`; raw full-chat embed отсутствует.
-- [ ] `rag_write_mode` и пути из конфига работают; example + local config синхронизированы.
-- [ ] Event Bus: chat_log_append (+ сохранённые/alias memory.*); нет молчаливого обрыва подписок.
-- [ ] `/v1/memory/*`, `/v1/debug/memory`, MCP inspect, dashboard stats — SQLite+Chroma.
-- [ ] Legacy json/jsonl/md **не** primary; cutover выполнен или задокументирован + import off.
-- [ ] Backup-путь учитывает `.db` (+ wal) и Chroma.
-- [ ] Промпт talk/brain читает память только через Hub.
-- [ ] Smoke: chat → chat_log → list_chat → semantic search; healthcheck core.
-- [ ] Fast-Path: типовая команда умного дома без полного brain+RAG при высокой уверенности (или ADR «отложено в этап 2» с явным решением).
+- [x] SQLite init/migrate; chat_log на каждый ход параллельно STM. *(пакет `core/memory/`, dual-write из agent)*
+- [x] Tool/API `recall_chat` / chronological list — «N сообщений назад» без RAG. *(фильтр `user_id` и/или `channel_id` обязателен)*
+- [~] People / diary / journal / WM через Hub → SQLite. *(dual-write + **prompt reads via Hub** с fallback на legacy; json/jsonl/md ещё не выключены как store)*
+- [x] Chroma: raw full-chat embed выключен по умолчанию (`rag_write_mode` ≠ `legacy_dialog`); knowledge через Hub.
+- [x] `rag_write_mode` и пути из конфига (`sqlite_path`, `stm_max_messages`, …); example + local синхронизированы.
+- [x] Event Bus: `memory.chat_log_append`; прежние `memory.*` сохранены (journal/WM/STM/LTM).
+- [~] `/v1/memory/*`, `/v1/debug/memory` — Hub stats / recall / search. *(MCP inspect + dashboard widgets под Hub — ещё нет)*
+- [ ] Legacy json/jsonl/md **не** primary; cutover + `hub_legacy_import` off после импорта.
+- [x] Backup учитывает `.db` (+ wal/shm) и Chroma (`backup_manifest.json`).
+- [x] Промпт talk/brain читает people / diary / WM через Hub (fallback legacy внутри Hub на время cutover).
+- [~] Smoke: `scripts/test_memory_hub_smoke.py` зелёный; полный e2e chat→healthcheck на стенде — по мере merge.
+- [x] Fast-Path умного дома — **отложено в этап 2** (решение зафиксировано: не блокирует cutover 1A; edge — с колонкой на этапе 4).
 
 **Фаза 1B**
 

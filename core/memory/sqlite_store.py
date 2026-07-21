@@ -335,6 +335,27 @@ class SqliteStore:
             )
             return int(cur.lastrowid)
 
+    def latest_wm_snapshot(self, user_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+        with self._lock:
+            if user_id:
+                cur = self._conn.execute(
+                    """
+                    SELECT * FROM working_memory_snapshots
+                    WHERE user_id = ?
+                    ORDER BY ts DESC, id DESC LIMIT 1
+                    """,
+                    (user_id,),
+                )
+            else:
+                cur = self._conn.execute(
+                    """
+                    SELECT * FROM working_memory_snapshots
+                    ORDER BY ts DESC, id DESC LIMIT 1
+                    """
+                )
+            row = cur.fetchone()
+            return self._row_to_dict(row) if row else None
+
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)

@@ -37,12 +37,16 @@ class MemoryHub:
         long_memory: Any = None,
         event_bus: Any = None,
         semantic: Optional[SemanticIndex] = None,
+        people_db: Any = None,
+        diary: Any = None,
     ):
         mem = config.get("memory") if isinstance(config.get("memory"), dict) else {}
         self.config = config
         self.mem_cfg = mem
         self.event_bus = event_bus
         self._long_memory = long_memory
+        self._people_db = people_db
+        self._diary = diary
         path = str(mem.get("sqlite_path") or "./memory/neyra_memory.db")
         self.sqlite = SqliteStore(path)
         self.rag_write_mode = str(mem.get("rag_write_mode") or "important_only").strip().lower()
@@ -329,6 +333,102 @@ class MemoryHub:
             except Exception as e:
                 logger.debug("wm_updated event failed: %s", e)
         return row_id
+
+    def attach_legacy(self, *, people_db: Any = None, diary: Any = None) -> None:
+        """Wire legacy stores for prompt-read fallback during cutover."""
+        if people_db is not None:
+            self._people_db = people_db
+        if diary is not None:
+            self._diary = diary
+
+    def find_person(self, identifier: str, discord_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+        if self._people_db is None:
+            return None
+        return self._people_db.find(identifier, discord_id=discord_id)
+
+    def get_all_names_map(self) -> dict[str, str]:
+        if self._people_db is None:
+            return {}
+        return self._people_db.get_all_names_map()
+
+    def get_person_summary(self, person_id: str) -> str:
+        """Prompt dossier: prefer SQLite facts when present, else legacy PeopleDB."""
+        pid = (person_id or "").strip()
+        if not pid:
+            return ""
+        facts = self.sqlite.list_person_facts(pid, limit=5)
+        person = self.sqlite.get_person(pid)
+        if person and facts:
+            names = person.get("aliases") or []
+            if isinstance(names, str):
+                names = [names]
+            title = person.get("display_name") or (names[0] if names else pid)
+            lines = [f"Досье на {title}:"]
+            meta = person.get("meta") if isinstance(person.get("meta"), dict) else {}
+            discord_ids = meta.get("discord_ids") if isinstance(meta, dict) else None
+            if isinstance(discord_ids, list) and discord_ids:
+                lines.append(f"  Discord пинг (ИСПОЛЬЗУЙ ЧТОБЫ ТЕГНУТЬ ЕГО): <@{discord_ids[0]}>")
+            lines.append("  Новые факты:")
+            for f in reversed(facts):
+                fact_line = str(f.get("fact") or "")
+                emo = str(f.get("emotion_note") or "").strip()
+                ts = str(f.get("created_at") or "")[:10]
+                if emo:
+                    lines.append(f"    [{ts}] {fact_line} (настроение Нейры при записи: {emo})")
+                else:
+                    lines.append(f"    [{ts}] {fact_line}")
+            return "\n".join(lines)
+        if self._people_db is not None:
+            return self._people_db.get_summary(pid) or ""
+        return ""
+
+    def diary_recent_text(self, limit: int = 10) -> str:
+        """Diary for prompt: SQLite first if rows exist, else legacy JSONL."""
+        lim = max(1, int(limit))
+        if self.sqlite.count_table("diary_notes") > 0:
+            rows = self.list_diary_notes(limit=lim, newest_first=True)
+            rows = list(reversed(rows))
+            lines: list[str] = []
+            for e in rows:
+                ts = e.get("ts") or ""
+                src = e.get("source") or "manual"
+                txt = str(e.get("text") or "").strip()
+                if not txt:
+                    continue
+                emo = str(e.get("emotion") or "").strip()
+                if not emo and isinstance(e.get("meta"), dict):
+                    emo = str(e["meta"].get("emotion") or e["meta"].get("assistant_mood") or "").strip()
+                suf = f" | настр.: {emo}" if emo else ""
+                lines.append(f"[{ts} | {src}{suf}] {txt}")
+            if lines:
+                return "\n".join(lines)
+        if self._diary is not None:
+            return self._diary.recent_text(limit=lim) or ""
+        return ""
+
+    def working_memory_for_prompt(
+        self, internal_user_id: str, *, root: Any = None
+    ) -> str:
+        """WM snippet for prompt: latest SQLite snapshot if any, else legacy markdown file."""
+        from pathlib import Path
+
+        from core import working_memory as wm
+
+        snap = self.sqlite.latest_wm_snapshot(user_id=internal_user_id)
+        if snap and str(snap.get("content") or "").strip():
+            raw = str(snap["content"]).strip()
+            cap = max(400, int(wm.wm_config(self.config).get("max_chars_in_prompt", 3500)))
+            if len(raw) <= cap:
+                return raw
+            tail = raw[-cap:]
+            cut = tail.find("\n")
+            if cut > 0 and cut < 400:
+                tail = tail[cut + 1 :]
+            return "[…фрагмент рабочей памяти (SQLite), хвост…]\n" + tail.strip()
+        if not wm.wm_enabled(self.config):
+            return ""
+        project_root = Path(root) if root is not None else Path(__file__).resolve().parents[2]
+        return wm.read_snippet_for_prompt(self.config, project_root, internal_user_id)
 
     def stats(self) -> dict[str, Any]:
         return {

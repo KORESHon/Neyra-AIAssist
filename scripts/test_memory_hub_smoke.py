@@ -87,6 +87,10 @@ def main() -> int:
         hub.add_journal_entry("итог", title="день", kind="reflection", publish_event=False)
         hub.save_wm_snapshot("# WM\n- task", user_id="u1", publish_event=False)
 
+        snip = hub.working_memory_for_prompt("u1")
+        assert "task" in snip or "WM" in snip, snip
+        assert "заметка дня" in hub.diary_recent_text(limit=5)
+
         st = hub.stats()
         assert st["chat_log"] == 2, st
         assert st["people"] == 1, st
