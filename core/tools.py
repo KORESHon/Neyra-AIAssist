@@ -210,15 +210,22 @@ def recall_chat(
     Хронологический recall из полного chat log (SQLite), без семантического RAG.
     Используй для «что было N сообщений назад», «повтори что я сказал раньше», ленты канала.
     limit — сколько сообщений вернуть (1–100), offset — сколько пропустить от самых новых.
-    user_id / channel_id — опциональные фильтры (оставьте пустыми, если не нужны).
+    Обязателен хотя бы один фильтр: user_id или channel_id (без фильтра запрос отклоняется — защита от утечки чужих диалогов).
     """
     if _memory_hub is None:
         return "Memory Hub не инициализирован."
+    uid = (user_id or "").strip() or None
+    cid = (channel_id or "").strip() or None
+    if not uid and not cid:
+        return (
+            "Нужен фильтр: укажи user_id и/или channel_id. "
+            "Без фильтра chat_log по всем пользователям не отдаётся."
+        )
     lim = max(1, min(int(limit or 10), 100))
     off = max(0, int(offset or 0))
     rows = _memory_hub.list_chat(
-        user_id=(user_id or None) or None,
-        channel_id=(channel_id or None) or None,
+        user_id=uid,
+        channel_id=cid,
         limit=lim,
         offset=off,
         newest_first=True,

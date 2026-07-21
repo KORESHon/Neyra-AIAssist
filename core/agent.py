@@ -357,6 +357,8 @@ class NeyraAgent:
         """Dual-write full turn into SQLite chat_log (Memory Hub). Returns turn_id."""
         turn_id = self.memory_hub.new_turn_id()
         base_meta = dict(meta or {})
+        asst_cfg = self.config.get("assistant") if isinstance(self.config.get("assistant"), dict) else {}
+        assistant_name = str(asst_cfg.get("name") or "").strip() or None
         try:
             self.memory_hub.append_chat_batch(
                 [
@@ -374,7 +376,7 @@ class NeyraAgent:
                         "role": "assistant",
                         "text": assistant_text,
                         "user_id": internal_user_id,
-                        "display_name": display_name,
+                        "display_name": assistant_name,
                         "channel_id": channel_id,
                         "source": source or "agent",
                         "turn_id": turn_id,
