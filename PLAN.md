@@ -17,7 +17,7 @@
 - **Event-first:** межмодульное взаимодействие только через Event Bus контракты.
 - **Plugin-first:** интерфейсная логика живет в `interfaces/`, ядро остаётся универсальным.
 - **Secure-by-boundary:** `core` защищен от прямой саморедактируемости; расширения делаются через sandbox в плагинной зоне.
-- **Local-first runtime:** cloud-провайдеры опциональны; целевой режим — автономная работа на железе пользователя.
+- **Local-first runtime:** облачные API опциональны; целевой режим — **свой сервер** (домашний ПК / NAS / VPS) с локальными или кастомными моделями. Устройства (колонка, телефон) — тонкие клиенты, не полный стек Neyra внутри колонки.
 - **MCP-native future:** внешние возможности подключаются стандартизированными MCP-серверами.
 
 ### Двухполушарная когнитивная схема (OpenRouter)
@@ -39,122 +39,337 @@
 
 ## 3) Текущее состояние (сводно)
 
-### Стабильные подсистемы
-
-- Режимы `console` / `core`, Plugin Loader и Event Bus стабильны.
-- **Internal API** + **дашборд** (React + Vite + Tailwind, `frontend/`) + WebSocket `/v1/ws/` работают.
-- Скрипты запуска (`run_neyra.*`), healthcheck и загрузка Lavalink усилены.
-- Память многослойная (STM/LTM/PeopleDB/Diary/Reflection); lifecycle LTM и control-plane реализованы.
-
-### Завершённые работы (кратко)
-
-**Discord-контур** ✅  
-Единый плагин `interfaces/discord/` (text + music), один Discord-клиент, Lavalink 4.x, YouTube-обход (ANDROID_VR).
-
-**Контекст, память, безопасность** ✅
-
-- Speaker ID Injection (PeopleDB, `_resolve_speaker_label`).
-- Динамическое взвешивание памяти (`_build_system_prompt`, 6 секций).
-- LTM lifecycle (`core/ltm_maintenance.py`, TTL prune, cold archive, API endpoints).
-- **Консолидация LTM во «сне»:** кластеризация старых записей по косинусной близости эмбеддингов (`memory.ltm_cluster_merge`), несколько вызовов `memory_model` на кластер, JSON-манифесты батча в `memory/ltm_consolidation/`, в Chroma удаляются только строки успешно заархивированных кластеров; опционально запуск summarize после ночной рефлексии (`ltm_auto_summarize.run_after_nightly_reflection`). В `core/memory.py`: `encode_texts`, `archive_row_tuples`.
-- **Working memory (1–3 дня):** `core/working_memory.py` + `memory.working_memory`; markdown на пользователя (`storage_dir`) или общий файл; перепись через `**openrouter.memory_model`**; блок в промпте **до RAG** (talk + brain); фоновое обновление после успешного `chat`/`chat_stream` (каждые N ходов и при переполнении контекста); шина `memory.working_memory_updated`.
-- **Эмоциональный слой:** `core/emotional_layer.py` + `memory.emotional_layer`; после хода — запись в дневник (`emotion_turn`, **memory_model**); опционально `**ltm_emotion_sync`** — метаданные `assistant_emotion` в Chroma при сохранении диалога; PeopleDB `dynamic_facts[].emotion`; инструменты `remember_knowledge(..., affect_note)`, `update_person_fact(..., emotion_note)`; `NeyraDiary.recent_text` показывает `настр.` из `meta`.
-- Security (ролевая модель, HMAC webhooks, rate limiting).
-- Proactive Messaging (Discord, только в плагине).
-
-**MCP debug server** ✅  
-`tools/mcp_server/` (stdio MCP: логи, API, fire_event, конфиг, память). Dockerfile + docker-compose.yml в корне.
-
-**MCP-клиент** ✅  
-`core/mcp_client.py` (MCPClientManager, stdio + SSE, динамические LangChain tools, tool-loop на brain-модели).
-
-**Brain→Talk, четыре роли моделей + двухполушарный brain** ✅ (конфиг и код)
-
-- Роли: talk / brain (`model` + `model_deep`) / memory (`owl-alpha`) / vision; вложенный `openrouter`.
-- Левое полушарие: Nemotron — маршрутизация, tools, опционально нативное зрение (`use_brain_model_for_vision`).
-- Правое полушарие: GPT-OSS-120B — `delegate_to_deep_logic`.
-- VL pipeline: при `use_brain_model_for_vision: false` — caption → brain tool-loop → talk; при `true` — картинки в brain, talk по сводке brain.
-- Legacy fallback (старые ключи `openrouter.model`, `use_main_model_for_vision`) с warning в лог.
-
-**Безопасное самопрограммирование плагинов (sandbox, hot-reload, rollback)** ✅
-
-- `core/plugin_loader.py`: файловые бэкапы в `memory/plugin_backups/`, `reload_plugin`, `rollback_plugin`.
-- Инструмент `create_or_edit_plugin` (`core/tools.py` → `core/plugin_builder_tool.py`): path jail только внутри `interfaces/`, blacklist критичных плагинов, генерация кода через внешнюю LLM (OpenRouter), откат при сбое загрузки.
-
-*Примечание:* для resident-плагинов, уже запущенных в своём потоке, полный lifecycle stop/start по-прежнему отдельная задача; re-import покрывает CLI/invoke и будущие вызовы.
+*Раздел намеренно очищен — обновить после cutover Memory Hub v2 / раскладки `core/`.*
 
 ---
 
 ## 4) Очередь этапов
 
-Этап **1** — дальше точечные улучшения; этапы **2–3** зафиксированы в конце очереди.
+Этап **1** — фундамент памяти и реорганизация ядра (база Neyra); этапы **2–4** — дальше по очереди.
 
 **Порядок реализации:**
 
-1. **Этап 1** — Дополнительные точечные улучшения (персона, pre-context, безопасность, архив сессии).
-2. **Этап 2** — Полная локальная автономность (Voice + Runtime).
-3. **Этап 3** — Web UI как WebSocket-мост к Event Bus.
+1. **Этап 1** — Memory Hub v2 (SQLite + семантическая Chroma) и рефакторинг `core/`.
+2. **Этап 2** — Дополнительные точечные улучшения (персона, pre-context, безопасность, архив сессии).
+3. **Этап 3** — Web UI как WebSocket-мост к Event Bus (тонкий клиент; тестируется без колонки).
+4. **Этап 4** — Автономный сервер + тонкие клиенты / колонка (дальнее будущее: self-host моделей + переключаемый voice; физическую колонку пока нечем стабильно гонять).
 
 ---
 
-## Этап 1 — Дополнительные улучшения (пакет мелких задач)
+## Этап 1 — Memory Hub v2 + реорганизация ядра `core/`
+
+**Цель:** пересобрать базу памяти и структуру ядра: один Memory API, SQLite как source of truth для основного контента, Chroma только как семантический индекс «что вспомнить», полный chat log в БД; затем — чистка дублей и раскладка `core/` по папкам. Фундамент должен быть жёстким: без полуlegacy-путей и без «файлов-призраков» рядом с Hub.
+
+**Статус:** не выполнено (очередь №1).
+
+### Фазы внутри этапа (обязательный порядок)
+
+Не смешивать миграцию памяти с большой раскладкой папок.
+
+| Фаза | Фокус | Done when |
+|------|--------|-----------|
+| **1A — Memory Hub** | SQLite + Hub + chat log + перенос слоёв + Chroma semantic + API/tools/events/debug | Агент и `/v1/memory/*` живут только через Hub; legacy primary store выключен |
+| **1B — Core layout** | `plugin_manager`, раскладка `core/` по папкам, чистка дублей, импорты | `compileall` + healthcheck + resident Discord без регрессий |
+
+Правило: **сначала 1A зелёный**, потом 1B. Исключение — крошечные compat-shim импорты, если без них 1A не собрать.
+
+---
+
+### Целевая модель памяти
+
+| Роль | Что хранит | Где |
+|------|------------|-----|
+| **Истина диалога** | полный chat log (кто / что / когда / где / ответ / эмоции / meta) | SQLite |
+| **Истина о людях / журнале / дневнике / WM** | структурированные сущности | SQLite |
+| **Индекс воспоминаний** | knowledge, digests, важные факты, diary/journal summaries — для RAG | Chroma (`type` в metadata) |
+| **Кэш сессии** | STM (короткое окно) | RAM и/или view «последние N» из chat log |
+| **Персона** | характер / system prompt | `config` / файлы промпта — **не** в памяти диалогов |
+
+Правило записи: **не** класть сырой каждый ход целиком в Chroma. Полный ход → SQLite `chat_log`; в Chroma — только то, что имеет смысл вспоминать по смыслу.
+
+**Инжект в промпт (talk/brain):** только через Hub (никаких прямых чтений jsonl / PeopleDB / md). Порядок секций сохранить близко к текущему (активный собеседник → упомянутые → WM → semantic RAG → brain summary → diary → web/tools/vision) или упростить осознанно в том же PR с комментарием в ADR — не «разъехаться молча».
+
+---
+
+### Конфиг (`config.example.yaml` + локальный `config.yaml`)
+
+Зафиксировать ключи (имена уточняемы, смысл — обязателен):
+
+| Ключ (ориентир) | Назначение |
+|-----------------|------------|
+| `memory.sqlite_path` | путь к БД, default `./memory/neyra_memory.db` |
+| `memory.chroma_db_path` | семантический индекс (как сейчас) |
+| `memory.rag_enabled` | вкл/выкл semantic search |
+| `memory.rag_top_k` | top-k Chroma |
+| `memory.rag_write_mode` | `off` \| `digest` \| `important_only` (запрет legacy «каждый dialog raw») |
+| `memory.chat_log_retention_days` | опц. TTL/prune лога (0 = без автоудаления) |
+| `memory.stm_max_messages` | размер STM-окна |
+| `memory.hub_legacy_import` | one-shot import json/jsonl при наличии (после обнуления — `false`) |
+| `memory.working_memory.*` / `emotional_layer.*` / prune-summarize | перевести на Hub, не на файлы |
+
+Документировать в ADR + example; синхронизировать корневой `config.yaml` по правилу репо.
+
+---
+
+### Memory Hub / API памяти
+
+- Единый фасад `MemoryHub` (`core/memory/`): `append_chat`, `list_chat`, `search_semantic`, `get_person` / `update_person_fact`, diary/journal/WM CRUD, prune/summarize hooks, stats.
+- **Concurrency:** один writer-контур на процесс (sync `sqlite3` + lock **или** `aiosqlite`); запрет гонок chat_log / facts. Решение зафиксировать в ADR.
+- Internal API `/v1/memory/*`: search (semantic), chat recall, write/add через Hub, people, stats, policies, prune/summarize — **без** обхода Hub.
+- Агент, reflection, emotional layer, working memory, ltm_maintenance — только Hub.
+- Миграции: таблица `schema_migrations` / версия схемы; init при старте ядра.
+
+### Tools
+
+- Сохранить/адаптировать: `search_memory` → semantic через Hub; `remember_knowledge`; `update_person_fact`; `get_person_info`.
+- **Обязательно:** tool хронологического recall — `recall_chat` (или `search_memory(mode=chronological)`): канал/user, limit/offset или «N сообщений назад». Brain должен уметь вызывать это без RAG.
+- Эвристики агента («вспомни…») сначала бьют в `list_chat` / `recall_chat`, при «про что мы говорили про X» — в semantic.
+
+### Fast-Path (умный дом / короткие команды)
+
+Не блокировать свет/замок полным brain+RAG, если команда однозначна:
+
+- До или параллельно с brain: лёгкий классификатор / regex+intent (или tiny local model) → `home.*` / tool напрямую.
+- Hub: STM / последние N из chat_log для «выключи то же» / «ещё раз»; semantic RAG для Fast-Path **не** обязателен.
+- Полный brain — только если Fast-Path не уверен или нужен диалог.
+- Конфиг-ориентир: `agent.fast_path_enabled`, `agent.fast_path_intents` (или секция `fast_path.*`); детали в ADR.
+- Критерий: типовая команда умного дома без лишнего round-trip в deep/RAG при высокой уверенности.
+
+---
+
+### SQLite
+
+- Один файл: `memory/neyra_memory.db` (+ возможные `-wal` / `-shm` при WAL mode).
+- Таблицы минимум: `chat_log`, `people`, `person_facts`, `diary_notes`, `journal_entries`, working-memory rows/snapshots, `schema_migrations`, опц. `semantic_outbox` (что ещё не ушло в Chroma).
+- **Chat log:** `ts`, `role`, `user_id`, `display_name`, `channel_id`, `source`, `text`, `turn_id`, `latency_ms`, emotions/mood, `meta` JSON (model lanes, tools, sounds).
+- STM = короткое окно; «10 сообщений назад» → SQL `list_chat`, не cosine.
+
+### Backup и git
+
+- `neyra_memory.db`, `*-wal`, `*-shm`, `chroma_db/` — в `.gitignore` (секреты/PII), не в git.
+- `backup_manager` / ручной бэкап: архивировать **SQLite + Chroma** (+ опц. export), не только «папку json».
+- В репо допустимы пустые placeholder’ы каталогов (`memory/` keep), не сама БД.
+
+---
+
+### Chroma (перепрофилирование)
+
+- Только семантический индекс; `metadata.type` ∈ {`knowledge`, `dialog_digest`, `person_fact`, `diary_note`, `journal_summary`, `working_memory`, `emotion_note`, …} + `person_id` / `channel_id` / `ts` / `pinned` / `source_row_id`.
+- Письмо в индекс строго по `rag_write_mode`; raw full-chat dialog embed — **запрещён** после cutover.
+- Prune / cluster merge / summarize — поверх Hub (истина в SQLite, индекс синхронизировать/чистить согласованно).
+- **Векторный бэкенд:** на этапе 1A — Chroma. Интерфейс Hub (`search_semantic`) не должен жёстко зависеть от Chroma API снаружи адаптера — чтобы на этапе 4 можно было опционально заменить/дополнить (**sqlite-vss** / другой local ANN) без переписывания агента. На 1A **не** внедрять sqlite-vss — только шов адаптера.
+
+---
+
+### Event Bus (после Hub)
+
+Не потерять контракты плагинов/webhooks:
+
+| Событие | Политика |
+|---------|----------|
+| `memory.short_term_update` | оставить или alias; payload стабильный |
+| `memory.long_term_write` | = semantic index write / digest; не путать с chat_log |
+| `memory.journal_updated` | после journal в SQLite |
+| `memory.working_memory_updated` | после WM в SQLite |
+| **`memory.chat_log_append`** (новое) | после записи хода в chat_log |
+
+Документировать в ADR; подписчики Discord/notify обновить при смене имён (aliases на переходный релиз допустимы).
+
+---
+
+### Debug / MCP / Dashboard
+
+После Hub обязаны отражать правду:
+
+- `GET /v1/debug/memory` и `/v1/memory/stats` — counts SQLite (chat_log, people, diary, …) + Chroma collection stats + `rag_write_mode`.
+- MCP debug (`inspect_memory` и аналоги) — тот же контракт, не старые json paths.
+- Dashboard memory widgets — не показывать «файловая PeopleDB», если primary уже SQLite.
+
+---
+
+### Cutover: что перестаёт быть primary на диске
+
+После зелёного 1A **не** использовать как source of truth:
+
+| Было | Статус после cutover |
+|------|----------------------|
+| `memory/people_db/*.json` | не primary (удалить или archive-only) |
+| `memory/neyra_diary.jsonl` | не primary |
+| `memory/journal.json`, `reflection_last.json` как истина | не primary (экспорт опционален) |
+| `memory/working_memory*.md` | не primary |
+| Raw dialog rows в Chroma «на каждый ход» | запрещены |
+
+Допустимо: one-shot `hub_legacy_import`, затем флаги off; пустые keep-файлы каталогов для git — ок.
+
+---
+
+### Рефакторинг и чистка `core/` (фаза 1B)
+
+- **Чистка дублей:** мёртвые импорты, дубли хелперов, устаревшие memory fallback после cutover.
+- **Плагины → `plugin_manager`:** свести `plugin_loader` / `plugin_builder_tool` / `plugin_config` / `plugin_sdk` в пакет `core/plugins/` (логическое имя plugin_manager), сохранить path jail / hot-reload / rollback.
+- **Раскладка `core/`:**
+
+  | Пакет | Ответственность |
+  |-------|-----------------|
+  | `core/memory/` | Hub, SQLite, Chroma adapter, STM |
+  | `core/llm/` | profiles, retry, openrouter helpers |
+  | `core/agent/` или тонкий `agent.py` + подмодули | оркестрация чата |
+  | `core/plugins/` | loader, config, sdk, builder |
+  | `core/runtime/` | server, health, win_runtime, secrets |
+  | `core/voice/` / stt-tts | голос |
+
+- Обновить импорты: `main.py`, Internal API, Discord, scripts, MCP server.
+- Документация: ADR «Memory Hub v2» (истина / кэш / индекс / events / cutover) + `config.example.yaml`.
+
+---
+
+### Критерии приёмки
+
+**Фаза 1A**
+
+- [ ] SQLite init/migrate; chat_log на каждый ход параллельно STM.
+- [ ] Tool/API `recall_chat` / chronological list — «N сообщений назад» без RAG.
+- [ ] People / diary / journal / WM только через Hub → SQLite.
+- [ ] Chroma только semantic `type`; raw full-chat embed отсутствует.
+- [ ] `rag_write_mode` и пути из конфига работают; example + local config синхронизированы.
+- [ ] Event Bus: chat_log_append (+ сохранённые/alias memory.*); нет молчаливого обрыва подписок.
+- [ ] `/v1/memory/*`, `/v1/debug/memory`, MCP inspect, dashboard stats — SQLite+Chroma.
+- [ ] Legacy json/jsonl/md **не** primary; cutover выполнен или задокументирован + import off.
+- [ ] Backup-путь учитывает `.db` (+ wal) и Chroma.
+- [ ] Промпт talk/brain читает память только через Hub.
+- [ ] Smoke: chat → chat_log → list_chat → semantic search; healthcheck core.
+- [ ] Fast-Path: типовая команда умного дома без полного brain+RAG при высокой уверенности (или ADR «отложено в этап 2» с явным решением).
+
+**Фаза 1B**
+
+- [ ] `plugin_manager` / `core/plugins/` без регрессии sandbox/reload/rollback.
+- [ ] `core/` разложен по папкам; импорты зелёные.
+- [ ] `python -m compileall -q core interfaces scripts main.py` + healthcheck; Discord resident ок.
+
+---
+
+## Этап 2 — Дополнительные улучшения (пакет мелких задач)
+
+*Бывший этап 1 — сдвинут после Memory Hub.*
 
 Сделать по мере необходимости; можно распараллелить:
 
-- **Pre-context «мысли»:** короткий релевантный блок из дневника перед основным ответом (формализовать поверх текущего RAG + PeopleDB).
-- **Персона в двух артефактах:** разделить «базу личности» и «внешность / визуал» (актуально при генерации изображений или отдельном визуальном контуре); редактируемые файлы рядом с `assistant.system_prompt`.
-- **Контролируемое архивирование сессии:** при переполнении контекста — явная политика дампа в Diary/LTM и «чистый» старт диалога (не обязательно фиксированный порог токенов).
+- **Pre-context «мысли»:** короткий релевантный блок из дневника/Hub перед основным ответом (поверх semantic RAG + people).
+- **Персона в двух артефактах:** разделить «базу личности» и «внешность / визуал»; редактируемые файлы рядом с `assistant.system_prompt`.
+- **Контролируемое архивирование сессии:** при переполнении контекста — явная политика дампа в Hub (diary/LTM digest) и «чистый» старт диалога.
 - **Сверка практик безопасности:** не светить секреты, риски смешения данных между людьми — перекрёстно с `security-model.md` и документацией деплоя.
 
-**Чек-лист (двухполушарный режим и память):**
+**Чек-лист (двухполушарный режим — регрессия после этапа 1):**
 
-- [ ] `use_brain_model_for_vision: true` — вложение уходит в Nemotron (brain), ответ talk опирается на сводку brain без отдельного VL-caption.
+- [ ] `use_brain_model_for_vision: true` — вложение уходит в Nemotron (brain), talk опирается на сводку brain без отдельного VL-caption.
 - [ ] `use_brain_model_for_vision: false` — caption через `vision_model`, затем brain/talk как раньше.
-- [ ] Запрос на тестовый код / плагин — brain вызывает `delegate_to_deep_logic`, ответ возвращается в tool-loop.
-- [ ] Искусственный или реальный 429 на `memory_model` — в логе `[WARNING] memory_model rate-limited. Retrying…`, ядро не падает после исчерпания попыток только на этом вызове.
-
----
-
-## Этап 2 — Полная локальная автономность (Voice + Runtime)
-
-**Цель:** устойчивая работа системы на железе пользователя без обязательного интернета.
-
-### Локальный Voice Stack (не выполнено)
-
-- **Локальный STT:** Whisper / faster-whisper в `local_voice`.
-- **Локальный TTS (GPU):** CosyVoice 3.0 (Zero-shot Voice Cloning, эмоции).
-- **Локальный TTS (CPU):** Silero TTS или Piper TTS.
-- Облачные STT/TTS (Deepgram/Yandex) как fallback.
-
-### Автономный стек (не выполнено)
-
-- Local LLM + Local STT + Local TTS + локальная память.
-- При необходимости — отдельный плагин или контур `vision_model` под безопасный локальный screen/vision pipeline (без вендорного дерева в репозитории).
-
-**Критерии приёмки:**
-
-- Основные сценарии агента доступны в оффлайн-режиме.
-- Voice pipeline переключается между ресурсоёмкими и легковесными движками.
-
-### Docker (базовый контур выполнен)
-
-- Dockerfile + docker-compose.yml (порты `8787`, тома для `config.yaml`, `interfaces/`, `memory/`, `logs/`).
-- Решение приоритета: Windows one-click `run_neyra.bat` vs Linux CI/Docker.
+- [ ] Запрос на тестовый код / плагин — brain вызывает `delegate_to_deep_logic`.
+- [ ] 429 на `memory_model` — backoff в логе, ядро не падает на одном вызове.
 
 ---
 
 ## Этап 3 — Web UI как WebSocket-мост к Event Bus
 
-**Цель:** браузер как полноценный real-time клиент шины событий (после стабилизации плагинов и очереди выше).
+*Раньше шёл после автономии; поднят выше по очереди.*
+
+**Зачем раньше автономии:** Web UI можно тестировать сразу на текущем сервере (Discord/API уже есть). Колонки как железа пока нет; полный self-host voice+LLM — тяжёлый и поздний контур с большим числом интеграционных ошибок.
+
+**Цель:** браузер как полноценный real-time клиент шины событий — тот же класс **тонких клиентов**, что позже будет у колонки (этап 4). Transport заложить сейчас, чтобы колонка потом подключилась к готовому мосту.
 
 - Двусторонний WS-мост `Web UI <-> Event Bus`.
 - Браузер публикует события (чат, музыка, плагины) и подписывается на stream-ответы и статусы.
 - Управление плагинами и чатом в одном transport-контуре.
+- Задел под колонка/edge: тот же WSS-контракт (аудио-чанки / текст / события) — без обязательной реализации edge в этом этапе.
 
 **Критерии приёмки:**
 
-- CLI не обязателен для повседневной эксплуатации.
-- Реакция UI на операции и события в real-time.
+- [ ] CLI не обязателен для повседневной эксплуатации.
+- [ ] Реакция UI на операции и события в real-time.
+- [ ] Контракт WS задокументирован так, что этап 4 может переиспользовать его для micro-client колонки.
+
+---
+
+## Этап 4 — Автономный сервер + тонкие клиенты (Voice / Runtime / колонка)
+
+*Дальнее будущее; бывший «этап 3 автономии». Сдвинут после Web UI.*
+
+**Статус ориентира:** нескорое будущее. Нет стабильного железа колонки для приёмки; много путей (local vs cloud STT/TTS/LLM) → много ошибок без стенда. Делать после зелёного WS-моста (этап 3) и Hub/ядра.
+
+**Цель автономии (два равноправных режима):**
+
+1. **Self-host:** всё нужное (LLM, STT, TTS, память, tools) крутится на **той же машине / своём сервере** — без обязательных внешних API.
+2. **Фундамент Neyra:** если сервер слабый или так удобнее — подключить уже заложенные / популярные сервисы (OpenRouter и др. LLM, Deepgram/Yandex/… для voice, OpenRouter audio/STT-модели вроде **NVIDIA Nemotron** и аналоги).
+
+Автономность ≠ «весь проект внутри колонки». Neyra = **один сервер** (дом / VPS); колонка / телефон / Web UI = micro-client с связью к серверу.
+
+### Модель развёртывания
+
+| Узел | Роль | Вычисления |
+|------|------|------------|
+| **Neyra Server** | ядро, Hub/память, LLM, STT/TTS (local **или** cloud), tools, Event Bus | тяжёлые |
+| **Умная колонка / edge-клиент** | mic/speaker, wake-word; **Fast-Path** света/сцен локально | лёгкие |
+| **Телефон / Web UI** | тонкий клиент по WSS (контракт этапа 3) | лёгкие |
+
+**На колонке (edge):** свет/сцены локально; сложный диалог → WSS на сервер. Полный `core/` / Chroma / local LLM в колонку **не** ставятся.
+
+**На сервере:** агент, Hub, профили моделей, voice backend по конфигу.
+
+Связь с этапом 3: колонка — ещё один клиент того же WSS/Event Bus, не отдельный протокол.
+
+---
+
+### LLM: self-host или фундамент (не выполнено)
+
+- Свои OpenAI-compatible эндпоинты (LM Studio, Ollama, vLLM, llama.cpp, GPU-бокс) через профили `base_url` + model id.
+- Brain / talk / deep / memory / vision — независимо: cloud (OpenRouter и т.п.) **или** local/custom.
+- Режим «только свой сервер моделей» без обязательного OpenRouter.
+- Либо наоборот: слабый сервер → всё через фундамент Neyra (уже заложенные провайдеры).
+
+### Voice: переключаемые STT / TTS (обязательно)
+
+Один конфиг-переключатель провайдера на роль (`stt.provider` / `tts.provider` или секция `voice.*`) — **не** «только local» и не «только Deepgram».
+
+| Режим | STT (распознавание) | TTS (озвучка) |
+|-------|---------------------|---------------|
+| **Local** | Whisper / faster-whisper (`local_voice`) на сервере | CosyVoice (GPU) / Silero / Piper (CPU) |
+| **Cloud / сервис** | Deepgram, Yandex SpeechKit и др. популярные API | те же экосистемы / аналоги TTS API |
+| **Фундамент LLM/audio** | модели через OpenRouter (напр. **NVIDIA Nemotron** и др. audio/ASR-capable), если подходит пайплайн | по мере появления в фундаменте — заложить слот провайдера |
+
+Принципы:
+
+- Слабый сервер → cloud STT/TTS или OpenRouter-ASR; мощный → local на той же машине.
+- Фундамент: адаптеры под **популярные** сервисы озвучки и приёма звука + единый интерфейс `transcribe()` / `synthesize()`; конкретный список провайдеров расширяется без ломки агента.
+- Колонка шлёт аудио на сервер; сервер выбирает backend по конфигу. Опц. крошечный edge-TTS только для Fast-Path «ок / включаю».
+- Cloud и local — **равноправные** режимы, не «local основной + cloud костыль».
+
+### Память и vision на сервере
+
+- Hub / SQLite + Chroma — только на сервере.
+- Vision — `vision_model` / плагин на сервере (local или cloud).
+- **Опционально:** sqlite-vss через адаптер `search_semantic` (оценка wheels/миграции).
+
+### Edge Fast-Path ↔ серверный Fast-Path
+
+- Edge: свет/сцены без WSS при уверенности.
+- Иначе → WSS → сервер (brain или серверный Fast-Path из этапа 1).
+- Логировать bypass.
+
+**Критерии приёмки:**
+
+- [ ] Переключение STT: local ↔ cloud-сервис (хотя бы один, напр. Deepgram) без правки кода агента — только конфиг.
+- [ ] Переключение TTS: local ↔ cloud-сервис — только конфиг.
+- [ ] Слот/путь STT через OpenRouter (Nemotron или актуальный audio/ASR id) задокументирован или работает как один из providers.
+- [ ] Хотя бы один профиль LLM на local/custom endpoint **или** полный прогон на фундаменте OpenRouter — оба режима описаны в example config.
+- [ ] Self-host сценарий: ключевые роли (LLM + STT + TTS) могут работать без внешних API на одной машине (при наличии железа).
+- [ ] Слабый сервер: те же роли через cloud/фундамент.
+- [ ] Типовая «включи свет» на edge без LLM; сложный запрос — WSS → ответ (когда появится клиент/колонка).
+- [ ] В колонку не требуется полный репозиторий Neyra.
+- [ ] Приёмка колонки — когда есть устройство/стенд; до этого — контракт + серверные voice/LLM переключатели.
+
+### Docker / one-click сервер (базовый контур выполнен частично)
+
+- docker-compose / `run_neyra.bat` — подъём **сервера**.
+- Документировать: дом vs облако + URL для thin-client; какие `voice.*` / `llm.*` ключи для local vs cloud.
 
 ---
 
@@ -162,12 +377,13 @@
 
 - **ADR-документы:**
   - Единый `discord` плагин.
-  - Memory lifecycle policy.
+  - **Memory Hub v2** (SQLite truth + Chroma semantic index + chat log) — приоритет этапа 1.
+  - Memory lifecycle policy (поверх Hub).
   - MCP integration model.
   - Sandbox/hot-reload/rollback policy.
 - **Тестовые сценарии:**
   - e2e Discord text+music.
-  - Memory prune/summarize flows (включая dry-run и ветку `cluster_merge` у summarize); working memory (вкл. в конфиге, пару ходов чата, проверка файла и промпта); emotional_layer (дневник `emotion_turn`, опционально `ltm_emotion_sync`).
+  - Memory Hub: chat_log write → list_chat; semantic search по `type`; people/diary/journal в SQLite; prune/summarize без сырого full-chat в Chroma.
   - WS bridge pub/sub.
   - MCP debug and client connectivity.
 
@@ -180,8 +396,12 @@
 - Core healthcheck: `python scripts/healthcheck.py --mode core --skip-http`
 - Lavalink JAR: `python scripts/fetch_lavalink.py`
 - Event-driven smoke: chat → MUSIC_PLAY → queue → skip/pause/resume → stop/clear
-- Memory lifecycle smoke: write → search → prune → summarize → archive integrity; emotional_layer (вкл., дневник + PeopleDB tool с emotion_note); memory_model backoff (429 в логе, повтор)
-- Two-hemisphere smoke: brain native vision / VL fallback; `delegate_to_deep_logic` на задаче с кодом
+- Memory Hub smoke (1A): SQLite migrate → chat_log → recall_chat/list_chat → semantic by `type` → `/v1/memory/*` + `/v1/debug/memory` + MCP inspect
+- Event Bus smoke: chat_log_append + journal/WM events after Hub writes
+- Memory lifecycle smoke: prune/summarize поверх Hub; no raw full-chat Chroma embeds; memory_model backoff
+- Cutover check: json/jsonl/md не primary; backup включает `.db` (+ wal) и Chroma
+- Two-hemisphere smoke: brain native vision / VL fallback; `delegate_to_deep_logic`
+- Core layout smoke (1B): импорты после раскладки `core/` + `plugin_manager`; Discord resident
 - MCP smoke: debug-server tools + runtime MCP client calls
 
 ---
@@ -190,6 +410,10 @@
 
 - Риск: деградация качества при автоматическом prune/summarize.
   - Контроль: quality gates и выборочные проверки retrieval.
+- Риск: миграция Memory Hub ломает старые пути (jsonl / raw Chroma dialogs) или Event Bus подписки.
+  - Контроль: фазы 1A→1B; aliases событий; cutover-чеклист; smoke list_chat + semantic + debug/MCP.
+- Риск: Fast-Path ложно срабатывает на неоднозначной фразе (умный дом).
+  - Контроль: порог уверенности + fallback в brain; логирование bypass; allowlist интентов.
 - Риск: расширение атакующей поверхности через MCP.
   - Контроль: allowlist серверов, sandbox-права, аудит действий.
 - Риск: hot-reload может оставлять «грязное» состояние подписок.
@@ -275,8 +499,8 @@
 
 ## 8) Backlog (дальний горизонт)
 
-- **Интеграция с Obsidian** — экспорт LTM/Diary/PeopleDB в vault как `.md` (через MCP или Python CLI).
-- **Полировка и чистка мусора по всему проекту** — пройтись по репозиторию повторно: убрать временные файлы/артефакты тестов, выровнять стили, привести конфиги/доки в порядок, зачистить устаревшие ветки fallback и лишние логи.
+- **Интеграция с Obsidian** — экспорт из Memory Hub (SQLite/Chroma digests) в vault как `.md` (через MCP или Python CLI).
+- **Полировка и чистка мусора по всему проекту** — после этапа 1 (ядро/память): пройтись повторно по репо, докам, fallback и логам.
 - **Клиенты (desktop / mobile-lite)** — полное ТЗ по созданию приложений и целевому виду в продакшене: [Google Docs](https://docs.google.com/document/d/10wjeJefCRuF1ujJ0bWCwKw2tB9BwjV2ejqqd1f-vMhg/edit?tab=t.0).
 - Standalone `.exe` сборка / `server-core + lightweight clients`.
 - **Настройка LLM из Web UI** (выбор модели, правка system prompt) — после hot-reload.

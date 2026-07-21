@@ -1,4 +1,4 @@
-﻿# Neyra Windows launcher (UTF-8). Called from run_neyra.bat — avoids cmd.exe encoding/parenthesis bugs.
+# Neyra Windows launcher (UTF-8). Called from run_neyra.bat — avoids cmd.exe encoding/parenthesis bugs.
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
