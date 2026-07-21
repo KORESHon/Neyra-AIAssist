@@ -6,14 +6,40 @@ export type ApiEnvelope<T> = {
 
 export type HealthData = Record<string, unknown>
 
+export type MemoryHubStats = {
+  sqlite_path?: string
+  schema_version?: number
+  rag_write_mode?: string
+  allows_raw_dialog_embed?: boolean
+  hub_legacy_fallback?: boolean
+  hub_dual_write_legacy?: boolean
+  chat_log?: number
+  people?: number
+  person_facts?: number
+  diary_notes?: number
+  journal_entries?: number
+  working_memory_snapshots?: number
+  semantic_outbox?: number
+  chroma_records?: number
+  rag_enabled?: boolean
+}
+
 export type MemoryStats = {
   short_memory_size: number
   long_memory_records: number
   people_records: number
+  hub?: MemoryHubStats
 }
 
 export type MemoryPolicies = {
   rag_enabled: boolean
+  rag_write_mode?: string
+  sqlite_path?: string
+  stm_max_messages?: number
+  chat_log_retention_days?: number
+  hub_legacy_import?: boolean
+  hub_legacy_fallback?: boolean
+  hub_dual_write_legacy?: boolean
   max_records_target?: number
   ltm_archive_dir?: string
   ltm_summarize_max_tokens?: number
@@ -21,6 +47,9 @@ export type MemoryPolicies = {
   chroma_db_path?: string
   ltm_auto_prune?: Record<string, unknown>
   ltm_auto_summarize?: Record<string, unknown>
+  ltm_cluster_merge?: Record<string, unknown>
+  working_memory?: Record<string, unknown>
+  emotional_layer?: Record<string, unknown>
 }
 
 export type PluginRow = {

@@ -64,7 +64,11 @@
 
 ### Прогресс фазы 1A (факт по ветке, не по main)
 
-Легенда чек-листа ниже: `[x]` = сделано **на ветке PR #1**; `[ ]` = не сделано / cutover не закрыт. Частичное — `[~]` с пояснением.
+Легенда: `[x]` = на ветке PR #1; `[~]` = частично; `[ ]` = не сделано.
+
+**Уже на ветке (кратко):** пакет `core/memory/` (SQLite Hub, chat_log, semantic adapter), dual-write слоёв, `recall_chat` + API с фильтрами, `rag_write_mode`, prompt inject через Hub, backup `.db`, `hub_legacy_import` + флаги fallback/dual-write, ADR-0001, smoke `scripts/test_memory_hub_smoke.py`.
+
+**Процесс ревью:** GitHub Copilot quota исчерпан → Cursor Automation **Auto Review Neyra** (comment-only на push в PR, без правок кода). Перед коммитом в чате — смотреть комменты бота при наличии.
 
 ---
 
@@ -251,7 +255,7 @@
 - [x] Chroma: raw full-chat embed выключен по умолчанию (`rag_write_mode` ≠ `legacy_dialog`); knowledge через Hub.
 - [x] `rag_write_mode` и пути из конфига (`sqlite_path`, `stm_max_messages`, …); example + local синхронизированы.
 - [x] Event Bus: `memory.chat_log_append`; прежние `memory.*` сохранены (journal/WM/STM/LTM).
-- [~] `/v1/memory/*`, `/v1/debug/memory` — Hub stats / recall / search. *(MCP inspect + dashboard widgets под Hub — ещё нет)*
+- [x] `/v1/memory/*`, `/v1/debug/memory` — Hub stats / recall / search / import-legacy; MCP `neyra_inspect_memory` + `neyra_memory_stats` / policies; dashboard Memory показывает Hub SQLite counts.
 - [~] Cutover: `hub_legacy_import` + флаги fallback/dual-write есть; **legacy ещё не удалён** (удаление — обязательный финал 1A).
 - [x] Backup учитывает `.db` (+ wal/shm) и Chroma (`backup_manifest.json`).
 - [x] Промпт talk/brain читает people / diary / WM через Hub (fallback legacy внутри Hub на время cutover).
