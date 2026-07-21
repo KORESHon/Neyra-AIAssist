@@ -22,7 +22,10 @@ One writer contour per process: sync `sqlite3` with a process-wide `threading.RL
 ## RAG write policy
 
 Config `memory.rag_write_mode`: `off` | `digest` | `important_only`.  
-Raw full-chat embed on every turn is **forbidden** after cutover. Until layers fully migrate, dual-write may still call legacy LTM `save` behind a compatibility flag; Hub remains source of truth for chronology via `chat_log`.
+Raw full-chat embed on every turn is **forbidden** (Hub `save_dialog_semantic` no-ops).  
+Escape hatch for migration only: `legacy_dialog`.  
+Knowledge / important fragments still go through `remember_knowledge` (unless `off`).  
+During cutover, people/diary/journal/WM **dual-write** SQLite + legacy files; SQLite is the growing source of truth.
 
 ## Events
 

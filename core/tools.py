@@ -253,14 +253,16 @@ def remember_knowledge(text: str, category: str = "general", affect_note: str = 
     category — необязательная метка: general, news, situation, meme, fact, шутки и т.п.
     affect_note — необязательно: короткая пометка «как Нейра это переживает» (тон), для богаче RAG; можно оставить пустым.
     """
-    if _long_memory is None:
-        return "Долгосрочная память не инициализирована."
-
     meta = {"source": "agent_tool", "category": (category or "general").strip()[:120]}
     aff = (affect_note or "").strip()
     if aff:
         meta["affect"] = aff[:500]
-    ok, info = _long_memory.add_knowledge(text.strip(), meta)
+    if _memory_hub is not None:
+        ok, info = _memory_hub.remember_knowledge(text.strip(), meta)
+    elif _long_memory is not None:
+        ok, info = _long_memory.add_knowledge(text.strip(), meta)
+    else:
+        return "Долгосрочная память не инициализирована."
     if ok:
         return f"Запомнила в долгую память (документ {info})."
     return f"Не удалось сохранить: {info}"

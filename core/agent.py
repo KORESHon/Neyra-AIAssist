@@ -327,6 +327,8 @@ class NeyraAgent:
             long_memory=self.long_memory,
             event_bus=self.event_bus,
         )
+        self.people_db.memory_hub = self.memory_hub
+        self.diary.memory_hub = self.memory_hub
 
         # Не блокируем старт бота тяжёлой загрузкой embedder'а:
         # RAG поднимется в фоне, а при первом запросе есть ленивый fallback.
@@ -1232,7 +1234,11 @@ class NeyraAgent:
             )
             if tag:
                 md["assistant_emotion"] = tag
-        self.long_memory.save(user_message, clean_text, md)
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None:
+            hub.save_dialog_semantic(user_message, clean_text, md)
+        else:
+            self.long_memory.save(user_message, clean_text, md)
 
     def _schedule_emotion_diary(
         self,

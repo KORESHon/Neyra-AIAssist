@@ -59,6 +59,24 @@ class ReflectionEngine:
         )
         agent = getattr(self, "agent", None)
         bus = getattr(agent, "event_bus", None) if agent is not None else None
+        hub = getattr(agent, "memory_hub", None) if agent is not None else None
+        if hub is not None and self._journal:
+            try:
+                last = self._journal[-1] if isinstance(self._journal[-1], dict) else {"text": str(self._journal[-1])}
+                text = str(last.get("summary") or last.get("text") or last.get("content") or "")
+                if not text and last:
+                    text = json.dumps(last, ensure_ascii=False)[:8000]
+                if text:
+                    hub.add_journal_entry(
+                        text,
+                        title=str(last.get("title") or last.get("date") or "")[:200] or None,
+                        kind=str(last.get("kind") or "reflection"),
+                        meta=last if isinstance(last, dict) else None,
+                        ts=str(last.get("timestamp") or last.get("date") or "") or None,
+                        publish_event=bus is None,  # avoid double event if we publish below
+                    )
+            except Exception as e:
+                logger.warning("Reflection→Hub journal dual-write failed: %s", e)
         if bus is not None:
             from core.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
 

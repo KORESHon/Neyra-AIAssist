@@ -178,6 +178,17 @@ async def refresh_working_memory_async(
         with _LOCK:
             path.write_text(text.strip() + "\n", encoding="utf-8")
         logger.info("working_memory обновлён | path=%s | reason=%s | chars=%s", path, reason, len(text))
+        hub = getattr(agent, "memory_hub", None)
+        if hub is not None:
+            try:
+                hub.save_wm_snapshot(
+                    text.strip(),
+                    user_id=internal_user_id,
+                    meta={"path": str(path), "reason": reason},
+                    publish_event=False,
+                )
+            except Exception as e:
+                logger.warning("working_memory→Hub dual-write failed: %s", e)
         bus = getattr(agent, "event_bus", None)
         if bus is not None:
             try:

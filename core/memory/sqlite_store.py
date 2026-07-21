@@ -158,6 +158,183 @@ class SqliteStore:
             )
             return int(cur.fetchone()[0])
 
+    def _dumps(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False)
+
+    def upsert_person(
+        self,
+        *,
+        person_id: str,
+        display_name: Optional[str] = None,
+        aliases: Any = None,
+        meta: Any = None,
+    ) -> None:
+        now = _utc_now_iso()
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT person_id FROM people WHERE person_id = ?", (person_id,)
+            )
+            exists = cur.fetchone() is not None
+            if exists:
+                self._conn.execute(
+                    """
+                    UPDATE people
+                    SET display_name = COALESCE(?, display_name),
+                        aliases = COALESCE(?, aliases),
+                        updated_at = ?,
+                        meta = COALESCE(?, meta)
+                    WHERE person_id = ?
+                    """,
+                    (
+                        display_name,
+                        self._dumps(aliases),
+                        now,
+                        self._dumps(meta),
+                        person_id,
+                    ),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    INSERT INTO people(person_id, display_name, aliases, created_at, updated_at, meta)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        person_id,
+                        display_name,
+                        self._dumps(aliases),
+                        now,
+                        now,
+                        self._dumps(meta),
+                    ),
+                )
+
+    def add_person_fact(
+        self,
+        *,
+        person_id: str,
+        fact: str,
+        emotion_note: Optional[str] = None,
+        source: Optional[str] = None,
+        meta: Any = None,
+        created_at: Optional[str] = None,
+    ) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO person_facts(person_id, fact, emotion_note, created_at, source, meta)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    person_id,
+                    fact,
+                    emotion_note,
+                    created_at or _utc_now_iso(),
+                    source,
+                    self._dumps(meta),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def get_person(self, person_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM people WHERE person_id = ?", (person_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            d = self._row_to_dict(row)
+            if isinstance(d.get("aliases"), str) and d["aliases"].strip().startswith("["):
+                try:
+                    d["aliases"] = json.loads(d["aliases"])
+                except Exception:
+                    pass
+            return d
+
+    def list_person_facts(self, person_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM person_facts
+                WHERE person_id = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (person_id, limit),
+            )
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def add_diary_note(
+        self,
+        *,
+        text: str,
+        source: Optional[str] = None,
+        emotion: Optional[str] = None,
+        meta: Any = None,
+        ts: Optional[str] = None,
+    ) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO diary_notes(ts, text, source, emotion, meta)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (ts or _utc_now_iso(), text, source, emotion, self._dumps(meta)),
+            )
+            return int(cur.lastrowid)
+
+    def list_diary_notes(self, *, limit: int = 20, newest_first: bool = True) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        order = "DESC" if newest_first else "ASC"
+        with self._lock:
+            cur = self._conn.execute(
+                f"SELECT * FROM diary_notes ORDER BY ts {order}, id {order} LIMIT ?",
+                (limit,),
+            )
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def add_journal_entry(
+        self,
+        *,
+        text: str,
+        title: Optional[str] = None,
+        kind: Optional[str] = None,
+        meta: Any = None,
+        ts: Optional[str] = None,
+    ) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO journal_entries(ts, title, text, kind, meta)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (ts or _utc_now_iso(), title, text, kind, self._dumps(meta)),
+            )
+            return int(cur.lastrowid)
+
+    def save_wm_snapshot(
+        self,
+        *,
+        user_id: Optional[str],
+        content: str,
+        meta: Any = None,
+        ts: Optional[str] = None,
+    ) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO working_memory_snapshots(user_id, ts, content, meta)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, ts or _utc_now_iso(), content, self._dumps(meta)),
+            )
+            return int(cur.lastrowid)
+
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)

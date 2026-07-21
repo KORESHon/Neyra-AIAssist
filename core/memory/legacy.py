@@ -501,6 +501,7 @@ class PeopleDB:
         self.db_dir = base / "people_db"
         self.db_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, dict] = {}
+        self.memory_hub = None  # set by agent after MemoryHub init (dual-write)
         self._load_all()
 
     def _load_all(self) -> None:
@@ -566,6 +567,21 @@ class PeopleDB:
         self._cache[person_id]["last_seen"] = datetime.now().isoformat()
         self._save(person_id)
         logger.info(f"PeopleDB: факт добавлен [{person_id}]: {fact}")
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None:
+            try:
+                person = self._cache[person_id]
+                hub.add_person_fact(
+                    person_id,
+                    fact,
+                    emotion_note=em or None,
+                    source="people_db",
+                    person_meta=person,
+                    aliases=list(person.get("names") or []),
+                    display_name=(person.get("names") or [person_id])[0],
+                )
+            except Exception as e:
+                logger.warning("PeopleDB→Hub dual-write failed: %s", e)
         return True
 
     def link_discord_id(self, person_id: str, discord_id: str) -> bool:
@@ -594,6 +610,17 @@ class PeopleDB:
         self._cache[person_id] = person
         self._save(person_id)
         logger.info(f"PeopleDB: создано новое досье [{person_id}]")
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None:
+            try:
+                hub.upsert_person(
+                    person_id,
+                    display_name=(names or [person_id])[0],
+                    aliases=list(names or []),
+                    meta=person,
+                )
+            except Exception as e:
+                logger.warning("PeopleDB→Hub upsert failed: %s", e)
         return person
 
     def get_summary(self, person_id: str) -> str:
@@ -652,6 +679,7 @@ class NeyraDiary:
         self.path = Path(mem_cfg.get("diary_path", "./memory/neyra_diary.jsonl"))
         self.max_entries = int(mem_cfg.get("diary_max_entries", 5000))
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.memory_hub = None  # set by agent after MemoryHub init (dual-write)
 
     def add_entry(self, text: str, source: str = "manual", meta: Optional[dict] = None) -> bool:
         text = (text or "").strip()
@@ -667,6 +695,21 @@ class NeyraDiary:
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             self._trim_if_needed()
+            hub = getattr(self, "memory_hub", None)
+            if hub is not None:
+                try:
+                    emo = None
+                    if isinstance(meta, dict):
+                        emo = meta.get("emotion") or meta.get("assistant_emotion")
+                    hub.add_diary_note(
+                        text,
+                        source=source,
+                        emotion=str(emo)[:500] if emo else None,
+                        meta=meta,
+                        ts=entry["timestamp"],
+                    )
+                except Exception as e:
+                    logger.warning("NeyraDiary→Hub dual-write failed: %s", e)
             return True
         except Exception as e:
             logger.error(f"NeyraDiary: ошибка записи: {e}")

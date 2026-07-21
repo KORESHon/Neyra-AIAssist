@@ -706,9 +706,24 @@ def build_app(
             "user_id": uid,
             "source": "internal_api",
         }
-        agent.long_memory.save(body.user_text, body.assistant_text, meta)
-        _audit("memory_write", trace_id, api_role, {"user_id": uid})
-        return {"ok": True, "trace_id": trace_id, "data": {"written": True, "user_id": uid}}
+        hub = getattr(agent, "memory_hub", None)
+        wrote = False
+        if hub is not None:
+            wrote = bool(hub.save_dialog_semantic(body.user_text, body.assistant_text, meta))
+        else:
+            agent.long_memory.save(body.user_text, body.assistant_text, meta)
+            wrote = True
+        _audit("memory_write", trace_id, api_role, {"user_id": uid, "chroma_dialog": wrote})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "written": True,
+                "user_id": uid,
+                "chroma_dialog_embed": wrote,
+                "rag_write_mode": getattr(hub, "rag_write_mode", None),
+            },
+        }
 
     @app.post("/v1/memory/add")
     async def v1_memory_add(body: MemoryAddRequest, request: Request, api_role: str = Depends(dep_admin)):
@@ -717,6 +732,9 @@ def build_app(
         trace_id = _trace_id(request)
 
         def _run() -> tuple[bool, str]:
+            hub = getattr(agent, "memory_hub", None)
+            if hub is not None:
+                return hub.remember_knowledge(body.text, body.metadata)
             return agent.long_memory.add_knowledge(body.text, body.metadata)
 
         ok, info = await asyncio.to_thread(_run)

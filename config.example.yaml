@@ -217,8 +217,8 @@ memory:
   # RU: SQLite Memory Hub (истина chat_log / структурированной памяти). См. docs/adr/0001-memory-hub-v2.md
   sqlite_path: "./memory/neyra_memory.db"
 
-  # EN: Semantic RAG write policy: off | digest | important_only (no raw full-chat embed after Hub cutover).
-  # RU: Политика записи в семантический индекс: off | digest | important_only (без сырого full-chat embed после cutover).
+  # EN: Semantic RAG write policy: off | digest | important_only (no raw full-chat embed). Escape: legacy_dialog.
+  # RU: Политика записи в семантический индекс: off | digest | important_only (без сырого full-chat). Аварийно: legacy_dialog.
   rag_write_mode: "important_only"
 
   # EN: Optional TTL for SQLite chat_log prune (0 = keep forever).

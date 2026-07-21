@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke: MemoryHub SQLite chat_log append + list (no Chroma / LLM)."""
+"""Smoke: MemoryHub SQLite chat_log + people/diary + rag_write_mode gate."""
 
 from __future__ import annotations
 
@@ -15,6 +15,27 @@ from core.event_bus import MEMORY_CHAT_LOG_APPEND, EventBus
 from core.memory import MemoryHub
 
 
+class _FakeLTM:
+    rag_enabled = True
+
+    def __init__(self) -> None:
+        self.saves = 0
+        self.knowledge = 0
+
+    def save(self, *a, **k) -> None:
+        self.saves += 1
+
+    def add_knowledge(self, text, metadata=None):
+        self.knowledge += 1
+        return True, "k1"
+
+    def search(self, query, n_results=None):
+        return []
+
+    def count(self) -> int:
+        return self.knowledge
+
+
 def main() -> int:
     events: list[str] = []
     bus = EventBus()
@@ -22,8 +43,10 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         db = Path(tmp) / "neyra_memory.db"
+        fake = _FakeLTM()
         hub = MemoryHub(
-            {"memory": {"sqlite_path": str(db), "rag_write_mode": "off"}},
+            {"memory": {"sqlite_path": str(db), "rag_write_mode": "important_only"}},
+            long_memory=fake,
             event_bus=bus,
         )
         turn = hub.new_turn_id()
@@ -48,17 +71,43 @@ def main() -> int:
             ]
         )
         assert len(ids) == 2, ids
-        rows = hub.list_chat(user_id="u1", limit=10, newest_first=False)
-        assert len(rows) == 2, rows
-        assert rows[0]["text"] == "привет"
-        assert rows[1]["text"] == "хай"
+        assert hub.save_dialog_semantic("a", "b", {}) is False
+        assert fake.saves == 0
+        ok, _ = hub.remember_knowledge("факт", {"type": "knowledge"})
+        assert ok and fake.knowledge == 1
+
+        hub.add_person_fact(
+            "p1",
+            "любит чай",
+            emotion_note="тепло",
+            aliases=["Алиса"],
+            display_name="Алиса",
+        )
+        hub.add_diary_note("заметка дня", source="smoke", emotion="calm")
+        hub.add_journal_entry("итог", title="день", kind="reflection", publish_event=False)
+        hub.save_wm_snapshot("# WM\n- task", user_id="u1", publish_event=False)
+
         st = hub.stats()
         assert st["chat_log"] == 2, st
-        assert st["schema_version"] >= 1
+        assert st["people"] == 1, st
+        assert st["person_facts"] == 1, st
+        assert st["diary_notes"] == 1, st
+        assert st["journal_entries"] == 1, st
+        assert st["working_memory_snapshots"] == 1, st
+        assert st["allows_raw_dialog_embed"] is False
+
+        hub2 = MemoryHub(
+            {"memory": {"sqlite_path": str(Path(tmp) / "legacy.db"), "rag_write_mode": "legacy_dialog"}},
+            long_memory=fake,
+        )
+        assert hub2.allows_raw_dialog_embed() is True
+        assert hub2.save_dialog_semantic("x", "y", {}) is True
+        assert fake.saves == 1
         hub.close()
+        hub2.close()
 
     assert MEMORY_CHAT_LOG_APPEND in events, events
-    print("OK memory hub smoke", {"ids": ids, "events": events, "stats_chat_log": st["chat_log"]})
+    print("OK memory hub smoke v2", st)
     return 0
 
 
