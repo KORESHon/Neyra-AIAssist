@@ -8,9 +8,10 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from core.timeutil import now_local
 
 logger = logging.getLogger("neyra.working_memory")
 
@@ -49,7 +50,7 @@ def resolve_wm_path(config: dict, root: Path, internal_user_id: str) -> Path:
 
 
 def _default_template() -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    ts = now_local().strftime("%Y-%m-%d %H:%M %Z")
     return (
         "# Рабочая память (1–3 дня)\n\n"
         f"_Последнее обновление: {ts}_\n\n"
@@ -142,7 +143,7 @@ async def refresh_working_memory_async(
             "без пояснений снаружи и без оборачивания в code fence.\n"
             "Правила:\n"
             "- Сохрани смысл заголовка первой строки (# Рабочая память …) или очень близкий вариант.\n"
-            "- Сразу после H1 добавь строку вида _Последнее обновление: <UTC ISO>_ с актуальным временем.\n"
+            "- Сразу после H1 добавь строку вида _Последнее обновление: <локальное время хоста ISO>_ с актуальным временем.\n"
             "- Убери устаревшее и явно выполненное; добавь новые договорённости, задачи, важные детали из обмена.\n"
             "- Не выдумывай факты, которых не было во входе.\n"
             "- Будь компактной: в приоритете буллеты, без воды; без тегов мышления.\n"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 
 from core.event_bus import (
@@ -17,12 +17,14 @@ from core.event_bus import (
 )
 from core.memory.semantic_index import ChromaSemanticIndex, SemanticIndex
 from core.memory.sqlite_store import SqliteStore
+from core.timeutil import configure_timezone, now_iso, now_local
 
 logger = logging.getLogger("neyra.memory.hub")
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _now_iso() -> str:
+    """Host-local ISO timestamp with offset (default clock for Hub writes)."""
+    return now_iso()
 
 
 class MemoryHub:
@@ -56,6 +58,10 @@ class MemoryHub:
             self.rag_write_mode = "important_only"
         self.hub_legacy_fallback = bool(mem.get("hub_legacy_fallback", True))
         self.hub_dual_write_legacy = bool(mem.get("hub_dual_write_legacy", True))
+        sys_cfg = config.get("system") if isinstance(config.get("system"), dict) else {}
+        tz_name = str(sys_cfg.get("timezone") or mem.get("timezone") or "").strip() or None
+        self.timezone_name = tz_name
+        active_tz = configure_timezone(tz_name)
         if semantic is not None:
             self.semantic: SemanticIndex = semantic
         elif long_memory is not None:
@@ -63,12 +69,13 @@ class MemoryHub:
         else:
             self.semantic = ChromaSemanticIndex(_NullLTM())
         logger.info(
-            "MemoryHub ready | sqlite=%s | schema_v%s | rag_write_mode=%s | legacy_fallback=%s | dual_write=%s",
+            "MemoryHub ready | sqlite=%s | schema_v%s | rag_write_mode=%s | legacy_fallback=%s | dual_write=%s | tz=%s",
             path,
             self.sqlite.schema_version(),
             self.rag_write_mode,
             self.hub_legacy_fallback,
             self.hub_dual_write_legacy,
+            getattr(active_tz, "key", None) or str(active_tz),
         )
 
     def close(self) -> None:
@@ -133,7 +140,7 @@ class MemoryHub:
             prepared.append(
                 {
                     **row,
-                    "ts": row.get("ts") or _utc_now_iso(),
+                    "ts": row.get("ts") or _now_iso(),
                     "text": str(row.get("text") or ""),
                     "role": str(row.get("role") or ""),
                 }

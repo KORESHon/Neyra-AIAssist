@@ -315,6 +315,26 @@ def main() -> int:
         assert not diary_path.exists()
         chat_hour = refl_d._get_logs_for_last_hours(2)
         assert "привет cutover" in chat_hour, chat_hour
+
+        # Blocker repro: UTC-stored Hub ts must still match host-local cutoff window
+        from datetime import timezone as _tz
+        from core.timeutil import now_local
+
+        utc_recent = (now_local().astimezone(_tz.utc) - timedelta(minutes=10)).isoformat()
+        hub_d.append_chat_batch(
+            [
+                {
+                    "role": "user",
+                    "text": "utc-stored recent",
+                    "user_id": "u1",
+                    "display_name": "U",
+                    "ts": utc_recent,
+                }
+            ],
+            publish_event=False,
+        )
+        hour_logs = refl_d._get_logs_for_last_hour()
+        assert "utc-stored recent" in hour_logs, hour_logs
         hub_d.close()
 
         hub_c.close()

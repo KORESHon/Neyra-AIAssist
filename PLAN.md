@@ -66,7 +66,7 @@
 
 Легенда: `[x]` = на ветке PR #1; `[~]` = частично; `[ ]` = не сделано.
 
-**Уже на ветке (кратко):** пакет `core/memory/` (SQLite Hub, chat_log, semantic adapter), dual-write слоёв, `recall_chat` + API с фильтрами, `rag_write_mode`, prompt inject через Hub, backup `.db`, `hub_legacy_import` + флаги fallback/dual-write, ADR-0001, smoke `scripts/test_memory_hub_smoke.py`, dashboard/MCP Hub stats, people identity lookup через SQLite (cutover-safe).
+**Уже на ветке (кратко):** пакет `core/memory/` (SQLite Hub, chat_log, semantic adapter), dual-write слоёв, `recall_chat` + API с фильтрами, `rag_write_mode`, prompt inject через Hub, backup `.db`, `hub_legacy_import` + флаги fallback/dual-write, ADR-0001, smoke `scripts/test_memory_hub_smoke.py`, dashboard/MCP Hub stats, people identity lookup через SQLite (cutover-safe), reflection diary/chat/journal Hub read-path, **хостовая TZ** (`core/timeutil.py`, `system.timezone` optional).
 
 **Процесс ревью:** Cursor Automation **Auto Review Neyra** (comment-only на push в PR). Перед коммитом — смотреть комменты бота при наличии.
 

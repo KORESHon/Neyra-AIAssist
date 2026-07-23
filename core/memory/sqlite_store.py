@@ -6,17 +6,19 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from core.memory.migrations import MIGRATIONS
+from core.timeutil import now_iso
 
 logger = logging.getLogger("neyra.memory.sqlite")
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _now_iso() -> str:
+    """Host-local ISO with offset (same clock as MemoryHub writes)."""
+    return now_iso()
 
 
 class SqliteStore:
@@ -60,7 +62,7 @@ class SqliteStore:
                 self._conn.executescript(sql)
                 self._conn.execute(
                     "INSERT OR REPLACE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                    (version, _utc_now_iso()),
+                    (version, _now_iso()),
                 )
 
     def append_chat_rows(self, rows: list[dict[str, Any]]) -> list[int]:
@@ -81,7 +83,7 @@ class SqliteStore:
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
-                            row.get("ts") or _utc_now_iso(),
+                            row.get("ts") or _now_iso(),
                             str(row.get("role") or ""),
                             row.get("user_id"),
                             row.get("display_name"),
@@ -173,7 +175,7 @@ class SqliteStore:
         aliases: Any = None,
         meta: Any = None,
     ) -> None:
-        now = _utc_now_iso()
+        now = _now_iso()
         with self._lock:
             cur = self._conn.execute(
                 "SELECT person_id FROM people WHERE person_id = ?", (person_id,)
@@ -233,7 +235,7 @@ class SqliteStore:
                     person_id,
                     fact,
                     emotion_note,
-                    created_at or _utc_now_iso(),
+                    created_at or _now_iso(),
                     source,
                     self._dumps(meta),
                 ),
@@ -286,7 +288,7 @@ class SqliteStore:
                 INSERT INTO diary_notes(ts, text, source, emotion, meta)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (ts or _utc_now_iso(), text, source, emotion, self._dumps(meta)),
+                (ts or _now_iso(), text, source, emotion, self._dumps(meta)),
             )
             return int(cur.lastrowid)
 
@@ -315,7 +317,7 @@ class SqliteStore:
                 INSERT INTO journal_entries(ts, title, text, kind, meta)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (ts or _utc_now_iso(), title, text, kind, self._dumps(meta)),
+                (ts or _now_iso(), title, text, kind, self._dumps(meta)),
             )
             return int(cur.lastrowid)
 
@@ -345,7 +347,7 @@ class SqliteStore:
                 INSERT INTO working_memory_snapshots(user_id, ts, content, meta)
                 VALUES (?, ?, ?, ?)
                 """,
-                (user_id, ts or _utc_now_iso(), content, self._dumps(meta)),
+                (user_id, ts or _now_iso(), content, self._dumps(meta)),
             )
             return int(cur.lastrowid)
 

@@ -411,49 +411,41 @@ class ReflectionEngine:
             return ""
 
     def _parse_iso_ts(self, raw: str) -> Optional[datetime]:
-        s = (raw or "").strip()
-        if not s:
-            return None
-        try:
-            # Support Z suffix and naive local timestamps from legacy files
-            if s.endswith("Z"):
-                s = s[:-1] + "+00:00"
-            return datetime.fromisoformat(s)
-        except Exception:
-            return None
+        from core.timeutil import parse_ts
+
+        return parse_ts(raw)
 
     def _diary_lines_from_hub(self, hub, cutoff: datetime) -> str:
+        from core.timeutil import to_local
+
         rows: list[str] = []
         try:
             notes = hub.list_diary_notes(limit=300, newest_first=True)
         except Exception as e:
             logger.error("Ошибка чтения дневника из Hub за 24ч: %s", e)
             return ""
+        cutoff_local = to_local(cutoff)
         for item in notes:
             ts = self._parse_iso_ts(str(item.get("ts") or ""))
             if ts is None:
                 continue
-            # Compare naive vs aware safely
-            try:
-                if ts.tzinfo is not None and cutoff.tzinfo is None:
-                    ts = ts.replace(tzinfo=None)
-                elif ts.tzinfo is None and cutoff.tzinfo is not None:
-                    cutoff = cutoff.replace(tzinfo=None)
-            except Exception:
-                pass
-            if ts < cutoff:
+            ts_local = to_local(ts)
+            if ts_local < cutoff_local:
                 # notes are newest-first; older than cutoff → stop
                 break
             source = str(item.get("source") or "unknown")
             text = str(item.get("text") or "").strip()
             if text:
-                rows.append(f"[{ts.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
+                rows.append(f"[{ts_local.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
         rows.reverse()  # chronological for LLM
         return "\n".join(rows)
 
     def _diary_lines_from_file(self, cutoff: datetime) -> str:
+        from core.timeutil import to_local
+
         if not self.diary_path.exists():
             return ""
+        cutoff_local = to_local(cutoff)
         rows: list[str] = []
         try:
             for line in self.diary_path.read_text(encoding="utf-8").splitlines():
@@ -465,19 +457,24 @@ class ReflectionEngine:
                 except Exception:
                     continue
                 ts = self._parse_iso_ts(str(item.get("timestamp") or ""))
-                if ts is None or ts < cutoff:
+                if ts is None:
+                    continue
+                ts_local = to_local(ts)
+                if ts_local < cutoff_local:
                     continue
                 source = str(item.get("source") or "unknown")
                 text = str(item.get("text") or "").strip()
                 if text:
-                    rows.append(f"[{ts.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
+                    rows.append(f"[{ts_local.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
         except Exception as e:
             logger.error("Ошибка чтения дневника за 24ч: %s", e)
         return "\n".join(rows)
 
     def _get_diary_last_24h(self) -> str:
         """Diary for nightly reflect: Hub SQLite when cutover, else JSONL (+ Hub fallback)."""
-        cutoff = datetime.now() - timedelta(hours=24)
+        from core.timeutil import cutoff_hours
+
+        cutoff = cutoff_hours(24)
         hub = self._memory_hub()
         if hub is not None and not self._hub_dual_write():
             return self._diary_lines_from_hub(hub, cutoff)
@@ -489,6 +486,8 @@ class ReflectionEngine:
         return ""
 
     def _chat_lines_from_hub(self, *, cutoff: Optional[datetime] = None, date_str: Optional[str] = None) -> str:
+        from core.timeutil import to_local
+
         hub = self._memory_hub()
         if hub is None:
             return ""
@@ -498,27 +497,22 @@ class ReflectionEngine:
         except Exception as e:
             logger.error("Ошибка чтения chat_log из Hub: %s", e)
             return ""
+        cutoff_local = to_local(cutoff) if cutoff is not None else None
         for item in rows:
             ts = self._parse_iso_ts(str(item.get("ts") or ""))
             if ts is None:
                 continue
-            try:
-                if cutoff is not None and ts.tzinfo is not None and cutoff.tzinfo is None:
-                    ts_cmp = ts.replace(tzinfo=None)
-                else:
-                    ts_cmp = ts
-            except Exception:
-                ts_cmp = ts
-            if cutoff is not None and ts_cmp < cutoff:
+            ts_local = to_local(ts)
+            if cutoff_local is not None and ts_local < cutoff_local:
                 break
-            if date_str is not None and ts.strftime("%Y-%m-%d") != date_str:
+            if date_str is not None and ts_local.strftime("%Y-%m-%d") != date_str:
                 continue
             role = str(item.get("role") or "?")
             who = str(item.get("display_name") or item.get("user_id") or role)
             text = str(item.get("text") or "").strip()
             if not text:
                 continue
-            rows_out.append(f"[{ts.strftime('%Y-%m-%d %H:%M:%S')}] {who}: {text}")
+            rows_out.append(f"[{ts_local.strftime('%Y-%m-%d %H:%M:%S')}] {who}: {text}")
         rows_out.reverse()
         return "\n".join(rows_out)
 
@@ -546,7 +540,9 @@ class ReflectionEngine:
 
     def _get_logs_for_last_hours(self, hours: int) -> str:
         """Читает строки чата за последние N часов (Hub при cutover, иначе chat.log)."""
-        cutoff = datetime.now() - timedelta(hours=max(1, int(hours)))
+        from core.timeutil import cutoff_hours
+
+        cutoff = cutoff_hours(max(1, int(hours)))
         if not self._hub_dual_write():
             return self._chat_lines_from_hub(cutoff=cutoff)
         if not self.chat_log_path.exists():
@@ -561,7 +557,10 @@ class ReflectionEngine:
                     ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
                 except Exception:
                     continue
-                if ts >= cutoff:
+                # chat.log lines are naive local wall time — compare in host local
+                from core.timeutil import to_local
+
+                if to_local(ts) >= cutoff:
                     lines.append(line)
         except Exception as e:
             logger.error("Ошибка чтения chat.log за %s часов: %s", hours, e)

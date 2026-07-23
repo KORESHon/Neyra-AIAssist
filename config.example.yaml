@@ -23,6 +23,14 @@
 # RU: Этот шаблон намеренно обезличен; без приватных промптов и личных данных.
 
 # ---------------------------
+# System / Система
+# ---------------------------
+system:
+  # EN: IANA timezone for Hub timestamps + reflection windows. Empty/null = host OS timezone.
+  # RU: IANA-таймзона для меток Hub и окон рефлексии. Пусто/null = таймзона хоста (ОС).
+  timezone: null
+
+# ---------------------------
 # Assistant personality / Личность ассистента
 # ---------------------------
 assistant:
