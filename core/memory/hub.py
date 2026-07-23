@@ -17,14 +17,14 @@ from core.event_bus import (
 )
 from core.memory.semantic_index import ChromaSemanticIndex, SemanticIndex
 from core.memory.sqlite_store import SqliteStore
-from core.timeutil import configure_timezone, now_iso
+from core.timeutil import configure_timezone, now_storage_iso, to_utc_iso
 
 logger = logging.getLogger("neyra.memory.hub")
 
 
 def _now_iso() -> str:
-    """Host-local ISO timestamp with offset (default clock for Hub writes)."""
-    return now_iso()
+    """UTC ISO for Hub/SQLite ts (stable chronological TEXT order)."""
+    return now_storage_iso()
 
 
 class MemoryHub:
@@ -140,7 +140,7 @@ class MemoryHub:
             prepared.append(
                 {
                     **row,
-                    "ts": row.get("ts") or _now_iso(),
+                    "ts": to_utc_iso(row.get("ts")) if row.get("ts") else _now_iso(),
                     "text": str(row.get("text") or ""),
                     "role": str(row.get("role") or ""),
                 }

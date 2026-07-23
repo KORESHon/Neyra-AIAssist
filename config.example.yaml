@@ -26,8 +26,10 @@
 # System / Система
 # ---------------------------
 system:
-  # EN: IANA timezone for Hub timestamps + reflection windows. Empty/null = host OS timezone.
-  # RU: IANA-таймзона для меток Hub и окон рефлексии. Пусто/null = таймзона хоста (ОС).
+  # EN: IANA timezone for wall-clock windows / display (reflection cutoffs, WM labels).
+  #     Empty/null = host OS timezone. Hub SQLite `ts` is always stored as UTC ISO.
+  # RU: IANA-таймзона для окон/отображения (рефлексия, подписи WM).
+  #     Пусто/null = таймзона хоста. В SQLite Hub метки `ts` всегда пишутся в UTC ISO.
   timezone: null
 
 # ---------------------------

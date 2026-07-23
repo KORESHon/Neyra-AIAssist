@@ -19,6 +19,12 @@ Neyra uses a single **MemoryHub** facade (`core/memory/`) as the only entry poin
 
 One writer contour per process: sync `sqlite3` with a process-wide `threading.RLock`, WAL mode. Async callers use `asyncio.to_thread` for Hub writes. No parallel SQLite writers from plugins.
 
+## Timestamps / timezone
+
+- **Storage:** Hub SQLite `ts` / `created_at` columns are always **UTC ISO** (with offset), so `ORDER BY ts` stays chronological across hosts and after TZ changes. Incoming values are normalized via `core.timeutil.to_utc_iso`.
+- **Wall clock:** reflection windows, WM labels, and `get_current_time` use the **host OS timezone** by default. Optional override: `system.timezone` (IANA, e.g. `Europe/Moscow`) via `configure_timezone`.
+- **Readers:** convert with `to_local()`; do not early-`break` on TEXT order when filtering windows (mixed legacy offsets possible during migration).
+
 ## RAG write policy
 
 Config `memory.rag_write_mode`: `off` | `digest` | `important_only`.  

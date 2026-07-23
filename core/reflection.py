@@ -418,7 +418,7 @@ class ReflectionEngine:
     def _diary_lines_from_hub(self, hub, cutoff: datetime) -> str:
         from core.timeutil import to_local
 
-        rows: list[str] = []
+        rows: list[tuple[datetime, str]] = []
         try:
             notes = hub.list_diary_notes(limit=300, newest_first=True)
         except Exception as e:
@@ -430,15 +430,17 @@ class ReflectionEngine:
             if ts is None:
                 continue
             ts_local = to_local(ts)
+            # No early-break: TEXT ORDER BY ts is not chronological across mixed offsets.
             if ts_local < cutoff_local:
-                # notes are newest-first; older than cutoff → stop
-                break
+                continue
             source = str(item.get("source") or "unknown")
             text = str(item.get("text") or "").strip()
             if text:
-                rows.append(f"[{ts_local.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
-        rows.reverse()  # chronological for LLM
-        return "\n".join(rows)
+                rows.append(
+                    (ts_local, f"[{ts_local.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
+                )
+        rows.sort(key=lambda x: x[0])
+        return "\n".join(line for _, line in rows)
 
     def _diary_lines_from_file(self, cutoff: datetime) -> str:
         from core.timeutil import to_local
@@ -491,7 +493,7 @@ class ReflectionEngine:
         hub = self._memory_hub()
         if hub is None:
             return ""
-        rows_out: list[str] = []
+        rows_out: list[tuple[datetime, str]] = []
         try:
             rows = hub.list_chat(limit=500, newest_first=True)
         except Exception as e:
@@ -503,8 +505,9 @@ class ReflectionEngine:
             if ts is None:
                 continue
             ts_local = to_local(ts)
+            # No early-break: mixed UTC/local ISO TEXT order is not chronological.
             if cutoff_local is not None and ts_local < cutoff_local:
-                break
+                continue
             if date_str is not None and ts_local.strftime("%Y-%m-%d") != date_str:
                 continue
             role = str(item.get("role") or "?")
@@ -512,9 +515,11 @@ class ReflectionEngine:
             text = str(item.get("text") or "").strip()
             if not text:
                 continue
-            rows_out.append(f"[{ts_local.strftime('%Y-%m-%d %H:%M:%S')}] {who}: {text}")
-        rows_out.reverse()
-        return "\n".join(rows_out)
+            rows_out.append(
+                (ts_local, f"[{ts_local.strftime('%Y-%m-%d %H:%M:%S')}] {who}: {text}")
+            )
+        rows_out.sort(key=lambda x: x[0])
+        return "\n".join(line for _, line in rows_out)
 
     def _get_logs_for_date(self, date: datetime) -> str:
         """Читает строки чата за указанную дату (Hub при cutover, иначе chat.log)."""

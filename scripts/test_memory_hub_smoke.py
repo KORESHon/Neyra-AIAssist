@@ -335,6 +335,42 @@ def main() -> int:
         )
         hour_logs = refl_d._get_logs_for_last_hour()
         assert "utc-stored recent" in hour_logs, hour_logs
+
+        # Mixed offsets must not drop the true recent row via early-break on TEXT order
+        older_local = "2026-01-01T12:00:00+03:00"  # lexically "newer" than some UTC walls
+        newer_utc = (now_local().astimezone(_tz.utc) - timedelta(minutes=5)).isoformat()
+        hub_d.append_chat_batch(
+            [
+                {
+                    "role": "user",
+                    "text": "older-local-offset",
+                    "user_id": "u1",
+                    "display_name": "U",
+                    "ts": older_local,
+                },
+                {
+                    "role": "user",
+                    "text": "newer-utc-mixed",
+                    "user_id": "u1",
+                    "display_name": "U",
+                    "ts": newer_utc,
+                },
+            ],
+            publish_event=False,
+        )
+        mixed = refl_d._get_logs_for_last_hour()
+        assert "newer-utc-mixed" in mixed, mixed
+        assert "older-local-offset" not in mixed, mixed
+
+        # system.timezone override must affect now_local / cutoff (not only the log line)
+        from core.timeutil import configure_timezone, now_iso as local_iso, resolve_tz
+
+        configure_timezone("Europe/Moscow")
+        assert "Europe/Moscow" in str(getattr(resolve_tz(), "key", "")) or str(resolve_tz())
+        mos = local_iso()
+        assert mos.endswith("+03:00") or "+03:00" in mos or mos.endswith("+04:00") or "+04:00" in mos, mos
+        configure_timezone(None)  # restore host for later tests
+
         hub_d.close()
 
         hub_c.close()

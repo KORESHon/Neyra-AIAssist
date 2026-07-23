@@ -11,14 +11,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.memory.migrations import MIGRATIONS
-from core.timeutil import now_iso
+from core.timeutil import now_storage_iso, to_utc_iso
 
 logger = logging.getLogger("neyra.memory.sqlite")
 
 
 def _now_iso() -> str:
-    """Host-local ISO with offset (same clock as MemoryHub writes)."""
-    return now_iso()
+    """UTC ISO for SQLite ts columns (stable TEXT ORDER BY)."""
+    return now_storage_iso()
 
 
 class SqliteStore:
@@ -83,7 +83,7 @@ class SqliteStore:
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
-                            row.get("ts") or _now_iso(),
+                            to_utc_iso(row.get("ts")) if row.get("ts") else _now_iso(),
                             str(row.get("role") or ""),
                             row.get("user_id"),
                             row.get("display_name"),
@@ -235,7 +235,7 @@ class SqliteStore:
                     person_id,
                     fact,
                     emotion_note,
-                    created_at or _now_iso(),
+                    to_utc_iso(created_at) if created_at else _now_iso(),
                     source,
                     self._dumps(meta),
                 ),
@@ -288,7 +288,7 @@ class SqliteStore:
                 INSERT INTO diary_notes(ts, text, source, emotion, meta)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (ts or _now_iso(), text, source, emotion, self._dumps(meta)),
+                (to_utc_iso(ts) if ts else _now_iso(), text, source, emotion, self._dumps(meta)),
             )
             return int(cur.lastrowid)
 
@@ -317,7 +317,7 @@ class SqliteStore:
                 INSERT INTO journal_entries(ts, title, text, kind, meta)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (ts or _now_iso(), title, text, kind, self._dumps(meta)),
+                (to_utc_iso(ts) if ts else _now_iso(), title, text, kind, self._dumps(meta)),
             )
             return int(cur.lastrowid)
 
@@ -347,7 +347,7 @@ class SqliteStore:
                 INSERT INTO working_memory_snapshots(user_id, ts, content, meta)
                 VALUES (?, ?, ?, ?)
                 """,
-                (user_id, ts or _now_iso(), content, self._dumps(meta)),
+                (user_id, to_utc_iso(ts) if ts else _now_iso(), content, self._dumps(meta)),
             )
             return int(cur.lastrowid)
 
