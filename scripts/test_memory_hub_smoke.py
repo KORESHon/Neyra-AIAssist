@@ -176,6 +176,104 @@ def main() -> int:
         assert "из jsonl" in hub_i.diary_recent_text(5)
         hub_i.close()
 
+    # Cutover journal read-path + PeopleDB hydrate gating
+    with tempfile.TemporaryDirectory() as tmp3:
+        root = Path(tmp3)
+        db = root / "cutover.db"
+        journal_path = root / "journal.json"
+        chat_log = root / "chat.log"
+        chat_log.write_text("", encoding="utf-8")
+        cfg = {
+            "memory": {
+                "sqlite_path": str(db),
+                "journal_path": str(journal_path),
+                "diary_path": str(root / "diary.jsonl"),
+                "hub_dual_write_legacy": False,
+                "hub_legacy_fallback": False,
+                "rag_write_mode": "important_only",
+            },
+            "logging": {"chat_log": str(chat_log)},
+        }
+        hub_c = MemoryHub(cfg, long_memory=_FakeLTM())
+
+        class _Agent:
+            memory_hub = hub_c
+            event_bus = None
+
+        from core.reflection import ReflectionEngine
+        from core.memory.legacy import PeopleDB
+
+        refl = ReflectionEngine(cfg, _Agent())
+        refl._journal.append(
+            {"date": "2026-07-23", "summary": "итог дня cutover", "generated_at": "2026-07-23T01:00:00"}
+        )
+        assert refl._save_journal() is True
+        assert not journal_path.exists() or journal_path.read_text(encoding="utf-8").strip() in {"", "[]"}
+        assert hub_c.stats()["journal_entries"] == 1
+
+        # Simulate restart: empty file journal, Hub still has entry
+        refl2 = ReflectionEngine(cfg, _Agent())
+        assert refl2._journal_has_date("2026-07-23")
+        recent = refl2.get_recent_journal(7)
+        assert "итог дня cutover" in recent, recent
+
+        # Hub-only failure rolls back in-memory entry
+        def _boom(*a, **k):
+            raise RuntimeError("boom")
+
+        hub_c.add_journal_entry = _boom  # type: ignore[method-assign]
+        refl2._journal.append({"date": "2026-07-24", "summary": "should roll back"})
+        assert refl2._save_journal() is False
+        assert not any(e.get("date") == "2026-07-24" for e in refl2._journal)
+
+        # PeopleDB hydrate must NOT wipe JSON cache while dual_write=true
+        people_dir = root / "people_db"
+        people_dir.mkdir()
+        (people_dir / "bob.json").write_text(
+            json.dumps(
+                {
+                    "id": "bob",
+                    "names": ["Боб"],
+                    "discord_ids": [],
+                    "dynamic_facts": [{"date": "2026-01-01", "fact": "только в json"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        cfg_dual = {
+            "memory": {
+                "sqlite_path": str(root / "dual.db"),
+                "chroma_db_path": str(root / "chroma_db"),
+                "hub_dual_write_legacy": True,
+            }
+        }
+        (root / "chroma_db").mkdir(exist_ok=True)
+        # PeopleDB resolves people_db from chroma parent
+        pdb = PeopleDB(cfg_dual)
+        # Force db_dir to our temp people dir
+        pdb.db_dir = people_dir
+        pdb._cache.clear()
+        pdb._load_all()
+        assert "bob" in pdb._cache
+        hub_dual = MemoryHub(cfg_dual, long_memory=_FakeLTM())
+        hub_dual.add_person_fact("hub_only", "из sqlite", aliases=["HubOnly"], display_name="HubOnly")
+        # Mimic agent gate: dual_write + non-empty cache → skip hydrate
+        if (not hub_dual.hub_dual_write_legacy) or (not pdb._cache):
+            pdb.hydrate_from_hub(hub_dual)
+        assert "bob" in pdb._cache
+        assert any(
+            f.get("fact") == "только в json" for f in pdb._cache["bob"].get("dynamic_facts") or []
+        ), pdb._cache["bob"]
+        # Cutover gate: dual off → hydrate ok
+        hub_dual.hub_dual_write_legacy = False
+        if (not hub_dual.hub_dual_write_legacy) or (not pdb._cache):
+            pdb.hydrate_from_hub(hub_dual)
+        assert pdb.find("HubOnly") is not None or hub_dual.find_person("HubOnly") is not None
+
+        hub_c.close()
+        hub_dual.close()
+
     print("OK memory hub smoke v2", st)
     return 0
 

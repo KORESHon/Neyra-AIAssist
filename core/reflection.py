@@ -41,8 +41,17 @@ class ReflectionEngine:
 
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Загружаем существующий журнал
+        # Загружаем существующий журнал (файл; при Hub-only — перезапишется из SQLite)
         self._journal: list[dict] = self._load_journal()
+        self._hydrate_journal_from_hub()
+
+    def _memory_hub(self):
+        agent = getattr(self, "agent", None)
+        return getattr(agent, "memory_hub", None) if agent is not None else None
+
+    def _hub_dual_write(self) -> bool:
+        hub = self._memory_hub()
+        return hub is None or bool(getattr(hub, "hub_dual_write_legacy", True))
 
     def _load_journal(self) -> list:
         if self.journal_path.exists():
@@ -52,11 +61,49 @@ class ReflectionEngine:
                 return []
         return []
 
-    def _save_journal(self):
+    def _hydrate_journal_from_hub(self) -> int:
+        """Rebuild in-memory journal from SQLite when Hub is primary (cutover)."""
+        hub = self._memory_hub()
+        if hub is None or bool(getattr(hub, "hub_dual_write_legacy", True)):
+            return 0
+        try:
+            rows = hub.list_journal_entries(limit=500, newest_first=False)
+        except Exception as e:
+            logger.warning("Reflection journal hydrate from Hub failed: %s", e)
+            return 0
+        rebuilt: list[dict] = []
+        for row in rows:
+            meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+            entry: dict = dict(meta) if meta else {}
+            if not entry.get("date"):
+                title = str(row.get("title") or "").strip()
+                ts = str(row.get("ts") or "").strip()
+                entry["date"] = title if len(title) == 10 and title[4] == "-" else ts[:10]
+            if not entry.get("summary"):
+                entry["summary"] = str(row.get("text") or "")
+            if "generated_at" not in entry and row.get("ts"):
+                entry["generated_at"] = row.get("ts")
+            if entry.get("date") or entry.get("summary"):
+                rebuilt.append(entry)
+        self._journal = rebuilt
+        logger.info("Reflection journal hydrated from Hub SQLite: %s entries", len(rebuilt))
+        return len(rebuilt)
+
+    def _journal_has_date(self, date_str: str) -> bool:
+        if any(e.get("date") == date_str for e in self._journal):
+            return True
+        # After cutover, refresh from Hub so restart/empty file does not re-run reflection.
+        if not self._hub_dual_write():
+            self._hydrate_journal_from_hub()
+            return any(e.get("date") == date_str for e in self._journal)
+        return False
+
+    def _save_journal(self) -> bool:
+        """Persist last journal entry. Returns False if Hub-only write failed (entry rolled back)."""
         agent = getattr(self, "agent", None)
         bus = getattr(agent, "event_bus", None) if agent is not None else None
-        hub = getattr(agent, "memory_hub", None) if agent is not None else None
-        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
+        hub = self._memory_hub()
+        dual = self._hub_dual_write()
         if dual:
             self.journal_path.write_text(
                 json.dumps(self._journal, ensure_ascii=False, indent=2),
@@ -75,16 +122,21 @@ class ReflectionEngine:
                         title=str(last.get("title") or last.get("date") or "")[:200] or None,
                         kind=str(last.get("kind") or "reflection"),
                         meta=last if isinstance(last, dict) else None,
-                        ts=str(last.get("timestamp") or last.get("date") or "") or None,
+                        ts=str(last.get("timestamp") or last.get("date") or last.get("generated_at") or "") or None,
                         publish_event=bus is None,  # avoid double event if we publish below
                     )
                     hub_ok = True
             except Exception as e:
                 logger.warning("Reflection→Hub journal dual-write failed: %s", e)
-        if hub is not None and not dual and not hub_ok and self._journal:
-            logger.error("Reflection: Hub journal write failed and dual_write disabled — entry not persisted")
-            return
-        if bus is not None:
+        if hub is not None and not dual and not hub_ok:
+            if self._journal:
+                dropped = self._journal.pop()
+                logger.error(
+                    "Reflection: Hub journal write failed and dual_write disabled — entry rolled back (%s)",
+                    (dropped.get("date") if isinstance(dropped, dict) else dropped),
+                )
+            return False
+        if bus is not None and (dual or hub_ok):
             from core.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
 
             bus.publish(
@@ -94,6 +146,7 @@ class ReflectionEngine:
                     {"path": str(self.journal_path), "entries": len(self._journal)},
                 )
             )
+        return True
 
     def _get_logs_for_date(self, date: datetime) -> str:
         """Читает строки из chat.log за указанную дату."""
@@ -163,7 +216,7 @@ class ReflectionEngine:
         logger.info("Запускаю self-reflection за %s (force=%s)", date_str, force)
 
         # Для ночного крона — не запускать повторно в тот же день; /reflect может передать force=True.
-        if not force and any(e.get("date") == date_str for e in self._journal):
+        if not force and self._journal_has_date(date_str):
             logger.info("Рефлексия за %s уже есть, пропускаю", date_str)
             return ""
 
@@ -654,10 +707,14 @@ class ReflectionEngine:
 
     def get_recent_journal(self, days: int = 7) -> str:
         """Возвращает записи журнала за последние N дней."""
+        if not self._hub_dual_write():
+            self._hydrate_journal_from_hub()
         recent = self._journal[-days:] if self._journal else []
         if not recent:
             return "Журнал пустой."
         lines = []
         for entry in recent:
-            lines.append(f"[{entry['date']}] {entry['summary']}")
+            date = entry.get("date") or "?"
+            summary = entry.get("summary") or entry.get("text") or ""
+            lines.append(f"[{date}] {summary}")
         return "\n".join(lines)

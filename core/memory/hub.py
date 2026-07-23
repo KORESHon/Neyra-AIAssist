@@ -316,6 +316,11 @@ class MemoryHub:
                 logger.debug("journal_updated event failed: %s", e)
         return row_id
 
+    def list_journal_entries(
+        self, *, limit: int = 50, newest_first: bool = True
+    ) -> list[dict[str, Any]]:
+        return self.sqlite.list_journal_entries(limit=limit, newest_first=newest_first)
+
     def save_wm_snapshot(
         self,
         content: str,

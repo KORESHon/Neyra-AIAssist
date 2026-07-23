@@ -331,9 +331,11 @@ class NeyraAgent:
         )
         self.people_db.memory_hub = self.memory_hub
         self.diary.memory_hub = self.memory_hub
-        # After cutover (dual_write off) JSON may be empty — hydrate cache from SQLite.
+        # Hydrate PeopleDB from SQLite only when Hub is primary (cutover) or JSON cache empty.
+        # Never overwrite a non-empty JSON cache while dual_write is still on.
         try:
-            self.people_db.hydrate_from_hub(self.memory_hub)
+            if (not self.memory_hub.hub_dual_write_legacy) or (not self.people_db._cache):
+                self.people_db.hydrate_from_hub(self.memory_hub)
         except Exception as e:
             logger.warning("PeopleDB hydrate_from_hub failed: %s", e)
 

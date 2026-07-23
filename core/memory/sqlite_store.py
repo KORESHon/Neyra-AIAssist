@@ -319,6 +319,18 @@ class SqliteStore:
             )
             return int(cur.lastrowid)
 
+    def list_journal_entries(
+        self, *, limit: int = 50, newest_first: bool = True
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 1000))
+        order = "DESC" if newest_first else "ASC"
+        with self._lock:
+            cur = self._conn.execute(
+                f"SELECT * FROM journal_entries ORDER BY ts {order}, id {order} LIMIT ?",
+                (limit,),
+            )
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+
     def save_wm_snapshot(
         self,
         *,
