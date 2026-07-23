@@ -894,10 +894,106 @@ def build_app(
         data: dict[str, Any] = {
             "short_memory_size": len(agent.short_memory),
             "long_memory_records": long_records,
-            "people_records": len(agent.people_db._cache),
+            "people_records": (
+                int(hub_stats.get("people") or 0)
+                if hub_stats is not None
+                else len(agent.people_db._cache)
+            ),
         }
         if hub_stats is not None:
             data["hub"] = hub_stats
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/memory/people")
+    async def v1_memory_people(
+        request: Request,
+        _: None = Depends(dep_viewer),
+        limit: int = Query(100, ge=1, le=500),
+    ):
+        """List people from MemoryHub SQLite (cutover-safe)."""
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> list[dict[str, Any]]:
+            rows = hub.list_people()
+            out: list[dict[str, Any]] = []
+            for p in rows[: max(1, int(limit))]:
+                out.append(
+                    {
+                        "id": p.get("id"),
+                        "names": p.get("names") or [],
+                        "discord_ids": p.get("discord_ids") or [],
+                    }
+                )
+            return out
+
+        people = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": {"people": people, "count": len(people)}}
+
+    @app.get("/v1/memory/people/{person_id}")
+    async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_viewer)):
+        """Person dossier summary via Hub (static_facts + recent facts)."""
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (person_id or "").strip()
+        if not pid:
+            raise ApiError("invalid_person_id", "person_id required", 400)
+
+        def _run() -> dict[str, Any]:
+            person = hub.get_person(pid) or hub.find_person(pid)
+            summary = hub.get_person_summary(pid)
+            facts = hub.list_person_facts(pid, limit=20) if hasattr(hub, "list_person_facts") else []
+            return {
+                "person_id": pid,
+                "person": person,
+                "summary": summary,
+                "facts": facts,
+            }
+
+        data = await asyncio.to_thread(_run)
+        if not data.get("person") and not (data.get("summary") or "").strip():
+            raise ApiError("person_not_found", f"person '{pid}' not found", 404)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/memory/diary")
+    async def v1_memory_diary(
+        request: Request,
+        _: None = Depends(dep_viewer),
+        limit: int = Query(20, ge=1, le=200),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            rows = hub.list_diary_notes(limit=limit, newest_first=True)
+            text = hub.diary_recent_text(limit=limit)
+            return {"notes": rows, "text": text}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/memory/journal")
+    async def v1_memory_journal(
+        request: Request,
+        _: None = Depends(dep_viewer),
+        limit: int = Query(20, ge=1, le=200),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            rows = hub.list_journal_entries(limit=limit, newest_first=True)
+            return {"entries": rows, "count": len(rows)}
+
+        data = await asyncio.to_thread(_run)
         return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.post("/v1/memory/import-legacy")

@@ -406,6 +406,7 @@ class NeyraAgent:
             await asyncio.to_thread(self.memory_hub.append_chat_batch, rows)
         except Exception as e:
             logger.exception("MemoryHub chat_log append failed: %s", e)
+            return ""
         return turn_id
 
     def _setup_tools(self):

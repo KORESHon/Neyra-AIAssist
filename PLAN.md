@@ -74,10 +74,10 @@
 
 | # | Задача | Статус |
 |---|--------|--------|
-| 1 | People/diary/journal/WM: dual-write ещё включён по умолчанию; истина должна стать **только SQLite** | `[~]` summary static_facts + WM fail-safe; flags ещё on |
+| 1 | People/diary/journal/WM: dual-write ещё включён по умолчанию; истина должна стать **только SQLite** | `[~]` offline cutover green; flags в example ещё on |
 | 2 | Cutover flags: `hub_legacy_import/fallback/dual_write` → `false` на стенде после импорта | `[ ]` |
 | 3 | **Удалить** file PeopleDB/Diary/journal/WM stores + dual-write shims из кода | `[ ]` финал |
-| 4 | Полный e2e на стенде: chat → Hub chat_log → `/v1/memory/*` / healthcheck | `[ ]` offline smoke cutover есть; live стенд — нет |
+| 4 | Полный e2e на стенде: chat → Hub chat_log → `/v1/memory/*` / healthcheck | `[~]` offline `scripts/test_memory_cutover_offline.py`; live — нет |
 | 5 | Merge PR #1 в `main` после зелёного cutover | `[ ]` |
 
 **Не блокирует 1A:** Fast-Path умного дома → этап 2. Фаза **1B** (раскладка `core/`) — только после зелёной 1A.
@@ -267,11 +267,11 @@
 - [x] Chroma: raw full-chat embed выключен по умолчанию (`rag_write_mode` ≠ `legacy_dialog`); knowledge через Hub.
 - [x] `rag_write_mode` и пути из конфига (`sqlite_path`, `stm_max_messages`, …); example + local синхронизированы.
 - [x] Event Bus: `memory.chat_log_append`; прежние `memory.*` сохранены (journal/WM/STM/LTM).
-- [x] `/v1/memory/*`, `/v1/debug/memory` — Hub stats / recall / search / import-legacy; MCP `neyra_inspect_memory` + `neyra_memory_stats` / policies; dashboard Memory показывает Hub SQLite counts.
+- [x] `/v1/memory/*`, `/v1/debug/memory` — Hub stats / recall / search / import-legacy / people / diary / journal; MCP + dashboard Hub counts.
 - [~] Cutover: import + флаги есть; **legacy stores ещё в коде** (удаление — финал 1A, см. таблицу «Что осталось»).
 - [x] Backup учитывает `.db` (+ wal/shm) и Chroma (`backup_manifest.json`).
 - [x] Промпт talk/brain читает people / diary / WM через Hub (fallback legacy внутри Hub на время cutover).
-- [~] Smoke: `scripts/test_memory_hub_smoke.py` (people/journal/diary/chat reflect Hub-only); live e2e chat→healthcheck на стенде — ещё нет.
+- [~] Smoke: `test_memory_hub_smoke.py` + `test_memory_cutover_offline.py`; live e2e chat→healthcheck на стенде — ещё нет.
 - [x] Fast-Path умного дома — **отложено в этап 2** (решение зафиксировано: не блокирует cutover 1A; edge — с колонкой на этапе 4).
 - [ ] Финал 1A: выключить legacy flags → удалить file PeopleDB/Diary/journal/WM stores и dual-write shims из кода.
 **Фаза 1B**
