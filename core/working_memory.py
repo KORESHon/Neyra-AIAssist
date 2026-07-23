@@ -118,21 +118,34 @@ async def refresh_working_memory_async(
     path = resolve_wm_path(config, root, internal_user_id)
     max_file = max(2000, int(w.get("max_file_chars", 12000)))
     max_out = max(256, int(w.get("llm_max_tokens", 1400)))
+    hub = getattr(agent, "memory_hub", None)
+    dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
 
-    with _LOCK:
-        if not path.exists():
+    current = ""
+    if hub is not None and not dual:
+        try:
+            snap = hub.sqlite.latest_wm_snapshot(user_id=internal_user_id)
+            if snap and str(snap.get("content") or "").strip():
+                current = str(snap["content"]).strip()
+        except Exception as e:
+            logger.warning("working_memory Hub read for refresh: %s", e)
+        if not current:
             current = _default_template()
-            try:
-                path.write_text(current, encoding="utf-8")
-            except Exception as e:
-                logger.warning("working_memory init file: %s", e)
-                return
-        else:
-            try:
-                current = path.read_text(encoding="utf-8")
-            except Exception as e:
-                logger.warning("working_memory read for refresh: %s", e)
-                return
+    else:
+        with _LOCK:
+            if not path.exists():
+                current = _default_template()
+                try:
+                    path.write_text(current, encoding="utf-8")
+                except Exception as e:
+                    logger.warning("working_memory init file: %s", e)
+                    return
+            else:
+                try:
+                    current = path.read_text(encoding="utf-8")
+                except Exception as e:
+                    logger.warning("working_memory read for refresh: %s", e)
+                    return
 
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -176,8 +189,6 @@ async def refresh_working_memory_async(
             return
         if len(text) > max_file:
             text = text[: max_file - 80].rstrip() + "\n\n…[обрезано по max_file_chars]…"
-        hub = getattr(agent, "memory_hub", None)
-        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
         if dual:
             with _LOCK:
                 path.write_text(text.strip() + "\n", encoding="utf-8")

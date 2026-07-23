@@ -74,7 +74,7 @@
 
 | # | Задача | Статус |
 |---|--------|--------|
-| 1 | People/diary/journal/WM: dual-write ещё включён по умолчанию; истина должна стать **только SQLite** | `[~]` Hub write/read + TZ UTC storage / host display; flags ещё on |
+| 1 | People/diary/journal/WM: dual-write ещё включён по умолчанию; истина должна стать **только SQLite** | `[~]` seed/link/WM Hub-primary при cutover; flags ещё on |
 | 2 | Cutover flags: `hub_legacy_import/fallback/dual_write` → `false` на стенде после импорта | `[ ]` |
 | 3 | **Удалить** file PeopleDB/Diary/journal/WM stores + dual-write shims из кода | `[ ]` финал |
 | 4 | Полный e2e на стенде: chat → Hub chat_log → `/v1/memory/*` / healthcheck | `[ ]` offline smoke cutover есть; live стенд — нет |

@@ -469,9 +469,28 @@ class NeyraAgent:
         self.chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _init_people_db(self):
-        """Создаёт базовые досье если папка пустая."""
+        """Создаёт базовые досье если PeopleDB/Hub ещё пустые (не после cutover)."""
+        hub = getattr(self, "memory_hub", None)
+        dual = hub is None or bool(getattr(hub, "hub_dual_write_legacy", True))
+        # After cutover: Hub is primary — never reseed JSON over hydrated SQLite people.
+        if hub is not None and not dual:
+            try:
+                if int(hub.stats().get("people") or 0) > 0 or self.people_db._cache:
+                    return
+            except Exception:
+                if self.people_db._cache:
+                    return
         if len(list(self.people_db.db_dir.glob("*.json"))) > 0:
             return  # Уже есть файлы
+        if self.people_db._cache:
+            return
+        if hub is not None:
+            try:
+                if int(hub.stats().get("people") or 0) > 0:
+                    self.people_db.hydrate_from_hub(hub)
+                    return
+            except Exception:
+                pass
 
         logger.info("Создаю начальные досье PeopleDB...")
 
@@ -564,7 +583,7 @@ class NeyraAgent:
                 "static_facts": {
                     "city": "Киров (рядом с Димой)",
                     "car": "Lada",
-                    "traits": "клички принимает и не обижается",
+                    "traits": "клички принимает и не обиждается",
                     "notes": "В дискорде не сидит."
                 },
                 "dynamic_facts": [],
@@ -574,13 +593,26 @@ class NeyraAgent:
         import json
         for person in people:
             person.setdefault("last_seen", None)
-            path = self.people_db.db_dir / f"{person['id']}.json"
-            path.write_text(
-                json.dumps(person, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
+            self.people_db._cache[person["id"]] = person
+            if dual:
+                path = self.people_db.db_dir / f"{person['id']}.json"
+                path.write_text(
+                    json.dumps(person, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            if hub is not None:
+                try:
+                    hub.upsert_person(
+                        person["id"],
+                        display_name=(person.get("names") or [person["id"]])[0],
+                        aliases=list(person.get("names") or []),
+                        meta=person,
+                    )
+                except Exception as e:
+                    logger.warning("PeopleDB seed→Hub failed for %s: %s", person["id"], e)
 
-        self.people_db._load_all()
+        if dual:
+            self.people_db._load_all()
         logger.info(f"Создано {len(people)} начальных досье")
 
     # ─── Системный промпт ──────────────────────────────────────────────────

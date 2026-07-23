@@ -606,12 +606,35 @@ class PeopleDB:
             logger.warning(f"PeopleDB: не найден для привязки: {person_id}")
             return False
         ids = self._cache[person_id].setdefault("discord_ids", [])
-        if discord_id not in ids:
-            ids.append(discord_id)
-            self._save(person_id)
-            logger.info(f"PeopleDB: привязан Discord ID {discord_id} → {person_id}")
-            return True
-        return False  # Уже привязан
+        if discord_id in ids:
+            return False  # Уже привязан
+        prev_ids = list(ids)
+        ids.append(discord_id)
+        self._save(person_id)
+        hub = getattr(self, "memory_hub", None)
+        hub_ok = False
+        if hub is not None:
+            try:
+                person = self._cache[person_id]
+                hub.upsert_person(
+                    person_id,
+                    display_name=(person.get("names") or [person_id])[0],
+                    aliases=list(person.get("names") or []),
+                    meta=person,
+                )
+                hub_ok = True
+            except Exception as e:
+                logger.warning("PeopleDB→Hub link_discord_id failed: %s", e)
+        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
+        if hub is not None and not dual and not hub_ok:
+            self._cache[person_id]["discord_ids"] = prev_ids
+            logger.error(
+                "PeopleDB: Hub link failed and dual_write disabled — discord_id rolled back [%s]",
+                person_id,
+            )
+            return False
+        logger.info(f"PeopleDB: привязан Discord ID {discord_id} → {person_id}")
+        return True
 
     def add_person(self, person_id: str, names: list[str], discord_ids: Optional[list] = None) -> dict:
         """Создаёт новое досье."""

@@ -371,6 +371,34 @@ def main() -> int:
         assert mos.endswith("+03:00") or "+03:00" in mos or mos.endswith("+04:00") or "+04:00" in mos, mos
         configure_timezone(None)  # restore host for later tests
 
+        # link_discord_id must persist via Hub when dual_write=false
+        from core.memory.legacy import PeopleDB as _PDB
+
+        cfg_link = {
+            "memory": {
+                "sqlite_path": str(root / "link.db"),
+                "chroma_db_path": str(root / "chroma_link"),
+                "hub_dual_write_legacy": False,
+                "hub_legacy_fallback": False,
+            }
+        }
+        (root / "chroma_link").mkdir(exist_ok=True)
+        hub_l = MemoryHub(cfg_link, long_memory=_FakeLTM())
+        pdb_l = _PDB(cfg_link)
+        pdb_l.memory_hub = hub_l
+        pdb_l.add_person("alice", ["Алиса"], discord_ids=[])
+        assert pdb_l.link_discord_id("alice", "999888777666555444") is True
+        hub_l2 = MemoryHub(cfg_link, long_memory=_FakeLTM())
+        found = hub_l2.find_person("Алиса", discord_id="999888777666555444")
+        assert found and found.get("id") == "alice", found
+        hub_l.close()
+        hub_l2.close()
+
+        # WM refresh source: Hub snapshot when dual_write=false (no .md required)
+        hub_d.save_wm_snapshot("# WM\n- from hub only", user_id="u_wm", publish_event=False)
+        snap = hub_d.sqlite.latest_wm_snapshot(user_id="u_wm")
+        assert snap and "from hub only" in str(snap.get("content") or ""), snap
+
         hub_d.close()
 
         hub_c.close()
