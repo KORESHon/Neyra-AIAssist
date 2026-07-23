@@ -277,6 +277,14 @@ def remember_knowledge(text: str, category: str = "general", affect_note: str = 
 
 # ─── UpdatePersonFact ────────────────────────────────────────────────────────
 
+def _find_person(name_or_id: str, discord_id: str | None = None):
+    if _memory_hub is not None:
+        return _memory_hub.find_person(name_or_id, discord_id=discord_id)
+    if _people_db is not None:
+        return _people_db.find(name_or_id, discord_id=discord_id)
+    return None
+
+
 @tool
 def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str:
     """
@@ -286,20 +294,44 @@ def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str
     fact — что именно узнала (кратко, своими словами).
     emotion_note — по желанию: как ты это переживаешь (коротко), сохранится рядом с фактом в досье.
     """
-    if _people_db is None:
+    if _people_db is None and _memory_hub is None:
         return "PeopleDB не инициализирована."
 
     emo = (emotion_note or "").strip() or None
-    success = _people_db.update_fact(person_id, fact, emotion=emo)
-    if success:
-        return f"Записала. Теперь знаю про {person_id}: {fact}"
-    else:
-        # Попробуем найти по нечёткому совпадению
-        person = _people_db.find(person_id)
-        if person:
-            _people_db.update_fact(person["id"], fact, emotion=emo)
-            return f"Нашла по имени и записала про {person['names'][0]}: {fact}"
-        return f"Не нашла человека '{person_id}' в базе. Проверь ID."
+    target_id = (person_id or "").strip()
+    if _people_db is not None and target_id in getattr(_people_db, "_cache", {}):
+        success = _people_db.update_fact(target_id, fact, emotion=emo)
+        if success:
+            return f"Записала. Теперь знаю про {target_id}: {fact}"
+
+    person = _find_person(person_id)
+    if person:
+        pid = str(person.get("id") or "").strip()
+        if not pid:
+            return f"Не нашла человека '{person_id}' в базе. Проверь ID."
+        if _people_db is not None:
+            # Ensure cache has the person (hydrate / create) so update_fact can dual-write.
+            if pid not in _people_db._cache:
+                _people_db._cache[pid] = dict(person)
+            success = _people_db.update_fact(pid, fact, emotion=emo)
+            if success:
+                return f"Нашла по имени и записала про {(person.get('names') or [pid])[0]}: {fact}"
+            return f"Не удалось сохранить факт про {pid} (Hub/PeopleDB)."
+        if _memory_hub is not None:
+            try:
+                _memory_hub.add_person_fact(
+                    pid,
+                    fact,
+                    emotion_note=emo,
+                    source="tool",
+                    aliases=list(person.get("names") or []),
+                    display_name=(person.get("names") or [pid])[0],
+                    person_meta=person,
+                )
+                return f"Записала. Теперь знаю про {pid}: {fact}"
+            except Exception as e:
+                return f"Не удалось сохранить: {e}"
+    return f"Не нашла человека '{person_id}' в базе. Проверь ID."
 
 
 # ─── GetPersonInfo ───────────────────────────────────────────────────────────
@@ -311,14 +343,18 @@ def get_person_info(name_or_id: str) -> str:
     Используй когда нужно вспомнить кто это такой и что о нём знаешь.
     name_or_id — имя, ник или ID человека.
     """
-    if _people_db is None:
+    if _people_db is None and _memory_hub is None:
         return "PeopleDB не инициализирована."
 
-    person = _people_db.find(name_or_id)
+    person = _find_person(name_or_id)
     if not person:
         return f"Никого с именем/ником '{name_or_id}' в базе нет. Может это новый человек?"
 
-    summary = _people_db.get_summary(person["id"])
+    pid = str(person.get("id") or "").strip()
+    if _memory_hub is not None:
+        summary = _memory_hub.get_person_summary(pid)
+    else:
+        summary = _people_db.get_summary(pid) if _people_db is not None else ""
     return summary or f"Досье на {name_or_id} есть, но оно пустое."
 
 

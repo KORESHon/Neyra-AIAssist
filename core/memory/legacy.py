@@ -566,11 +566,14 @@ class PeopleDB:
         em = (emotion or "").strip()
         if em:
             entry["emotion"] = em[:500]
+        prev_facts = list(self._cache[person_id].get("dynamic_facts") or [])
+        prev_seen = self._cache[person_id].get("last_seen")
         self._cache[person_id].setdefault("dynamic_facts", []).append(entry)
         self._cache[person_id]["last_seen"] = datetime.now().isoformat()
         self._save(person_id)
         logger.info(f"PeopleDB: факт добавлен [{person_id}]: {fact}")
         hub = getattr(self, "memory_hub", None)
+        hub_ok = False
         if hub is not None:
             try:
                 person = self._cache[person_id]
@@ -583,8 +586,18 @@ class PeopleDB:
                     aliases=list(person.get("names") or []),
                     display_name=(person.get("names") or [person_id])[0],
                 )
+                hub_ok = True
             except Exception as e:
                 logger.warning("PeopleDB→Hub dual-write failed: %s", e)
+        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
+        if hub is not None and not dual and not hub_ok:
+            self._cache[person_id]["dynamic_facts"] = prev_facts
+            self._cache[person_id]["last_seen"] = prev_seen
+            logger.error(
+                "PeopleDB: Hub write failed and dual_write disabled — fact dropped [%s]",
+                person_id,
+            )
+            return False
         return True
 
     def link_discord_id(self, person_id: str, discord_id: str) -> bool:
@@ -614,6 +627,7 @@ class PeopleDB:
         self._save(person_id)
         logger.info(f"PeopleDB: создано новое досье [{person_id}]")
         hub = getattr(self, "memory_hub", None)
+        hub_ok = False
         if hub is not None:
             try:
                 hub.upsert_person(
@@ -622,9 +636,55 @@ class PeopleDB:
                     aliases=list(names or []),
                     meta=person,
                 )
+                hub_ok = True
             except Exception as e:
                 logger.warning("PeopleDB→Hub upsert failed: %s", e)
+        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
+        if hub is not None and not dual and not hub_ok:
+            self._cache.pop(person_id, None)
+            logger.error(
+                "PeopleDB: Hub upsert failed and dual_write disabled — person dropped [%s]",
+                person_id,
+            )
+            return {}
         return person
+
+    def hydrate_from_hub(self, hub: Any) -> int:
+        """Fill in-memory cache from Hub SQLite (needed after cutover / restart)."""
+        if hub is None:
+            return 0
+        loaded = 0
+        try:
+            people = hub.list_people()
+        except Exception as e:
+            logger.warning("PeopleDB.hydrate_from_hub failed: %s", e)
+            return 0
+        for person in people:
+            pid = str(person.get("id") or "").strip()
+            if not pid:
+                continue
+            try:
+                facts = hub.list_person_facts(pid, limit=100)
+                dyn = []
+                for f in reversed(facts):
+                    row: dict[str, Any] = {
+                        "date": str(f.get("created_at") or "")[:10],
+                        "fact": str(f.get("fact") or ""),
+                    }
+                    emo = str(f.get("emotion_note") or "").strip()
+                    if emo:
+                        row["emotion"] = emo
+                    if row["fact"]:
+                        dyn.append(row)
+                merged = dict(person)
+                merged["dynamic_facts"] = dyn
+                self._cache[pid] = merged
+                loaded += 1
+            except Exception as e:
+                logger.debug("PeopleDB hydrate %s: %s", pid, e)
+        if loaded:
+            logger.info("PeopleDB hydrated from Hub SQLite: %s people", loaded)
+        return loaded
 
     def get_summary(self, person_id: str) -> str:
         """Возвращает краткое текстовое досье для инжекта в промпт."""

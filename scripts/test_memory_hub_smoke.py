@@ -83,10 +83,18 @@ def main() -> int:
             emotion_note="тепло",
             aliases=["Алиса"],
             display_name="Алиса",
+            person_meta={"discord_ids": ["123456789012345678"], "names": ["Алиса"]},
         )
         hub.add_diary_note("заметка дня", source="smoke", emotion="calm")
         hub.add_journal_entry("итог", title="день", kind="reflection", publish_event=False)
         hub.save_wm_snapshot("# WM\n- task", user_id="u1", publish_event=False)
+
+        # Cutover-safe identity: SQLite lookup without legacy PeopleDB cache
+        found = hub.find_person("Алиса")
+        assert found and found.get("id") == "p1", found
+        assert hub.find_person("nobody") is None
+        assert hub.get_all_names_map().get("алиса") == "p1"
+        assert "любит чай" in hub.get_person_summary("p1")
 
         snip = hub.working_memory_for_prompt("u1")
         assert "task" in snip or "WM" in snip, snip
@@ -100,6 +108,15 @@ def main() -> int:
         assert st["journal_entries"] == 1, st
         assert st["working_memory_snapshots"] == 1, st
         assert st["allows_raw_dialog_embed"] is False
+
+        # Restart simulation: new Hub on same DB still finds the person
+        hub_re = MemoryHub(
+            {"memory": {"sqlite_path": str(db), "rag_write_mode": "important_only", "hub_legacy_fallback": False}},
+            long_memory=fake,
+            event_bus=bus,
+        )
+        assert hub_re.find_person("Алиса", discord_id="123456789012345678")
+        hub_re.close()
 
         hub2 = MemoryHub(
             {"memory": {"sqlite_path": str(Path(tmp) / "legacy.db"), "rag_write_mode": "legacy_dialog"}},

@@ -331,6 +331,11 @@ class NeyraAgent:
         )
         self.people_db.memory_hub = self.memory_hub
         self.diary.memory_hub = self.memory_hub
+        # After cutover (dual_write off) JSON may be empty — hydrate cache from SQLite.
+        try:
+            self.people_db.hydrate_from_hub(self.memory_hub)
+        except Exception as e:
+            logger.warning("PeopleDB hydrate_from_hub failed: %s", e)
 
         if bool(mem_cfg.get("hub_legacy_import", False)):
             try:
@@ -338,6 +343,7 @@ class NeyraAgent:
 
                 report = run_hub_legacy_import(self.memory_hub, self.config)
                 logger.info("hub_legacy_import completed: %s", report)
+                self.people_db.hydrate_from_hub(self.memory_hub)
             except Exception as e:
                 logger.exception("hub_legacy_import failed: %s", e)
 

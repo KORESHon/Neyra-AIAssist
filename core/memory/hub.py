@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -347,15 +348,92 @@ class MemoryHub:
         if diary is not None:
             self._diary = diary
 
+    @staticmethod
+    def _aliases_list(raw: Any) -> list[str]:
+        if raw is None:
+            return []
+        if isinstance(raw, list):
+            return [str(x).strip() for x in raw if str(x).strip()]
+        if isinstance(raw, str):
+            s = raw.strip()
+            if not s:
+                return []
+            if s.startswith("["):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed if str(x).strip()]
+                except Exception:
+                    pass
+            return [s]
+        return [str(raw).strip()] if str(raw).strip() else []
+
+    def _person_as_legacy_dict(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Normalize SQLite people row to PeopleDB-shaped dict (id/names/discord_ids)."""
+        pid = str(row.get("person_id") or "").strip()
+        aliases = self._aliases_list(row.get("aliases"))
+        meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+        if not aliases and isinstance(meta.get("names"), list):
+            aliases = [str(x).strip() for x in meta["names"] if str(x).strip()]
+        display = str(row.get("display_name") or "").strip()
+        names = aliases or ([display] if display else ([pid] if pid else []))
+        discord_ids: list[str] = []
+        if isinstance(meta.get("discord_ids"), list):
+            discord_ids = [str(x).strip() for x in meta["discord_ids"] if str(x).strip()]
+        return {
+            "id": pid,
+            "names": names,
+            "discord_ids": discord_ids,
+            "static_facts": meta.get("static_facts") if isinstance(meta.get("static_facts"), dict) else {},
+            "dynamic_facts": list(meta.get("dynamic_facts") or [])
+            if isinstance(meta.get("dynamic_facts"), list)
+            else [],
+            "last_seen": row.get("updated_at") or meta.get("last_seen"),
+            "meta": meta,
+        }
+
+    def list_people(self) -> list[dict[str, Any]]:
+        return [self._person_as_legacy_dict(r) for r in self.sqlite.list_people()]
+
     def find_person(self, identifier: str, discord_id: Optional[str] = None) -> Optional[dict[str, Any]]:
-        if self._people_db is None:
-            return None
-        return self._people_db.find(identifier, discord_id=discord_id)
+        """Identity lookup: SQLite first (cutover-safe), then legacy PeopleDB if fallback on."""
+        ident = (identifier or "").strip()
+        ident_lower = ident.lower()
+        discord = (discord_id or "").strip() or None
+
+        for person in self.list_people():
+            if discord and discord in (person.get("discord_ids") or []):
+                return person
+            if not ident_lower:
+                continue
+            if str(person.get("id") or "").lower() == ident_lower:
+                return person
+            names_lower = [str(n).lower() for n in (person.get("names") or [])]
+            if ident_lower in names_lower:
+                return person
+            if any(ident_lower in n or n in ident_lower for n in names_lower if n):
+                return person
+
+        if self.hub_legacy_fallback and self._people_db is not None:
+            return self._people_db.find(identifier, discord_id=discord_id)
+        return None
 
     def get_all_names_map(self) -> dict[str, str]:
-        if self._people_db is None:
-            return {}
-        return self._people_db.get_all_names_map()
+        """Map lowercased name/alias → person_id (SQLite primary)."""
+        result: dict[str, str] = {}
+        for person in self.list_people():
+            pid = str(person.get("id") or "").strip()
+            if not pid:
+                continue
+            result[pid.lower()] = pid
+            for name in person.get("names") or []:
+                key = str(name).strip().lower()
+                if key:
+                    result[key] = pid
+        if self.hub_legacy_fallback and self._people_db is not None:
+            for key, pid in self._people_db.get_all_names_map().items():
+                result.setdefault(key, pid)
+        return result
 
     def get_person_summary(self, person_id: str) -> str:
         """Prompt dossier: prefer SQLite facts when present, else legacy PeopleDB."""

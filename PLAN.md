@@ -66,9 +66,21 @@
 
 Легенда: `[x]` = на ветке PR #1; `[~]` = частично; `[ ]` = не сделано.
 
-**Уже на ветке (кратко):** пакет `core/memory/` (SQLite Hub, chat_log, semantic adapter), dual-write слоёв, `recall_chat` + API с фильтрами, `rag_write_mode`, prompt inject через Hub, backup `.db`, `hub_legacy_import` + флаги fallback/dual-write, ADR-0001, smoke `scripts/test_memory_hub_smoke.py`.
+**Уже на ветке (кратко):** пакет `core/memory/` (SQLite Hub, chat_log, semantic adapter), dual-write слоёв, `recall_chat` + API с фильтрами, `rag_write_mode`, prompt inject через Hub, backup `.db`, `hub_legacy_import` + флаги fallback/dual-write, ADR-0001, smoke `scripts/test_memory_hub_smoke.py`, dashboard/MCP Hub stats, people identity lookup через SQLite (cutover-safe).
 
-**Процесс ревью:** GitHub Copilot quota исчерпан → Cursor Automation **Auto Review Neyra** (comment-only на push в PR, без правок кода). Перед коммитом в чате — смотреть комменты бота при наличии.
+**Процесс ревью:** Cursor Automation **Auto Review Neyra** (comment-only на push в PR). Перед коммитом — смотреть комменты бота при наличии.
+
+#### Что осталось до закрытия 1A (короткий чеклист)
+
+| # | Задача | Статус |
+|---|--------|--------|
+| 1 | People/diary/journal/WM: dual-write ещё включён по умолчанию; истина должна стать **только SQLite** | `[~]` Hub-only writes + people lookup SQLite готовы; flags ещё on |
+| 2 | Cutover flags: `hub_legacy_import/fallback/dual_write` → `false` на стенде после импорта | `[ ]` |
+| 3 | **Удалить** file PeopleDB/Diary/journal/WM stores + dual-write shims из кода | `[ ]` финал |
+| 4 | Полный e2e на стенде: chat → Hub chat_log → `/v1/memory/*` / healthcheck | `[ ]` |
+| 5 | Merge PR #1 в `main` после зелёного cutover | `[ ]` |
+
+**Не блокирует 1A:** Fast-Path умного дома → этап 2. Фаза **1B** (раскладка `core/`) — только после зелёной 1A.
 
 ---
 
@@ -251,18 +263,17 @@
 
 - [x] SQLite init/migrate; chat_log на каждый ход параллельно STM. *(пакет `core/memory/`, dual-write из agent)*
 - [x] Tool/API `recall_chat` / chronological list — «N сообщений назад» без RAG. *(фильтр `user_id` и/или `channel_id` обязателен)*
-- [~] People / diary / journal / WM через Hub → SQLite. *(dual-write + prompt via Hub; флаги `hub_dual_write_legacy` / `hub_legacy_fallback`)*
+- [~] People / diary / journal / WM через Hub → SQLite. *(dual-write + prompt via Hub; `find_person`/`get_all_names_map` читают SQLite; флаги legacy ещё on по умолчанию)*
 - [x] Chroma: raw full-chat embed выключен по умолчанию (`rag_write_mode` ≠ `legacy_dialog`); knowledge через Hub.
 - [x] `rag_write_mode` и пути из конфига (`sqlite_path`, `stm_max_messages`, …); example + local синхронизированы.
 - [x] Event Bus: `memory.chat_log_append`; прежние `memory.*` сохранены (journal/WM/STM/LTM).
 - [x] `/v1/memory/*`, `/v1/debug/memory` — Hub stats / recall / search / import-legacy; MCP `neyra_inspect_memory` + `neyra_memory_stats` / policies; dashboard Memory показывает Hub SQLite counts.
-- [~] Cutover: `hub_legacy_import` + флаги fallback/dual-write есть; **legacy ещё не удалён** (удаление — обязательный финал 1A).
+- [~] Cutover: import + флаги есть; **legacy stores ещё в коде** (удаление — финал 1A, см. таблицу «Что осталось»).
 - [x] Backup учитывает `.db` (+ wal/shm) и Chroma (`backup_manifest.json`).
 - [x] Промпт talk/brain читает people / diary / WM через Hub (fallback legacy внутри Hub на время cutover).
-- [~] Smoke: `scripts/test_memory_hub_smoke.py` зелёный; полный e2e chat→healthcheck на стенде — по мере merge.
+- [~] Smoke: `scripts/test_memory_hub_smoke.py` (в т.ч. people lookup после «рестарта» Hub); полный e2e chat→healthcheck на стенде — ещё нет.
 - [x] Fast-Path умного дома — **отложено в этап 2** (решение зафиксировано: не блокирует cutover 1A; edge — с колонкой на этапе 4).
 - [ ] Финал 1A: выключить legacy flags → удалить file PeopleDB/Diary/journal/WM stores и dual-write shims из кода.
-
 **Фаза 1B**
 
 - [ ] `plugin_manager` / `core/plugins/` без регрессии sandbox/reload/rollback.
@@ -302,7 +313,7 @@
 - Двусторонний WS-мост `Web UI <-> Event Bus`.
 - Браузер публикует события (чат, музыка, плагины) и подписывается на stream-ответы и статусы.
 - Управление плагинами и чатом в одном transport-контуре.
-- Задел под колонка/edge: тот же WSS-контракт (аудио-чанки / текст / события) — без обязательной реализации edge в этом этапе.
+- Задел под колонка/edge/desktop-приложение/android-приложение/ios-приложение: тот же WSS-контракт (аудио-чанки / текст / события) — без обязательной реализации edge в этом этапе.
 
 **Критерии приёмки:**
 

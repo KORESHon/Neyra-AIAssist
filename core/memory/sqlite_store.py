@@ -248,13 +248,15 @@ class SqliteStore:
             row = cur.fetchone()
             if not row:
                 return None
-            d = self._row_to_dict(row)
-            if isinstance(d.get("aliases"), str) and d["aliases"].strip().startswith("["):
-                try:
-                    d["aliases"] = json.loads(d["aliases"])
-                except Exception:
-                    pass
-            return d
+            return self._person_row_to_dict(row)
+
+    def list_people(self) -> list[dict[str, Any]]:
+        """All people rows (for identity lookup / cache hydrate)."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT * FROM people ORDER BY person_id ASC"
+            )
+            return [self._person_row_to_dict(r) for r in cur.fetchall()]
 
     def list_person_facts(self, person_id: str, limit: int = 20) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 200))
@@ -373,4 +375,17 @@ class SqliteStore:
                 d["meta"] = json.loads(meta)
             except Exception:
                 pass
+        return d
+
+    def _person_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        d = self._row_to_dict(row)
+        aliases = d.get("aliases")
+        if isinstance(aliases, str) and aliases.strip():
+            if aliases.strip().startswith("["):
+                try:
+                    d["aliases"] = json.loads(aliases)
+                except Exception:
+                    d["aliases"] = [aliases]
+            else:
+                d["aliases"] = [aliases]
         return d

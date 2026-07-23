@@ -53,13 +53,16 @@ class ReflectionEngine:
         return []
 
     def _save_journal(self):
-        self.journal_path.write_text(
-            json.dumps(self._journal, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
         agent = getattr(self, "agent", None)
         bus = getattr(agent, "event_bus", None) if agent is not None else None
         hub = getattr(agent, "memory_hub", None) if agent is not None else None
+        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
+        if dual:
+            self.journal_path.write_text(
+                json.dumps(self._journal, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        hub_ok = False
         if hub is not None and self._journal:
             try:
                 last = self._journal[-1] if isinstance(self._journal[-1], dict) else {"text": str(self._journal[-1])}
@@ -75,8 +78,12 @@ class ReflectionEngine:
                         ts=str(last.get("timestamp") or last.get("date") or "") or None,
                         publish_event=bus is None,  # avoid double event if we publish below
                     )
+                    hub_ok = True
             except Exception as e:
                 logger.warning("Reflection→Hub journal dual-write failed: %s", e)
+        if hub is not None and not dual and not hub_ok and self._journal:
+            logger.error("Reflection: Hub journal write failed and dual_write disabled — entry not persisted")
+            return
         if bus is not None:
             from core.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
 
@@ -272,16 +279,27 @@ class ReflectionEngine:
             return
         people_db = getattr(self.agent, "people_db", None)
         diary = getattr(self.agent, "diary", None)
-        if people_db is None:
+        hub = getattr(self.agent, "memory_hub", None)
+        if people_db is None and hub is None:
             return
 
         updates = list(result.get("people_updates") or [])
         existing_norm: dict[str, set[str]] = {}
-        for pid, person in getattr(people_db, "_cache", {}).items():
-            norms: set[str] = set()
-            for row in list(person.get("dynamic_facts") or []):
-                norms.add(self._normalize_fact_text(str(row.get("fact") or "")))
-            existing_norm[pid] = norms
+        if hub is not None:
+            for person in hub.list_people():
+                pid = str(person.get("id") or "").strip()
+                if not pid or pid in existing_norm:
+                    continue
+                norms: set[str] = set()
+                for row in hub.list_person_facts(pid, limit=80):
+                    norms.add(self._normalize_fact_text(str(row.get("fact") or "")))
+                existing_norm[pid] = norms
+        elif people_db is not None:
+            for pid, person in getattr(people_db, "_cache", {}).items():
+                norms = set()
+                for row in list(person.get("dynamic_facts") or []):
+                    norms.add(self._normalize_fact_text(str(row.get("fact") or "")))
+                existing_norm[pid] = norms
 
         added: list[str] = []
         for item in updates:
@@ -291,7 +309,10 @@ class ReflectionEngine:
             fact = str(item.get("fact") or "").strip()
             if not hint or not fact or not self._is_high_signal_fact(fact):
                 continue
-            person = people_db.find(hint)
+            if hub is not None:
+                person = hub.find_person(hint)
+            else:
+                person = people_db.find(hint) if people_db is not None else None
             if not person:
                 continue
             pid = str(person.get("id") or "").strip()
@@ -302,7 +323,24 @@ class ReflectionEngine:
                 continue
             if norm in existing_norm.setdefault(pid, set()):
                 continue
-            ok = people_db.update_fact(pid, fact)
+            ok = False
+            if people_db is not None:
+                if pid not in getattr(people_db, "_cache", {}):
+                    people_db._cache[pid] = dict(person)
+                ok = people_db.update_fact(pid, fact)
+            elif hub is not None:
+                try:
+                    hub.add_person_fact(
+                        pid,
+                        fact,
+                        source="reflection",
+                        aliases=list(person.get("names") or []),
+                        display_name=(person.get("names") or [pid])[0],
+                        person_meta=person,
+                    )
+                    ok = True
+                except Exception:
+                    ok = False
             if ok:
                 existing_norm[pid].add(norm)
                 added.append(f"{pid}: {fact}")
