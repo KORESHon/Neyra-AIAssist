@@ -399,6 +399,62 @@ def main() -> int:
         snap = hub_d.sqlite.latest_wm_snapshot(user_id="u_wm")
         assert snap and "from hub only" in str(snap.get("content") or ""), snap
 
+        # Person summary: static_facts from meta even with 0 person_facts (cutover seed)
+        hub_d.hub_legacy_fallback = False
+        hub_d.upsert_person(
+            "seed1",
+            display_name="Сид",
+            aliases=["Сид"],
+            meta={"static_facts": {"city": "Киров", "notes": "seed"}, "discord_ids": [], "names": ["Сид"]},
+        )
+        summary0 = hub_d.get_person_summary("seed1")
+        assert "Киров" in summary0 and "seed" in summary0, summary0
+        hub_d.add_person_fact("seed1", "любит чай", emotion_note="ок")
+        summary1 = hub_d.get_person_summary("seed1")
+        assert "Киров" in summary1 and "любит чай" in summary1, summary1
+
+        # Hub WM read failure must abort refresh (not overwrite with default template)
+        import asyncio
+        from core import working_memory as wm_mod
+
+        saved_before = str(hub_d.sqlite.latest_wm_snapshot(user_id="u_wm")["content"])
+        real_latest = hub_d.sqlite.latest_wm_snapshot
+
+        def _boom(**kwargs):
+            raise RuntimeError("boom-read")
+
+        hub_d.sqlite.latest_wm_snapshot = _boom  # type: ignore[method-assign]
+
+        class _AgentWM:
+            memory_hub = hub_d
+            llm_memory = object()  # must not be invoked
+            llm_reflection = None
+            llm_talk = None
+            event_bus = None
+
+        async def _run_refresh():
+            await wm_mod.refresh_working_memory_async(
+                _AgentWM(),
+                {
+                    "memory": {
+                        "hub_dual_write_legacy": False,
+                        "working_memory": {"enabled": True, "storage_dir": str(root / "wm_x")},
+                    }
+                },
+                root=root,
+                internal_user_id="u_wm",
+                user_message="hi",
+                assistant_text="yo",
+                stm_tail="",
+                speaker_label="U",
+                reason="smoke",
+            )
+
+        asyncio.run(_run_refresh())
+        hub_d.sqlite.latest_wm_snapshot = real_latest  # type: ignore[method-assign]
+        after = hub_d.sqlite.latest_wm_snapshot(user_id="u_wm")
+        assert after and str(after.get("content")) == saved_before, after
+
         hub_d.close()
 
         hub_c.close()

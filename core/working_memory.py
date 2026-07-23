@@ -128,7 +128,9 @@ async def refresh_working_memory_async(
             if snap and str(snap.get("content") or "").strip():
                 current = str(snap["content"]).strip()
         except Exception as e:
+            # Same as file-path: do not rewrite from empty template on read failure.
             logger.warning("working_memory Hub read for refresh: %s", e)
+            return
         if not current:
             current = _default_template()
     else:

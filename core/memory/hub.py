@@ -448,34 +448,48 @@ class MemoryHub:
         return result
 
     def get_person_summary(self, person_id: str) -> str:
-        """Prompt dossier: prefer SQLite facts when present, else legacy PeopleDB."""
+        """Prompt dossier from SQLite person+facts; legacy PeopleDB only if no Hub row."""
         pid = (person_id or "").strip()
         if not pid:
             return ""
-        facts = self.sqlite.list_person_facts(pid, limit=5)
         person = self.sqlite.get_person(pid)
-        if person and facts:
+        if person:
             names = person.get("aliases") or []
             if isinstance(names, str):
                 names = [names]
+            if not isinstance(names, list):
+                names = []
             title = person.get("display_name") or (names[0] if names else pid)
             lines = [f"Досье на {title}:"]
-            meta = person.get("meta") if isinstance(person.get("meta"), dict) else {}
-            discord_ids = meta.get("discord_ids") if isinstance(meta, dict) else None
+            meta = person.get("meta")
+            if isinstance(meta, str) and meta.strip():
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            discord_ids = meta.get("discord_ids")
             if isinstance(discord_ids, list) and discord_ids:
                 raw_id = str(discord_ids[0] or "").strip()
-                # Discord snowflake: digits only (avoid prompt injection / malformed <@...>)
                 if raw_id.isdigit() and 5 <= len(raw_id) <= 32:
                     lines.append(f"  Discord пинг (ИСПОЛЬЗУЙ ЧТОБЫ ТЕГНУТЬ ЕГО): <@{raw_id}>")
-            lines.append("  Новые факты:")
-            for f in reversed(facts):
-                fact_line = str(f.get("fact") or "")
-                emo = str(f.get("emotion_note") or "").strip()
-                ts = str(f.get("created_at") or "")[:10]
-                if emo:
-                    lines.append(f"    [{ts}] {fact_line} (настроение Нейры при записи: {emo})")
-                else:
-                    lines.append(f"    [{ts}] {fact_line}")
+            static = meta.get("static_facts") if isinstance(meta.get("static_facts"), dict) else {}
+            for key, val in static.items():
+                lines.append(f"  {key}: {val}")
+            facts = self.sqlite.list_person_facts(pid, limit=5)
+            if facts:
+                lines.append("  Новые факты:")
+                for f in reversed(facts):
+                    fact_line = str(f.get("fact") or "")
+                    emo = str(f.get("emotion_note") or "").strip()
+                    ts = str(f.get("created_at") or "")[:10]
+                    if emo:
+                        lines.append(
+                            f"    [{ts}] {fact_line} (настроение Нейры при записи: {emo})"
+                        )
+                    else:
+                        lines.append(f"    [{ts}] {fact_line}")
             return "\n".join(lines)
         if self._people_db is not None and self.hub_legacy_fallback:
             return self._people_db.get_summary(pid) or ""
