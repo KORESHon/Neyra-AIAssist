@@ -12,6 +12,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 import re
 
 logger = logging.getLogger("neyra.reflection")
@@ -147,65 +148,6 @@ class ReflectionEngine:
                 )
             )
         return True
-
-    def _get_logs_for_date(self, date: datetime) -> str:
-        """Читает строки из chat.log за указанную дату."""
-        if not self.chat_log_path.exists():
-            return ""
-
-        date_str = date.strftime("%Y-%m-%d")
-        lines = []
-        try:
-            for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
-                if date_str in line:
-                    lines.append(line)
-        except Exception as e:
-            logger.error(f"Ошибка чтения chat.log: {e}")
-
-        return "\n".join(lines)
-
-    def _get_logs_for_last_hour(self) -> str:
-        """Читает свежие строки chat.log за последний час."""
-        if not self.chat_log_path.exists():
-            return ""
-        cutoff = datetime.now() - timedelta(hours=1)
-        lines: list[str] = []
-        try:
-            for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
-                # Формат: [YYYY-MM-DD HH:MM:SS] ...
-                if not line.startswith("[") or "]" not in line:
-                    continue
-                ts_str = line[1 : line.find("]")]
-                try:
-                    ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    continue
-                if ts >= cutoff:
-                    lines.append(line)
-        except Exception as e:
-            logger.error(f"Ошибка чтения hourly chat.log: {e}")
-        return "\n".join(lines)
-
-    def _get_logs_for_last_hours(self, hours: int) -> str:
-        """Читает строки chat.log за последние N часов."""
-        if not self.chat_log_path.exists():
-            return ""
-        cutoff = datetime.now() - timedelta(hours=max(1, int(hours)))
-        lines: list[str] = []
-        try:
-            for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
-                if not line.startswith("[") or "]" not in line:
-                    continue
-                ts_str = line[1 : line.find("]")]
-                try:
-                    ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    continue
-                if ts >= cutoff:
-                    lines.append(line)
-        except Exception as e:
-            logger.error("Ошибка чтения chat.log за %s часов: %s", hours, e)
-        return "\n".join(lines)
 
     async def reflect(self, date: datetime = None, force: bool = False) -> str:
         """Ночная рефлексия: дневник за 24ч -> JSON (people_updates/global_lore/behavior_rules)."""
@@ -468,11 +410,50 @@ class ReflectionEngine:
             logger.error("Ошибка small_reflection: %s", e)
             return ""
 
-    def _get_diary_last_24h(self) -> str:
-        """Читает записи из neyra_diary.jsonl за последние 24 часа."""
+    def _parse_iso_ts(self, raw: str) -> Optional[datetime]:
+        s = (raw or "").strip()
+        if not s:
+            return None
+        try:
+            # Support Z suffix and naive local timestamps from legacy files
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            return datetime.fromisoformat(s)
+        except Exception:
+            return None
+
+    def _diary_lines_from_hub(self, hub, cutoff: datetime) -> str:
+        rows: list[str] = []
+        try:
+            notes = hub.list_diary_notes(limit=300, newest_first=True)
+        except Exception as e:
+            logger.error("Ошибка чтения дневника из Hub за 24ч: %s", e)
+            return ""
+        for item in notes:
+            ts = self._parse_iso_ts(str(item.get("ts") or ""))
+            if ts is None:
+                continue
+            # Compare naive vs aware safely
+            try:
+                if ts.tzinfo is not None and cutoff.tzinfo is None:
+                    ts = ts.replace(tzinfo=None)
+                elif ts.tzinfo is None and cutoff.tzinfo is not None:
+                    cutoff = cutoff.replace(tzinfo=None)
+            except Exception:
+                pass
+            if ts < cutoff:
+                # notes are newest-first; older than cutoff → stop
+                break
+            source = str(item.get("source") or "unknown")
+            text = str(item.get("text") or "").strip()
+            if text:
+                rows.append(f"[{ts.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
+        rows.reverse()  # chronological for LLM
+        return "\n".join(rows)
+
+    def _diary_lines_from_file(self, cutoff: datetime) -> str:
         if not self.diary_path.exists():
             return ""
-        cutoff = datetime.now() - timedelta(hours=24)
         rows: list[str] = []
         try:
             for line in self.diary_path.read_text(encoding="utf-8").splitlines():
@@ -483,14 +464,8 @@ class ReflectionEngine:
                     item = json.loads(line)
                 except Exception:
                     continue
-                ts_raw = str(item.get("timestamp") or "").strip()
-                if not ts_raw:
-                    continue
-                try:
-                    ts = datetime.fromisoformat(ts_raw)
-                except Exception:
-                    continue
-                if ts < cutoff:
+                ts = self._parse_iso_ts(str(item.get("timestamp") or ""))
+                if ts is None or ts < cutoff:
                     continue
                 source = str(item.get("source") or "unknown")
                 text = str(item.get("text") or "").strip()
@@ -499,6 +474,99 @@ class ReflectionEngine:
         except Exception as e:
             logger.error("Ошибка чтения дневника за 24ч: %s", e)
         return "\n".join(rows)
+
+    def _get_diary_last_24h(self) -> str:
+        """Diary for nightly reflect: Hub SQLite when cutover, else JSONL (+ Hub fallback)."""
+        cutoff = datetime.now() - timedelta(hours=24)
+        hub = self._memory_hub()
+        if hub is not None and not self._hub_dual_write():
+            return self._diary_lines_from_hub(hub, cutoff)
+        file_text = self._diary_lines_from_file(cutoff)
+        if file_text:
+            return file_text
+        if hub is not None:
+            return self._diary_lines_from_hub(hub, cutoff)
+        return ""
+
+    def _chat_lines_from_hub(self, *, cutoff: Optional[datetime] = None, date_str: Optional[str] = None) -> str:
+        hub = self._memory_hub()
+        if hub is None:
+            return ""
+        rows_out: list[str] = []
+        try:
+            rows = hub.list_chat(limit=500, newest_first=True)
+        except Exception as e:
+            logger.error("Ошибка чтения chat_log из Hub: %s", e)
+            return ""
+        for item in rows:
+            ts = self._parse_iso_ts(str(item.get("ts") or ""))
+            if ts is None:
+                continue
+            try:
+                if cutoff is not None and ts.tzinfo is not None and cutoff.tzinfo is None:
+                    ts_cmp = ts.replace(tzinfo=None)
+                else:
+                    ts_cmp = ts
+            except Exception:
+                ts_cmp = ts
+            if cutoff is not None and ts_cmp < cutoff:
+                break
+            if date_str is not None and ts.strftime("%Y-%m-%d") != date_str:
+                continue
+            role = str(item.get("role") or "?")
+            who = str(item.get("display_name") or item.get("user_id") or role)
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            rows_out.append(f"[{ts.strftime('%Y-%m-%d %H:%M:%S')}] {who}: {text}")
+        rows_out.reverse()
+        return "\n".join(rows_out)
+
+    def _get_logs_for_date(self, date: datetime) -> str:
+        """Читает строки чата за указанную дату (Hub при cutover, иначе chat.log)."""
+        date_str = date.strftime("%Y-%m-%d")
+        if not self._hub_dual_write():
+            return self._chat_lines_from_hub(date_str=date_str)
+        if not self.chat_log_path.exists():
+            hub_text = self._chat_lines_from_hub(date_str=date_str)
+            return hub_text
+        lines = []
+        try:
+            for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
+                if date_str in line:
+                    lines.append(line)
+        except Exception as e:
+            logger.error(f"Ошибка чтения chat.log: {e}")
+        text = "\n".join(lines)
+        return text or self._chat_lines_from_hub(date_str=date_str)
+
+    def _get_logs_for_last_hour(self) -> str:
+        """Читает свежие строки чата за последний час."""
+        return self._get_logs_for_last_hours(1)
+
+    def _get_logs_for_last_hours(self, hours: int) -> str:
+        """Читает строки чата за последние N часов (Hub при cutover, иначе chat.log)."""
+        cutoff = datetime.now() - timedelta(hours=max(1, int(hours)))
+        if not self._hub_dual_write():
+            return self._chat_lines_from_hub(cutoff=cutoff)
+        if not self.chat_log_path.exists():
+            return self._chat_lines_from_hub(cutoff=cutoff)
+        lines: list[str] = []
+        try:
+            for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
+                if not line.startswith("[") or "]" not in line:
+                    continue
+                ts_str = line[1 : line.find("]")]
+                try:
+                    ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+                if ts >= cutoff:
+                    lines.append(line)
+        except Exception as e:
+            logger.error("Ошибка чтения chat.log за %s часов: %s", hours, e)
+        text = "\n".join(lines)
+        return text or self._chat_lines_from_hub(cutoff=cutoff)
 
     @staticmethod
     def _extract_json_blob(raw: str) -> str:

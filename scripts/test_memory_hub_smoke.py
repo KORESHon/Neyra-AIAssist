@@ -271,6 +271,52 @@ def main() -> int:
             pdb.hydrate_from_hub(hub_dual)
         assert pdb.find("HubOnly") is not None or hub_dual.find_person("HubOnly") is not None
 
+        # Diary input for reflect after cutover (Hub-only, no JSONL)
+        diary_path = root / "neyra_diary.jsonl"
+        cfg_diary = {
+            "memory": {
+                "sqlite_path": str(root / "diary_cutover.db"),
+                "diary_path": str(diary_path),
+                "journal_path": str(root / "j2.json"),
+                "hub_dual_write_legacy": False,
+                "hub_legacy_fallback": False,
+            },
+            "logging": {"chat_log": str(root / "chat2.log")},
+        }
+        (root / "chat2.log").write_text("", encoding="utf-8")
+        hub_d = MemoryHub(cfg_diary, long_memory=_FakeLTM())
+        from datetime import datetime, timedelta
+
+        hub_d.add_diary_note(
+            "свежая заметка для reflect",
+            source="smoke",
+            ts=(datetime.now() - timedelta(hours=1)).isoformat(),
+        )
+        hub_d.append_chat_batch(
+            [
+                {
+                    "role": "user",
+                    "text": "привет cutover",
+                    "user_id": "u1",
+                    "display_name": "U",
+                    "ts": datetime.now().isoformat(),
+                }
+            ],
+            publish_event=False,
+        )
+
+        class _AgentD:
+            memory_hub = hub_d
+            event_bus = None
+
+        refl_d = ReflectionEngine(cfg_diary, _AgentD())
+        diary_24 = refl_d._get_diary_last_24h()
+        assert "свежая заметка для reflect" in diary_24, diary_24
+        assert not diary_path.exists()
+        chat_hour = refl_d._get_logs_for_last_hours(2)
+        assert "привет cutover" in chat_hour, chat_hour
+        hub_d.close()
+
         hub_c.close()
         hub_dual.close()
 
