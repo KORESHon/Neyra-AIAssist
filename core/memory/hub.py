@@ -17,7 +17,7 @@ from core.event_bus import (
 )
 from core.memory.semantic_index import ChromaSemanticIndex, SemanticIndex
 from core.memory.sqlite_store import SqliteStore
-from core.timeutil import configure_timezone, now_iso, now_local
+from core.timeutil import configure_timezone, now_iso
 
 logger = logging.getLogger("neyra.memory.hub")
 
