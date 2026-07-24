@@ -33,13 +33,17 @@ You still need the **admin** Bearer token (`INTERNAL_API_TOKEN` / `internal_api.
 
 ## Install
 
-From the repository root:
+Prefer the **main project venv** (Windows: `.venv_win`, Linux/WSL: `.venv` or `~/neyra-venv`) — `mcp` / `httpx` are already covered by root `requirements.txt` when that env is fully installed. Point Cursor MCP at that interpreter + `tools/mcp_server/server.py`.
+
+Optional dedicated env (only if you want isolation):
 
 ```bash
-python -m venv .venv-mcp
-# Windows: .venv-mcp\Scripts\activate
+python -m venv .venv_mcp
+# Windows: .venv_mcp\Scripts\activate
 pip install -r tools/mcp_server/requirements.txt
 ```
+
+Legacy name `.venv-mcp` is obsolete; do not create it.
 
 ## Log file resolution
 
@@ -52,8 +56,10 @@ pip install -r tools/mcp_server/requirements.txt
 
 In **Cursor Settings → MCP**, add a stdio server:
 
-- **Command:** Python interpreter with deps installed (e.g. `.venv-mcp\Scripts\python.exe`).
+- **Command:** Python from the main project venv (e.g. `.venv_win\Scripts\python.exe`) or optional `.venv_mcp`.
 - **Args:** full path to `tools/mcp_server/server.py`.
+
+Cursor starts this MCP **alongside** the IDE (stdio) whenever tools are used; the Neyra **core** must be running separately (`main.py --mode core`) so HTTP tools can reach `http://127.0.0.1:8787`.
 
 Example JSON (adjust paths):
 
@@ -61,8 +67,11 @@ Example JSON (adjust paths):
 {
   "mcpServers": {
     "neyra-debug": {
-      "command": "Z:\\path\\to\\AIAssist\\.venv-mcp\\Scripts\\python.exe",
-      "args": ["Z:\\path\\to\\AIAssist\\tools\\mcp_server\\server.py"]
+      "command": "Z:\\path\\to\\AIAssist\\.venv_win\\Scripts\\python.exe",
+      "args": ["Z:\\path\\to\\AIAssist\\tools\\mcp_server\\server.py"],
+      "env": {
+        "NEYRA_API_BASE": "http://127.0.0.1:8787"
+      }
     }
   }
 }
@@ -95,9 +104,10 @@ With token:
 {
   "mcpServers": {
     "neyra-debug": {
-      "command": "Z:\\path\\to\\AIAssist\\.venv-mcp\\Scripts\\python.exe",
+      "command": "Z:\\path\\to\\AIAssist\\.venv_win\\Scripts\\python.exe",
       "args": ["Z:\\path\\to\\AIAssist\\tools\\mcp_server\\server.py"],
       "env": {
+        "NEYRA_API_BASE": "http://127.0.0.1:8787",
         "NEYRA_API_TOKEN": "your_token_from_config"
       }
     }

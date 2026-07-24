@@ -74,11 +74,11 @@
 
 | # | Задача | Статус |
 |---|--------|--------|
-| 1 | People/diary/journal/WM: dual-write ещё включён по умолчанию; истина должна стать **только SQLite** | `[~]` offline cutover green; flags в example ещё on |
-| 2 | Cutover flags: `hub_legacy_import/fallback/dual_write` → `false` на стенде после импорта | `[ ]` |
+| 1 | People/diary/journal/WM: dual-write ещё включён по умолчанию; истина должна стать **только SQLite** | `[x]` defaults `hub_legacy_fallback`/`hub_dual_write_legacy: false` (example + local) |
+| 2 | Cutover flags: `hub_legacy_import/fallback/dual_write` → `false` на стенде после импорта | `[x]` стенд + example; import остаётся false |
 | 3 | **Удалить** file PeopleDB/Diary/journal/WM stores + dual-write shims из кода | `[ ]` финал |
-| 4 | Полный e2e на стенде: chat → Hub chat_log → `/v1/memory/*` / healthcheck | `[~]` offline cutover + people detail resolve; live — нет |
-| 5 | Merge PR #1 в `main` после зелёного cutover | `[ ]` |
+| 4 | Полный e2e на стенде: chat → Hub chat_log → `/v1/memory/*` / healthcheck | `[x]` live 2026-07-24 MCP; restart smoke OK |
+| 5 | Merge PR #1 в `main` после зелёного cutover | `[ ]` после удаления legacy (#3) |
 
 **API cutover-safe (на ветке):** `GET /v1/memory/people/{id}` резолвит id/имя → legacy-shape + summary/facts по каноническому `person_id` (как list).
 

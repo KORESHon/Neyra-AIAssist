@@ -245,11 +245,12 @@ memory:
 
   # EN: Allow Hub prompt reads to fall back to legacy files when SQLite has no rows (cutover/test). Set false before deleting legacy.
   # RU: Разрешить fallback чтения промпта из legacy-файлов, если в SQLite пусто (cutover/тест). Перед удалением legacy — false.
-  hub_legacy_fallback: true
+  # After live Hub e2e (2026-07): default OFF — SQLite is source of truth.
+  hub_legacy_fallback: false
 
   # EN: Also write people/diary to legacy json/jsonl (dual-write). Set false when SQLite is sole store.
   # RU: Параллельно писать people/diary в legacy json/jsonl. Выключить, когда истина только SQLite.
-  hub_dual_write_legacy: true
+  hub_dual_write_legacy: false
 
   # EN: ChromaDB storage directory for vector memory.
   # RU: Папка ChromaDB для векторной памяти.

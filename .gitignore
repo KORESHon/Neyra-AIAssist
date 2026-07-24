@@ -8,6 +8,7 @@ Diplom.md
 .venv_win/
 .venv_pycord/
 .venv_rvc/
+.venv_mcp/
 .venv-mcp/
 __pycache__/
 *.pyc

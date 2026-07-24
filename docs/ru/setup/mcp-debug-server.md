@@ -28,13 +28,19 @@
 
 ## Установка
 
-Из корня репозитория:
+Предпочтительно **основной venv проекта** (Windows: `.venv_win`, Linux/WSL: `.venv` или `~/neyra-venv`) — пакеты `mcp`/`httpx` уже есть при полной установке root `requirements.txt`. В Cursor MCP указывайте этот интерпретатор и `tools/mcp_server/server.py`.
+
+Cursor поднимает MCP **параллельно с IDE** (stdio) при вызове tools; ядро Нейры должно быть запущено отдельно (`main.py --mode core`), иначе HTTP-tools к `http://127.0.0.1:8787` не достучатся.
+
+Отдельный env нужен только для изоляции:
 
 ```bash
-python -m venv .venv-mcp
-.venv-mcp\Scripts\activate
+python -m venv .venv_mcp
+.venv_mcp\Scripts\activate
 pip install -r tools/mcp_server/requirements.txt
 ```
+
+Имя `.venv-mcp` устарело — не создавайте его.
 
 ## Путь к логу
 
