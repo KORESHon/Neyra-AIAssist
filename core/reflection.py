@@ -52,7 +52,7 @@ class ReflectionEngine:
 
     def _hub_dual_write(self) -> bool:
         hub = self._memory_hub()
-        return hub is None or bool(getattr(hub, "hub_dual_write_legacy", True))
+        return hub is None or bool(getattr(hub, "hub_dual_write_legacy", False))
 
     def _load_journal(self) -> list:
         if self.journal_path.exists():
@@ -65,7 +65,7 @@ class ReflectionEngine:
     def _hydrate_journal_from_hub(self) -> int:
         """Rebuild in-memory journal from SQLite when Hub is primary (cutover)."""
         hub = self._memory_hub()
-        if hub is None or bool(getattr(hub, "hub_dual_write_legacy", True)):
+        if hub is None or bool(getattr(hub, "hub_dual_write_legacy", False)):
             return 0
         try:
             rows = hub.list_journal_entries(limit=500, newest_first=False)

@@ -519,7 +519,7 @@ class PeopleDB:
         if person_id not in self._cache:
             return
         hub = getattr(self, "memory_hub", None)
-        if hub is not None and not getattr(hub, "hub_dual_write_legacy", True):
+        if hub is not None and not getattr(hub, "hub_dual_write_legacy", False):
             return
         path = self.db_dir / f"{person_id}.json"
         path.write_text(
@@ -589,7 +589,7 @@ class PeopleDB:
                 hub_ok = True
             except Exception as e:
                 logger.warning("PeopleDB→Hub dual-write failed: %s", e)
-        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
+        dual = hub is None or getattr(hub, "hub_dual_write_legacy", False)
         if hub is not None and not dual and not hub_ok:
             self._cache[person_id]["dynamic_facts"] = prev_facts
             self._cache[person_id]["last_seen"] = prev_seen
@@ -625,7 +625,7 @@ class PeopleDB:
                 hub_ok = True
             except Exception as e:
                 logger.warning("PeopleDB→Hub link_discord_id failed: %s", e)
-        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
+        dual = hub is None or getattr(hub, "hub_dual_write_legacy", False)
         if hub is not None and not dual and not hub_ok:
             self._cache[person_id]["discord_ids"] = prev_ids
             logger.error(
@@ -662,7 +662,7 @@ class PeopleDB:
                 hub_ok = True
             except Exception as e:
                 logger.warning("PeopleDB→Hub upsert failed: %s", e)
-        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
+        dual = hub is None or getattr(hub, "hub_dual_write_legacy", False)
         if hub is not None and not dual and not hub_ok:
             self._cache.pop(person_id, None)
             logger.error(
@@ -779,7 +779,7 @@ class NeyraDiary:
         }
         try:
             hub = getattr(self, "memory_hub", None)
-            dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
+            dual = hub is None or getattr(hub, "hub_dual_write_legacy", False)
             legacy_ok = False
             hub_ok = False
             if dual:

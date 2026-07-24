@@ -472,7 +472,7 @@ class NeyraAgent:
     def _init_people_db(self):
         """Создаёт базовые досье если PeopleDB/Hub ещё пустые (не после cutover)."""
         hub = getattr(self, "memory_hub", None)
-        dual = hub is None or bool(getattr(hub, "hub_dual_write_legacy", True))
+        dual = hub is None or bool(getattr(hub, "hub_dual_write_legacy", False))
         # After cutover: Hub is primary — never reseed JSON over hydrated SQLite people.
         if hub is not None and not dual:
             try:
