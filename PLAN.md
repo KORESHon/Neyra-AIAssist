@@ -239,21 +239,50 @@ Cutover-флаги (`hub_legacy_import`, `hub_legacy_fallback`, `hub_dual_write_
 
 ### Рефакторинг и чистка `core/` (фаза 1B)
 
-- **Чистка дублей:** мёртвые импорты, дубли хелперов, устаревшие memory fallback после cutover.
-- **Плагины → `plugin_manager`:** свести `plugin_loader` / `plugin_builder_tool` / `plugin_config` / `plugin_sdk` в пакет `core/plugins/` (логическое имя plugin_manager), сохранить path jail / hot-reload / rollback.
-- **Раскладка `core/`:**
+**Трек:** ветка `feat/core-layout-1b` / PR по фазе 1B. **Не трогать контракты Memory Hub** без нужды — 1A уже в `main`. Цель 1B: читаемая раскладка пакетов + единый plugin surface, без поведенческих регрессий.
 
-  | Пакет | Ответственность |
-  |-------|-----------------|
-  | `core/memory/` | Hub, SQLite, Chroma adapter, STM |
-  | `core/llm/` | profiles, retry, openrouter helpers |
-  | `core/agent/` или тонкий `agent.py` + подмодули | оркестрация чата |
-  | `core/plugins/` | loader, config, sdk, builder |
-  | `core/runtime/` | server, health, win_runtime, secrets |
-  | `core/voice/` / stt-tts | голос |
+**Правила фазы:**
+- Совместимость импортов: старые пути (`core.plugin_loader`, `core.llm_profile`, …) остаются как **тонкие re-export shim** минимум на один релиз после раскладки; канон — новые пакеты.
+- Не менять External API / Event Bus имена событий.
+- Не раздувать scope: Fast-Path / этап 2 / sqlite-vss — **вне** 1B.
+- После каждого логического шага: `python -m compileall -q core interfaces scripts main.py` + memory smokes + `scripts/healthcheck.py`.
 
-- Обновить импорты: `main.py`, Internal API, Discord, scripts, MCP server.
-- Документация: ADR «Memory Hub v2» (истина / кэш / индекс / events / cutover) + `config.example.yaml`.
+#### Целевая раскладка
+
+| Пакет | Что переезжает | Сейчас |
+|-------|----------------|--------|
+| `core/memory/` | уже есть (Hub/SQLite/Chroma/STM wrappers) | ✅ после 1A; в 1B — чистка имени `legacy.py` → осмысленное (напр. `stores.py` / `session.py`) + shims |
+| `core/plugins/` | `plugin_loader`, `plugin_config`, `plugin_sdk`, `plugin_builder_tool` | плоские файлы в `core/` |
+| `core/llm/` | `llm_profile`, `llm_retry`, `openrouter_balance`, связанные хелперы | плоские файлы |
+| `core/runtime/` | `server`, `health_monitor`, `win_runtime`, `secrets_loader` | плоские файлы |
+| `core/voice/` | `stt.py`, `yandex_tts.py` + уже существующие `voice/*` cloud adapters | дубли: root STT/TTS + `core/voice/` |
+| `core/agent/` *или* тонкий `agent.py` + модули | оркестрация из монолита `agent.py` (~2.6k строк) | один файл |
+
+Оставить на корне `core/` (осознанно, не обязательно пакетировать в 1B): `event_bus.py`, `tools.py`, `reflection.py`, `working_memory.py`, `emotional_layer.py`, `backup_manager.py`, `identity.py`, `mcp_client.py`, `external_storage.py`, `timeutil.py`, `vision_util.py`, `ltm_maintenance.py` — либо перенести только если импорты уже «тянут» в пакет и это дёшево.
+
+#### Чеклист задач 1B (порядок выполнения)
+
+| # | Задача | Done when | Статус |
+|---|--------|-----------|--------|
+| 1 | **`core/plugins/` (plugin_manager):** перенести loader/config/sdk/builder; `__init__.py` реэкспортирует публичный API (`PluginLoader`, `PluginManifest`, `PluginContext`, `merge_plugin_configs`, `create_or_edit_plugin_impl`, …) | path jail / `rollback_plugin` / reload builder-пути живы; `scripts/invoke_plugin.py` + Internal API plugins работают | `[ ]` |
+| 2 | **Shim-слой плагинов:** `core/plugin_*.py` → re-export из `core.plugins` | старые `from core.plugin_loader import …` не ломаются | `[ ]` |
+| 3 | **`core/llm/`:** перенести profile/retry/openrouter_balance (+ при необходимости тонкий `__init__`) | все callers обновлены или через shim; resolve_* / backoff без регрессии | `[ ]` |
+| 4 | **`core/runtime/`:** server / health / win_runtime / secrets | `main.py` / `run_neyra_server` / healthcheck зелёные | `[ ]` |
+| 5 | **`core/voice/` унификация:** свести root `stt.py` / `yandex_tts.py` с пакетом `voice/`; убрать дубли импортов | один канонический путь импорта; Discord/voice callers ок | `[ ]` |
+| 6 | **Memory naming cleanup:** переименовать `core/memory/legacy.py` в нейтральное имя; обновить `__init__` + shims | нет «legacy» в имени модуля при полностью abandoned file-store; smokes зелёные | `[ ]` |
+| 7 | **Чистка дублей / мёртвого кода** после cutover: unused imports, устаревшие комментарии «dual-write/fallback», мёртвые пути | `rg` по `hub_legacy`/`dual_write`/`import-legacy` в коде = только docs/history; compileall чистый | `[ ]` |
+| 8 | **`agent.py` раскладка (осторожно):** вынести крупные куски (chat turn / prompt build / tools wiring) в `core/agent/` *без* смены поведения | `NeyraAgent` публичный API стабилен; smoke chat path / compileall | `[ ]` *можно вторым коммитом/под-PR если слишком жирно* |
+| 9 | **Обновить импорты потребителей:** `main.py`, Internal API, Discord, scripts, MCP, docs/examples | нет «сломанных» абсолютных импортов на старые модули без shim | `[ ]` |
+| 10 | **Доки:** короткий ADR или раздел в PLAN «Core layout 1B» + обновить setup-доки при смене канонических импортов плагинов | ревьюер понимает канон vs shim | `[ ]` |
+| 11 | **Приёмка:** compileall + memory smokes + healthcheck; ручной/MCP ping Discord resident если стенд поднят | чекбоксы фазы 1B в критериях приёмки `[x]` | `[ ]` |
+
+#### Вне scope 1B (не делать в этом PR)
+
+- Fast-Path умного дома (этап 2)
+- Смена схемы Memory Hub / новые таблицы
+- Замена Chroma / sqlite-vss
+- Большой рефактор `tools.py` / reflection логики (кроме переноса файлов и импортов)
+- Frontend redesign
 
 ---
 
@@ -274,14 +303,14 @@ Cutover-флаги (`hub_legacy_import`, `hub_legacy_fallback`, `hub_dual_write_
 - [x] Smoke: `test_memory_hub_smoke.py` + `test_memory_cutover_offline.py` переписаны под Hub-only (без `run_hub_legacy_import`/marker/gap-import тестов, добавлен smoke гидрации журнала >500 строк); live e2e chat→healthcheck на стенде — ещё нет.
 - [x] Fast-Path умного дома — **отложено в этап 2** (решение зафиксировано: не блокирует cutover 1A; edge — с колонкой на этапе 4).
 - [x] Финал 1A: legacy-импорт полностью абандонен (`core/memory/legacy_import.py` удалён, `run_hub_legacy_import`/`POST /v1/memory/import-legacy`/marker-gated авто-импорт убраны); при подключённом Hub file PeopleDB/Diary/journal/WM больше не пишутся (SQLite only); без Hub `PeopleDB`/`NeyraDiary` — чисто in-memory (без файлового I/O вообще); `ReflectionEngine` без Hub читает diary из `agent.diary` (RAM), а не JSONL, и не пишет `journal.json`. **Merged в main 2026-07-24.**
-**Фаза 1B**
 
-- [ ] `plugin_manager` / `core/plugins/` без регрессии sandbox/reload/rollback.
-- [ ] `core/` разложен по папкам; импорты зелёные.
-- [ ] `python -m compileall -q core interfaces scripts main.py` + healthcheck; Discord resident ок.
+**Фаза 1B** *(трек: `feat/core-layout-1b`)*
 
----
-
+- [ ] `core/plugins/` (plugin_manager): loader/config/sdk/builder + path jail / reload / rollback без регрессии; shims на старые `core.plugin_*`.
+- [ ] `core/llm/` + `core/runtime/` + унификация `core/voice/`; импорты потребителей зелёные (или shim).
+- [ ] Memory module naming cleanup (`legacy.py` → нейтральное имя) + чистка мёртвых dual-write комментариев/импортов.
+- [ ] (Опц. / отдельный коммит) раскладка монолита `agent.py` без смены поведения.
+- [ ] `python -m compileall -q core interfaces scripts main.py` + memory smokes + `scripts/healthcheck.py`; Discord resident ок на стенде.
 ## Этап 2 — Дополнительные улучшения (пакет мелких задач)
 
 *Бывший этап 1 — сдвинут после Memory Hub.*
