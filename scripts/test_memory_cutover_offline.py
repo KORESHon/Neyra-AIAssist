@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Offline acceptance for Memory Hub Phase 1A (no live Discord/API server), post cutover-flag removal.
+"""Offline acceptance for Memory Hub Phase 1A (no live Discord/API server), legacy import abandoned.
 
-No `hub_legacy_import` / `hub_legacy_fallback` / `hub_dual_write_legacy` flags exist anymore.
-Whenever a MemoryHub is attached, people/diary/journal/WM are SQLite-only: no JSON/JSONL/MD
-writes and no fallback reads. This script simulates two agent starts against the same SQLite
-DB (fresh write, then "restart" with a brand-new PeopleDB/NeyraDiary/ReflectionEngine wired to
-the same Hub) and asserts every read path still works without any legacy files on disk.
+No `hub_legacy_import` / `hub_legacy_fallback` / `hub_dual_write_legacy` flags, and no
+`run_hub_legacy_import` / import-legacy / marker-gated auto-import subsystem, exist anymore.
+Whenever a MemoryHub is attached, people/diary/journal/WM are SQLite-only: `PeopleDB` and
+`NeyraDiary` never touch the filesystem at all (no JSON/JSONL read or write, no `db_dir`).
+This script simulates two agent starts against the same SQLite DB (fresh write, then
+"restart" with a brand-new PeopleDB/NeyraDiary/ReflectionEngine wired to the same Hub) and
+asserts every read path still works without any legacy files on disk.
 """
 
 from __future__ import annotations
@@ -68,9 +70,9 @@ def main() -> int:
         cfg_a = _cfg(root)
         hub_a = MemoryHub(cfg_a, long_memory=_FakeLTM())
         people = PeopleDB(cfg_a)
+        assert people._cache == {}  # no filesystem at all — starts as an empty in-memory cache
         people.memory_hub = hub_a
-        # PeopleDB.__init__ never auto-loads JSON; nothing to hydrate on a fresh Hub.
-        people.hydrate_from_hub(hub_a)
+        people.hydrate_from_hub(hub_a)  # nothing to hydrate on a fresh Hub
         diary = NeyraDiary(cfg_a)
         diary.memory_hub = hub_a
 
@@ -118,8 +120,8 @@ def main() -> int:
         assert st_a["working_memory_snapshots"] >= 1 and st_a["chat_log"] >= 2
         assert "hub_legacy_fallback" not in st_a and "hub_dual_write_legacy" not in st_a, st_a
 
-        # Hub-only invariant: with a Hub attached, legacy files are NEVER written to disk.
-        assert not (people.db_dir / "cutover_user.json").exists()
+        # Hub-only invariant: PeopleDB/NeyraDiary never touch the filesystem, Hub or not.
+        assert not (root / "people_db").exists()
         assert not (root / "neyra_diary.jsonl").exists()
         hub_a.close()
 

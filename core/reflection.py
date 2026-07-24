@@ -42,37 +42,34 @@ class ReflectionEngine:
 
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Загружаем существующий журнал (файл; при Hub-only — перезапишется из SQLite)
-        self._journal: list[dict] = self._load_journal()
+        # Hub SQLite is the source of truth; journal.json is never loaded as a seed
+        # (no legacy file import). Without a Hub attached, the journal stays in-memory
+        # only for this process (console-only, nothing to hydrate from).
+        self._journal: list[dict] = []
         self._hydrate_journal_from_hub()
 
     def _memory_hub(self):
         agent = getattr(self, "agent", None)
         return getattr(agent, "memory_hub", None) if agent is not None else None
 
-    def _load_journal(self) -> list:
-        if self.journal_path.exists():
-            try:
-                return json.loads(self.journal_path.read_text(encoding="utf-8"))
-            except Exception:
-                return []
-        return []
-
     def _hydrate_journal_from_hub(self) -> int:
-        """Rebuild in-memory journal from SQLite when Hub is primary (cutover).
+        """Rebuild in-memory journal from SQLite when a Hub is attached.
 
-        If Hub has no rows yet, keep any file-loaded journal (do not wipe).
+        Fetches the most recent rows (newest first) so today's entries are never
+        pushed out by an older-first LIMIT, then reverses them for chronological
+        (oldest→newest) order in RAM.
         """
         hub = self._memory_hub()
         if hub is None:
             return 0
         try:
-            rows = hub.list_journal_entries(limit=500, newest_first=False)
+            rows = hub.list_journal_entries(limit=1000, newest_first=True)
         except Exception as e:
             logger.warning("Reflection journal hydrate from Hub failed: %s", e)
             return 0
         if not rows:
             return 0
+        rows = list(reversed(rows))
         rebuilt: list[dict] = []
         for row in rows:
             meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
@@ -108,7 +105,7 @@ class ReflectionEngine:
         bus = getattr(agent, "event_bus", None) if agent is not None else None
         hub = self._memory_hub()
         if hub is None:
-            # No Hub: journal.json remains the store (emergency/console-only use).
+            # No Hub: best-effort console-only artifact, write-only (never loaded back).
             self.journal_path.write_text(
                 json.dumps(self._journal, ensure_ascii=False, indent=2),
                 encoding="utf-8",

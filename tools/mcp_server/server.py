@@ -190,7 +190,7 @@ def neyra_memory_stats() -> str:
 
 @mcp.tool()
 def neyra_memory_policies() -> str:
-    """GET /v1/memory/policies — rag_write_mode, sqlite_path, hub_legacy_* flags, LTM/WM/emotion cfg."""
+    """GET /v1/memory/policies — rag_write_mode, sqlite_path, LTM/WM/emotion cfg."""
     return neyra_api_request("GET", "/v1/memory/policies", None)
 
 

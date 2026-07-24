@@ -46,19 +46,31 @@ Knowledge / important fragments still go through `remember_knowledge` (unless `o
 
 `SemanticIndex` protocol + Chroma adapter. Future sqlite-vss (Stage 4) plugs in without changing agent call sites.
 
-## Cutover (done)
+## Cutover (done) — legacy import abandoned
 
 The `hub_legacy_import` / `hub_legacy_fallback` / `hub_dual_write_legacy` config flags have been
 **removed entirely** — Hub SQLite is now the sole store for people/diary/journal/WM whenever a
-`MemoryHub` is attached (no JSON/JSONL/MD writes, no fallback reads). Two things remain by design:
+`MemoryHub` is attached (no JSON/JSONL/MD writes, no fallback reads). There was no meaningful
+on-disk legacy data to migrate, so Phase 1A goes further than disabling the flags: the entire
+legacy-import subsystem has been **removed**, not just gated off:
 
-- `run_hub_legacy_import()` + `POST /v1/memory/import-legacy` (admin) for manual/one-off imports.
-- An automatic, marker-gated one-shot import at startup when Hub SQLite is empty but legacy
-  files are still found on disk (safety net for upgrades/restores, not a permanent mode).
-
-`PeopleDB` / `NeyraDiary` / `ReflectionEngine` / working-memory helpers remain as thin read/write
-wrappers around Hub; they only touch the filesystem when no `MemoryHub` is attached at all
-(console/emergency use).
+- `core/memory/legacy_import.py`, `run_hub_legacy_import()`, and `POST /v1/memory/import-legacy`
+  no longer exist.
+- The marker-gated automatic import at startup (Hub empty + legacy files on disk) is gone —
+  `_init_people_db` seeds baseline dossiers into Hub (or memory-only cache without a Hub) purely
+  based on whether Hub/cache already has data, never by globbing `people_db/*.json`.
+- `PeopleDB` no longer touches the filesystem at all: no `db_dir`, no `_load_all()`, no JSON
+  `_save()`. It is an in-memory `_cache` that Hub writes through to when a `MemoryHub` is
+  attached (`hydrate_from_hub()` fills the cache back in); without a Hub it is memory-only for
+  that process (console/emergency use, no persistence).
+- `NeyraDiary` no longer appends/reads/trims a JSONL file at all — Hub-only when `memory_hub` is
+  set; without a Hub, entries live in an in-memory list for that process only.
+- `ReflectionEngine` never loads `journal.json` as a seed for `_journal` — it always starts empty
+  and hydrates from Hub SQLite via `list_journal_entries(limit=1000, newest_first=True)`, reversed
+  in RAM for chronological order (fixes a bug where `newest_first=False` + `LIMIT` could silently
+  drop the most recent entries, including today's, once the table grew past the limit). Writing
+  `journal.json` is optionally kept **only** when no Hub is attached at all — a write-only
+  console artifact that is never loaded back.
 
 ## Consequences
 

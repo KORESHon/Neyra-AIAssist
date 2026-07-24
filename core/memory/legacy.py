@@ -3,7 +3,7 @@ core/memory.py — Система памяти Нейры
 ──────────────────────────────────────
 • Краткосрочная: скользящее окно сообщений (in-context)
 • Долгосрочная: ChromaDB RAG — векторизованные диалоги
-• PeopleDB: JSON-досье на каждого человека
+• PeopleDB / NeyraDiary: тонкие обёртки над Memory Hub SQLite (без файлового стора)
 """
 
 from __future__ import annotations
@@ -490,44 +490,16 @@ class LongTermMemory:
 
 class PeopleDB:
     """
-    JSON-досье на каждого человека.
-    Файлы: memory/people_db/<id>.json
+    Досье на каждого человека.
+    Источник истины: Memory Hub SQLite (см. MemoryHub) при подключении — никакого файлового
+    стора не существует. Без Hub (консольный/аварийный сценарий) кэш живёт только в памяти
+    процесса и не переживает рестарт.
     Идентификация: discord_user_id > ник > имя
     """
 
     def __init__(self, config: dict):
-        mem_cfg = config.get("memory", {})
-        base = Path(mem_cfg.get("chroma_db_path", "./memory/chroma_db")).parent
-        self.db_dir = base / "people_db"
-        self.db_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, dict] = {}
         self.memory_hub = None  # set by agent after MemoryHub init
-        # No JSON load here: when a Hub is attached the agent calls hydrate_from_hub()
-        # right after construction. Only a no-Hub console/emergency caller should
-        # explicitly call _load_all() itself.
-
-    def _load_all(self) -> None:
-        """Загружает все JSON-файлы в кэш."""
-        for f in self.db_dir.glob("*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                self._cache[data["id"]] = data
-            except Exception as e:
-                logger.warning(f"Не удалось загрузить {f}: {e}")
-        logger.info(f"PeopleDB загружена: {len(self._cache)} записей")
-
-    def _save(self, person_id: str) -> None:
-        """Legacy JSON write — only when no Hub is attached (console-only/emergency use)."""
-        if person_id not in self._cache:
-            return
-        hub = getattr(self, "memory_hub", None)
-        if hub is not None:
-            return  # Hub SQLite is authoritative once attached — no JSON writes.
-        path = self.db_dir / f"{person_id}.json"
-        path.write_text(
-            json.dumps(self._cache[person_id], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
 
     def find(self, identifier: str, discord_id: Optional[str] = None) -> Optional[dict]:
         """Находит досье по discord_id, нику или имени (нечёткий поиск)."""
@@ -572,7 +544,6 @@ class PeopleDB:
         prev_seen = self._cache[person_id].get("last_seen")
         self._cache[person_id].setdefault("dynamic_facts", []).append(entry)
         self._cache[person_id]["last_seen"] = datetime.now().isoformat()
-        self._save(person_id)
         logger.info(f"PeopleDB: факт добавлен [{person_id}]: {fact}")
         hub = getattr(self, "memory_hub", None)
         hub_ok = False
@@ -611,7 +582,6 @@ class PeopleDB:
             return False  # Уже привязан
         prev_ids = list(ids)
         ids.append(discord_id)
-        self._save(person_id)
         hub = getattr(self, "memory_hub", None)
         hub_ok = False
         if hub is not None:
@@ -647,7 +617,6 @@ class PeopleDB:
             "last_seen": datetime.now().isoformat(),
         }
         self._cache[person_id] = person
-        self._save(person_id)
         logger.info(f"PeopleDB: создано новое досье [{person_id}]")
         hub = getattr(self, "memory_hub", None)
         hub_ok = False
@@ -757,14 +726,18 @@ class PeopleDB:
 # ─── Личный дневник Нейры ────────────────────────────────────────────────────
 
 class NeyraDiary:
-    """Личный дневник Нейры (наблюдения/мысли), хранится в JSONL."""
+    """
+    Личный дневник Нейры (наблюдения/мысли).
+    Источник истины: Memory Hub SQLite при подключении — JSONL как активный стор не
+    существует (не пишется, не читается, не триммится). Без Hub (консольный/аварийный
+    сценарий) записи живут только в памяти процесса и не переживают рестарт.
+    """
 
     def __init__(self, config: dict):
         mem_cfg = config.get("memory", {})
-        self.path = Path(mem_cfg.get("diary_path", "./memory/neyra_diary.jsonl"))
         self.max_entries = int(mem_cfg.get("diary_max_entries", 5000))
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.memory_hub = None  # set by agent after MemoryHub init (dual-write)
+        self.memory_hub = None  # set by agent after MemoryHub init
+        self._local: list[dict] = []  # only used when no Hub is attached
 
     def add_entry(self, text: str, source: str = "manual", meta: Optional[dict] = None) -> bool:
         text = (text or "").strip()
@@ -777,74 +750,42 @@ class NeyraDiary:
             "meta": meta or {},
         }
         hub = getattr(self, "memory_hub", None)
+        if hub is None:
+            # No Hub: in-memory only for this process (no file fallback).
+            self._local.append(entry)
+            if len(self._local) > self.max_entries:
+                self._local = self._local[-self.max_entries :]
+            return True
         try:
-            if hub is None:
-                # No Hub: JSONL remains the store (emergency/console-only use).
-                with open(self.path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                self._trim_if_needed()
-                return True
-            try:
-                emo = None
-                if isinstance(meta, dict):
-                    emo = meta.get("emotion") or meta.get("assistant_emotion")
-                hub.add_diary_note(
-                    text,
-                    source=source,
-                    emotion=str(emo)[:500] if emo else None,
-                    meta=meta,
-                    ts=entry["timestamp"],
-                )
-                return True
-            except Exception as e:
-                logger.error(
-                    "NeyraDiary: Hub write failed — entry dropped (no file fallback when Hub attached): %s",
-                    e,
-                )
-                return False
+            emo = None
+            if isinstance(meta, dict):
+                emo = meta.get("emotion") or meta.get("assistant_emotion")
+            hub.add_diary_note(
+                text,
+                source=source,
+                emotion=str(emo)[:500] if emo else None,
+                meta=meta,
+                ts=entry["timestamp"],
+            )
+            return True
         except Exception as e:
-            logger.error(f"NeyraDiary: ошибка записи: {e}")
+            logger.error(
+                "NeyraDiary: Hub write failed — entry dropped (no file fallback when Hub attached): %s",
+                e,
+            )
             return False
-
-    def _read_all(self) -> list[dict]:
-        if not self.path.exists():
-            return []
-        rows: list[dict] = []
-        try:
-            for line in self.path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except Exception:
-                    continue
-        except Exception as e:
-            logger.error(f"NeyraDiary: ошибка чтения: {e}")
-        return rows
-
-    def _trim_if_needed(self) -> None:
-        rows = self._read_all()
-        if len(rows) <= self.max_entries:
-            return
-        keep = rows[-self.max_entries :]
-        self.path.write_text(
-            "\n".join(json.dumps(r, ensure_ascii=False) for r in keep) + "\n",
-            encoding="utf-8",
-        )
 
     def recent(self, limit: int = 10) -> list[dict]:
         hub = getattr(self, "memory_hub", None)
         if hub is not None:
             try:
                 rows = hub.list_diary_notes(limit=max(1, int(limit)), newest_first=True)
-                # oldest→newest for parity with file tail
+                # oldest→newest for parity with a chronological tail
                 return list(reversed(rows)) if rows else []
             except Exception as e:
                 logger.warning("NeyraDiary.recent Hub read failed: %s", e)
                 return []
-        rows = self._read_all()
-        return rows[-max(1, int(limit)) :]
+        return self._local[-max(1, int(limit)) :]
 
     def recent_text(self, limit: int = 10) -> str:
         """Format recent entries locally (never call hub.diary_recent_text — would recurse)."""

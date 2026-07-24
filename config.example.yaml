@@ -239,25 +239,24 @@ memory:
   # RU: Размер скользящего окна STM (сообщений в RAM).
   stm_max_messages: 10
 
-  # EN: Legacy json/jsonl/md import is no longer flag-gated. On startup, if Hub SQLite is
-  #     empty but legacy files are still on disk, a one-shot import runs automatically
-  #     (marker-gated — see core/memory/legacy_import.py). Manual/admin re-run: POST
-  #     /v1/memory/import-legacy (optionally ?force=true).
-  # RU: Legacy-импорт json/jsonl/md больше не завязан на флаги. При старте, если Hub SQLite
-  #     пуст, а legacy-файлы ещё на диске, разовый импорт запускается автоматически
-  #     (гейт по маркер-файлу — см. core/memory/legacy_import.py). Ручной/админский повтор:
-  #     POST /v1/memory/import-legacy (опц. ?force=true).
-
   # EN: ChromaDB storage directory for vector memory.
   # RU: Папка ChromaDB для векторной памяти.
   chroma_db_path: "./memory/chroma_db"
 
-  # EN: JSON journal path for reflection summaries.
-  # RU: Путь к JSON-журналу итогов рефлексии.
+  # EN: [Deprecated] Only used as a write-only console artifact when no MemoryHub is attached
+  #     at all (never loaded back). Hub SQLite is the sole journal store otherwise — legacy
+  #     json import has been abandoned, not just disabled.
+  # RU: [Устарело] Используется только как write-only артефакт при отсутствии MemoryHub
+  #     (никогда не читается обратно). Во всех остальных случаях единственный стор журнала —
+  #     Hub SQLite; legacy-импорт json полностью упразднён, а не просто выключен.
   journal_path: "./memory/journal.json"
 
-  # EN: JSONL diary path for ongoing assistant notes.
-  # RU: Путь к JSONL-дневнику для текущих заметок ассистента.
+  # EN: [Deprecated] No longer read or written by NeyraDiary — Hub SQLite is the sole diary
+  #     store when a Hub is attached; without a Hub, entries are kept in-memory only. Key kept
+  #     only for backward compatibility with existing config files; safe to remove.
+  # RU: [Устарело] Больше не читается и не пишется NeyraDiary — при подключённом Hub
+  #     единственный стор дневника — SQLite; без Hub записи живут только в памяти процесса.
+  #     Ключ оставлен только для совместимости со старыми конфигами; можно удалить.
   diary_path: "./memory/neyra_diary.jsonl"
 
   # EN: File path for internal thought logs (debug/analysis).

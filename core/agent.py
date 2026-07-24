@@ -329,12 +329,6 @@ class NeyraAgent:
         )
         self.people_db.memory_hub = self.memory_hub
         self.diary.memory_hub = self.memory_hub
-        # Safety net: Hub empty but legacy files still on disk (e.g. fresh checkout / restore)
-        # → one-shot import (marker-gated, see run_hub_legacy_import).
-        try:
-            self._maybe_auto_legacy_import()
-        except Exception as e:
-            logger.exception("auto hub_legacy_import failed: %s", e)
         # Hub SQLite is the source of truth for PeopleDB — always hydrate in-memory cache from it.
         try:
             self.people_db.hydrate_from_hub(self.memory_hub)
@@ -352,23 +346,6 @@ class NeyraAgent:
 
         # Создаём начальные досье если их нет
         self._init_people_db()
-
-    def _maybe_auto_legacy_import(self) -> None:
-        """Import any Hub layers that are empty while leftover legacy files still exist."""
-        hub = self.memory_hub
-        if hub is None:
-            return
-        from core.memory.legacy_import import layers_needing_import, run_hub_legacy_import
-
-        need = layers_needing_import(hub, self.config)
-        if not need:
-            return
-        logger.warning(
-            "Hub missing layers %s but legacy files found — running hub_legacy_import",
-            need,
-        )
-        report = run_hub_legacy_import(hub, self.config, force=False)
-        logger.info("auto hub_legacy_import completed: %s", report)
 
     async def _append_turn_to_chat_log(
         self,
@@ -479,9 +456,8 @@ class NeyraAgent:
         self.chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _init_people_db(self):
-        """Создаёт базовые досье если Hub/PeopleDB ещё пустые."""
+        """Засеивает базовые досье, только если Hub/PeopleDB ещё пусты (никакого JSON-импорта)."""
         hub = getattr(self, "memory_hub", None)
-        # With Hub attached, JSON is never the runtime store — import or seed into SQLite.
         if hub is not None:
             try:
                 people_n = int(hub.stats().get("people") or 0)
@@ -489,29 +465,7 @@ class NeyraAgent:
                 people_n = 0
             if people_n > 0 or self.people_db._cache:
                 return
-            json_files = list(self.people_db.db_dir.glob("*.json"))
-            if json_files:
-                from core.memory.legacy_import import run_hub_legacy_import
-
-                logger.warning(
-                    "Hub people empty but %s JSON dossier(s) on disk — importing legacy people",
-                    len(json_files),
-                )
-                run_hub_legacy_import(hub, self.config, force=False)
-                try:
-                    self.people_db.hydrate_from_hub(hub)
-                except Exception as e:
-                    logger.warning("PeopleDB hydrate after import failed: %s", e)
-                try:
-                    if int(hub.stats().get("people") or 0) > 0 or self.people_db._cache:
-                        return
-                except Exception:
-                    if self.people_db._cache:
-                        return
-            # Fall through to seed into Hub when no usable legacy people remain.
         else:
-            if len(list(self.people_db.db_dir.glob("*.json"))) > 0:
-                return  # no-Hub: files already present
             if self.people_db._cache:
                 return
 
@@ -613,17 +567,10 @@ class NeyraAgent:
             },
         ]
 
-        import json
         for person in people:
             person.setdefault("last_seen", None)
             self.people_db._cache[person["id"]] = person
-            if hub is None:
-                path = self.people_db.db_dir / f"{person['id']}.json"
-                path.write_text(
-                    json.dumps(person, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-            else:
+            if hub is not None:
                 try:
                     hub.upsert_person(
                         person["id"],
@@ -634,8 +581,6 @@ class NeyraAgent:
                 except Exception as e:
                     logger.warning("PeopleDB seed→Hub failed for %s: %s", person["id"], e)
 
-        if hub is None:
-            self.people_db._load_all()
         logger.info(f"Создано {len(people)} начальных досье")
 
     # ─── Системный промпт ──────────────────────────────────────────────────

@@ -35,7 +35,6 @@ memory/plugin_backups/
 memory/memory.zip
 memory/neyra_memory.db
 memory/neyra_memory.db-*
-memory/neyra_memory.db.legacy_import_done
 memory/*.db-wal
 memory/*.db-shm
 memory/working_memory/
