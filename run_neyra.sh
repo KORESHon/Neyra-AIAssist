@@ -52,15 +52,30 @@ resolve_python_candidate() {
   return 0
 }
 
-select_python() {
-  local p=""
-  if [[ -x "${ROOT}/.venv/bin/python" ]] && "${ROOT}/.venv/bin/python" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' >/dev/null 2>&1; then
-    PY="${ROOT}/.venv/bin/python"
-    return 0
+is_wsl() {
+  [[ "$(uname -s 2>/dev/null)" == Linux ]] && [[ -r /proc/version ]] && [[ "$(</proc/version)" == *[Mm]icrosoft* ]]
+}
+
+# On WSL + /mnt/<drive>/… a Linux venv in the repo looks like a broken “file” in Windows Explorer
+# (symlink/junction). Prefer ~/neyra-venv on ext4 instead of putting .venv on the Windows volume.
+linux_venv_candidates() {
+  echo "${ROOT}/.venv"
+  if is_wsl && [[ "${ROOT}" == /mnt/* ]]; then
+    echo "${HOME}/neyra-venv"
   fi
+}
+
+select_python() {
+  local p="" cand=""
+  for cand in $(linux_venv_candidates); do
+    if [[ -x "${cand}/bin/python" ]] && "${cand}/bin/python" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' >/dev/null 2>&1; then
+      PY="${cand}/bin/python"
+      return 0
+    fi
+  done
   # venv с Windows: в WSL лучше поставить Linux-venv (.venv/bin/python), но если только exe — пропускаем в WSL
   if [[ -x "${ROOT}/.venv/Scripts/python.exe" ]]; then
-    if [[ "$(uname -s 2>/dev/null)" == Linux ]] && [[ -r /proc/version ]] && [[ "$(</proc/version)" == *[Mm]icrosoft* ]]; then
+    if is_wsl; then
       :
     else
       PY="${ROOT}/.venv/Scripts/python.exe"
@@ -99,34 +114,43 @@ ok()  { echo "${_G}[OK]${_Z} ${*}"; }
 warn(){ echo "${_Y}[WARN]${_Z} ${*}"; }
 err() { echo "${_R}[ERR]${_Z} ${*}"; }
 
-# Схема venv: Linux/macOS/WSL — .venv/bin/python; native Windows — .venv_win\Scripts (см. scripts/neyra_win_launcher.ps1).
-if [[ "${PY}" == *"/.venv/bin/python"* ]] || [[ "${PY}" == *"/.venv_win/Scripts/python.exe"* ]] || [[ "${PY}" == *"\\.venv_win\\Scripts\\python.exe"* ]]; then
-  ok "Активный Python: ${PY} (проектный venv — .venv Linux или .venv_win Windows)"
+# Схема venv: Linux/macOS — .venv/bin; WSL на /mnt — часто ~/neyra-venv; Windows — .venv_win (см. scripts/neyra_win_launcher.ps1).
+if [[ "${PY}" == *"/neyra-venv/bin/python"* ]] || [[ "${PY}" == *"/.venv/bin/python"* ]] || [[ "${PY}" == *"/.venv_win/Scripts/python.exe"* ]] || [[ "${PY}" == *"\\.venv_win\\Scripts\\python.exe"* ]]; then
+  ok "Активный Python: ${PY} (проектный Linux/WSL venv или .venv_win)"
 elif [[ "${PY}" == *"/.venv/Scripts/python.exe"* ]] || [[ "${PY}" == *"\\.venv\\Scripts\\python.exe"* ]]; then
-  ok "Активный Python: ${PY} (fallback .venv\\Scripts — на WSL лучше .venv/bin; на Windows лучше .venv_win)"
+  ok "Активный Python: ${PY} (fallback .venv\\Scripts — на WSL лучше Linux-venv; на Windows лучше .venv_win)"
 else
-  ok "Активный Python: ${PY} (системный/PATH; pip после согласия — туда же, пока не создан/не выбран .venv)"
+  ok "Активный Python: ${PY} (системный/PATH; pip после согласия — туда же, пока не создан/не выбран project venv)"
 fi
 
 ensure_project_venv() {
   local base_py="${PY}"
-  if [[ -x "${ROOT}/.venv/bin/python" ]]; then
-    PY="${ROOT}/.venv/bin/python"
-    PIP="${PY} -m pip"
-    return 0
+  local venv_dir="${ROOT}/.venv"
+  local cand=""
+  for cand in $(linux_venv_candidates); do
+    if [[ -x "${cand}/bin/python" ]]; then
+      PY="${cand}/bin/python"
+      PIP="${PY} -m pip"
+      return 0
+    fi
+  done
+  if is_wsl && [[ "${ROOT}" == /mnt/* ]]; then
+    venv_dir="${HOME}/neyra-venv"
+    warn "WSL + диск /mnt: создаю Linux-venv в ${venv_dir} (не в репо — иначе Windows видит .venv как файл-junction)."
+  else
+    warn "Создаю локальное окружение .venv (PEP 668 / безопасная установка зависимостей)..."
   fi
-  warn "Создаю локальное окружение .venv (PEP 668 / безопасная установка зависимостей)..."
-  if ! "${base_py}" -m venv "${ROOT}/.venv"; then
-    err "Не удалось создать .venv. На Ubuntu установи: python3-venv"
+  if ! "${base_py}" -m venv "${venv_dir}"; then
+    err "Не удалось создать venv (${venv_dir}). На Ubuntu установи: python3-venv"
     return 1
   fi
-  PY="${ROOT}/.venv/bin/python"
+  PY="${venv_dir}/bin/python"
   PIP="${PY} -m pip"
   "${PY}" -m ensurepip --upgrade >/dev/null 2>&1 || true
   if ! ${PIP} install --upgrade pip >/dev/null 2>&1; then
     warn "Не удалось обновить pip внутри .venv — продолжаю с текущим."
   fi
-  ok "Переключилась на .venv: ${PY}"
+  ok "Переключилась на project venv: ${PY}"
   return 0
 }
 

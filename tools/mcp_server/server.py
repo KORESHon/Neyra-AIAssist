@@ -178,8 +178,20 @@ def neyra_write_config(config_updates: dict[str, Any]) -> str:
 
 @mcp.tool()
 def neyra_inspect_memory() -> str:
-    """GET /v1/debug/memory — STM (сообщения), agent.get_stats(), счётчики RAG."""
+    """GET /v1/debug/memory — STM, agent stats, Hub (SQLite counts) + RAG/Chroma counters."""
     return neyra_api_request("GET", "/v1/debug/memory", None)
+
+
+@mcp.tool()
+def neyra_memory_stats() -> str:
+    """GET /v1/memory/stats — STM size, Chroma records, People cache, nested Hub SQLite stats."""
+    return neyra_api_request("GET", "/v1/memory/stats", None)
+
+
+@mcp.tool()
+def neyra_memory_policies() -> str:
+    """GET /v1/memory/policies — rag_write_mode, sqlite_path, LTM/WM/emotion cfg."""
+    return neyra_api_request("GET", "/v1/memory/policies", None)
 
 
 @mcp.tool()

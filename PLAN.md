@@ -60,7 +60,31 @@
 
 **Цель:** пересобрать базу памяти и структуру ядра: один Memory API, SQLite как source of truth для основного контента, Chroma только как семантический индекс «что вспомнить», полный chat log в БД; затем — чистка дублей и раскладка `core/` по папкам. Фундамент должен быть жёстким: без полуlegacy-путей и без «файлов-призраков» рядом с Hub.
 
-**Статус:** не выполнено (очередь №1).
+**Статус:** в работе на ветке `feat/memory-hub-1a` ([PR #1](https://github.com/KORESHon/Neyra-AIAssist/pull/1)) — **ещё не в `main`**. Cutover 1A завершён на ветке (Hub-only, legacy-импорт полностью упразднён); ждёт merge в `main`. После merge заменить эту строку на «1A принято в main» и снять пометки «на ветке».
+
+### Прогресс фазы 1A (факт по ветке, не по main)
+
+Легенда: `[x]` = на ветке PR #1; `[~]` = частично; `[ ]` = не сделано.
+
+**Уже на ветке (кратко):** пакет `core/memory/` (SQLite Hub, chat_log, semantic adapter), Hub-only чтение/запись people/diary/journal/WM (cutover-флаги `hub_legacy_import/fallback/dual_write` удалены из кода и конфига), `recall_chat` + API с фильтрами, `rag_write_mode`, prompt inject через Hub, backup `.db`, **legacy-импорт полностью упразднён** (`core/memory/legacy_import.py`, `run_hub_legacy_import()`, `POST /v1/memory/import-legacy`, marker-gated авто-импорт — удалены целиком, не просто выключены), ADR-0001, smoke `scripts/test_memory_hub_smoke.py` + `scripts/test_memory_cutover_offline.py`, dashboard/MCP Hub stats, people identity lookup через SQLite (cutover-safe), reflection diary/chat/journal Hub read-path (включая фикс `_hydrate_journal_from_hub`: `newest_first=True` + reverse в RAM, чтобы не терять свежие записи), **хостовая TZ** (`core/timeutil.py`, `system.timezone` optional).
+
+**Процесс ревью:** Cursor Automation **Auto Review Neyra** (comment-only на push в PR). Перед коммитом — смотреть комменты бота при наличии.
+
+#### Что осталось до закрытия 1A (короткий чеклист)
+
+| # | Задача | Статус |
+|---|--------|--------|
+| 1 | People/diary/journal/WM: dual-write ещё включён по умолчанию; истина должна стать **только SQLite** | `[x]` Hub — единственный стор при подключении, без флагов |
+| 2 | Cutover flags: `hub_legacy_import/fallback/dual_write` → `false` на стенде после импорта | `[x]` **флаги и весь legacy-импорт удалены из кода и конфига полностью** (не просто `false`/выключены); JSON-данных для миграции не было — авто-импорт и ручной `run_hub_legacy_import`/`/v1/memory/import-legacy` убраны как класс, а не оставлены safety-net'ом |
+| 3 | **Удалить** file PeopleDB/Diary/journal/WM dual-write как реальный стор при подключённом Hub | `[x]` при `agent.memory_hub`/`self.memory_hub` — только SQLite; `PeopleDB`/`NeyraDiary` вообще не трогают файловую систему (ни чтение, ни запись) даже без Hub — только in-memory кэш; тонкие read/write-обёртки (`PeopleDB`, `NeyraDiary`, `ReflectionEngine`, WM refresh) сохранены; `_hub_dual_write`/`hub_legacy_fallback` убраны из reflection/hub; diary recursion (`NeyraDiary.recent_text` ↔ `hub.diary_recent_text`) исправлена; smoke обновлены |
+| 4 | Полный e2e на стенде: chat → Hub chat_log → `/v1/memory/*` / healthcheck | `[x]` live 2026-07-24 MCP |
+| 5 | Merge PR #1 в `main` после зелёного cutover | `[ ]` после #3 green + Auto Review |
+
+**API cutover-safe (на ветке):** `GET /v1/memory/people/{id}` резолвит id/имя → legacy-shape + summary/facts по каноническому `person_id` (как list).
+
+**Не блокирует 1A:** Fast-Path умного дома → этап 2. Фаза **1B** (раскладка `core/`) — только после зелёной 1A.
+
+---
 
 ### Фазы внутри этапа (обязательный порядок)
 
@@ -104,8 +128,9 @@
 | `memory.rag_write_mode` | `off` \| `digest` \| `important_only` (запрет legacy «каждый dialog raw») |
 | `memory.chat_log_retention_days` | опц. TTL/prune лога (0 = без автоудаления) |
 | `memory.stm_max_messages` | размер STM-окна |
-| `memory.hub_legacy_import` | one-shot import json/jsonl при наличии (после обнуления — `false`) |
 | `memory.working_memory.*` / `emotional_layer.*` / prune-summarize | перевести на Hub, не на файлы |
+
+Cutover-флаги (`hub_legacy_import`, `hub_legacy_fallback`, `hub_dual_write_legacy`) **удалены** из кода и конфига — Hub SQLite всегда единственный стор при подключении. Legacy-импорт (`run_hub_legacy_import()`, `POST /v1/memory/import-legacy`, marker-gated авто-импорт) **полностью упразднён** — не осталось ни ручного, ни автоматического пути импорта json/jsonl/md; мигрировать было нечего.
 
 Документировать в ADR + example; синхронизировать корневой `config.yaml` по правилу репо.
 
@@ -187,19 +212,28 @@
 
 ---
 
-### Cutover: что перестаёт быть primary на диске
+### Cutover: legacy-импорт полностью упразднён (done)
 
-После зелёного 1A **не** использовать как source of truth:
+**Политика legacy:** поддержка json/jsonl/md как *primary*-стора и dual-write были **временными** (миграция / тестовый контур на ветке 1A). Пользователь подтвердил, что переносить по факту нечего — поэтому вместо «оставить импорт как safety-net» legacy-файловая память **упразднена полностью**: ни ручного, ни автоматического импорта не осталось.
+
+Итоговое состояние:
+
+1. Cutover-флаги `hub_legacy_import` / `hub_legacy_fallback` / `hub_dual_write_legacy` **удалены** из кода (`core/memory/hub.py`, `core/memory/legacy.py`, `core/reflection.py`, `core/agent.py`) и из конфигов (`config.example.yaml`, `config.yaml`, `/v1/memory/policies`, `MemoryHub.stats()`, frontend types).
+2. При подключённом `MemoryHub` people/diary/journal/WM пишутся и читаются **только через SQLite** — никакого fallback на json/jsonl/md чтения и никакого dual-write.
+3. **Удалено, а не оставлено как safety-net:** `core/memory/legacy_import.py` (весь модуль), `run_hub_legacy_import()`, `POST /v1/memory/import-legacy`, marker-gated авто-импорт на старте. `_init_people_db` теперь смотрит только на `hub.stats()["people"]` / `people_db._cache` — никакого `people_db/*.json` glob.
+4. Тонкие read/write-обёртки (`PeopleDB`, `NeyraDiary`, `ReflectionEngine`, WM helpers) сохранены, но `PeopleDB`/`NeyraDiary` больше вообще не делают файловый I/O (ни чтение, ни запись) — только in-memory `_cache`/список без Hub (консольный/аварийный сценарий, без персистентности). `ReflectionEngine._journal` стартует пустым и гидрируется только из Hub (`newest_first=True` + reverse в RAM); без Hub journal/diary остаются только в RAM процесса (ни `journal.json`, ни JSONL не пишутся и не читаются). `reflection_last.json` — по-прежнему debug-артефакт последнего reflect.
+
+После cutover **не существует** как источник данных (файлы никогда не читаются; без Hub — только RAM):
 
 | Было | Статус после cutover |
 |------|----------------------|
-| `memory/people_db/*.json` | не primary (удалить или archive-only) |
-| `memory/neyra_diary.jsonl` | не primary |
-| `memory/journal.json`, `reflection_last.json` как истина | не primary (экспорт опционален) |
-| `memory/working_memory*.md` | не primary |
+| `memory/people_db/*.json` | не существует как источник; PeopleDB не читает и не пишет JSON |
+| `memory/neyra_diary.jsonl` | не существует как источник; NeyraDiary не читает и не пишет JSONL; reflect без Hub → `agent.diary` RAM |
+| `memory/journal.json`, `reflection_last.json` как истина | не primary; `journal.json` не пишется; `reflection_last.json` — debug dump последнего reflect |
+| `memory/working_memory*.md` | не primary (без Hub — опц. `.md` для консоли) |
 | Raw dialog rows в Chroma «на каждый ход» | запрещены |
-
-Допустимо: one-shot `hub_legacy_import`, затем флаги off; пустые keep-файлы каталогов для git — ок.
+| Cutover-флаги `hub_legacy_import/fallback/dual_write` | **удалены** из кода и конфига |
+| `run_hub_legacy_import()` / `POST /v1/memory/import-legacy` / auto-import | **удалены полностью** (не safety-net, а упразднены) |
 
 ---
 
@@ -225,21 +259,21 @@
 
 ### Критерии приёмки
 
-**Фаза 1A**
+**Фаза 1A** *(трек: `feat/memory-hub-1a` / PR #1 — не в main)*
 
-- [ ] SQLite init/migrate; chat_log на каждый ход параллельно STM.
-- [ ] Tool/API `recall_chat` / chronological list — «N сообщений назад» без RAG.
-- [ ] People / diary / journal / WM только через Hub → SQLite.
-- [ ] Chroma только semantic `type`; raw full-chat embed отсутствует.
-- [ ] `rag_write_mode` и пути из конфига работают; example + local config синхронизированы.
-- [ ] Event Bus: chat_log_append (+ сохранённые/alias memory.*); нет молчаливого обрыва подписок.
-- [ ] `/v1/memory/*`, `/v1/debug/memory`, MCP inspect, dashboard stats — SQLite+Chroma.
-- [ ] Legacy json/jsonl/md **не** primary; cutover выполнен или задокументирован + import off.
-- [ ] Backup-путь учитывает `.db` (+ wal) и Chroma.
-- [ ] Промпт talk/brain читает память только через Hub.
-- [ ] Smoke: chat → chat_log → list_chat → semantic search; healthcheck core.
-- [ ] Fast-Path: типовая команда умного дома без полного brain+RAG при высокой уверенности (или ADR «отложено в этап 2» с явным решением).
-
+- [x] SQLite init/migrate; chat_log на каждый ход параллельно STM. *(пакет `core/memory/`, dual-write из agent)*
+- [x] Tool/API `recall_chat` / chronological list — «N сообщений назад» без RAG. *(фильтр `user_id` и/или `channel_id` обязателен)*
+- [x] People / diary / journal / WM через Hub → SQLite. *(Hub write/read: people, diary+reflect input, journal, WM, chat_log для small/hourly reflection; при подключённом Hub — только SQLite, файловый dual-write отключён независимо от флага)*
+- [x] Chroma: raw full-chat embed выключен по умолчанию (`rag_write_mode` ≠ `legacy_dialog`); knowledge через Hub.
+- [x] `rag_write_mode` и пути из конфига (`sqlite_path`, `stm_max_messages`, …); example + local синхронизированы.
+- [x] Event Bus: `memory.chat_log_append`; прежние `memory.*` сохранены (journal/WM/STM/LTM).
+- [x] `/v1/memory/*`, `/v1/debug/memory` — Hub stats / recall / search / people / diary / journal; MCP + dashboard Hub counts. `POST /v1/memory/import-legacy` **удалён** (не заменён на 410 — endpoint не существует).
+- [x] Cutover: флаги удалены, legacy-импорт (ручной и авто) удалён как класс — Hub json/jsonl/md никогда не пишет и не читает, даже без Hub (только in-memory cache), см. таблицу «Что осталось» в разделе Cutover.
+- [x] Backup учитывает `.db` (+ wal/shm) и Chroma (`backup_manifest.json`).
+- [x] Промпт talk/brain читает people / diary / WM через Hub (без legacy-fallback — cutover завершён).
+- [x] Smoke: `test_memory_hub_smoke.py` + `test_memory_cutover_offline.py` переписаны под Hub-only (без `run_hub_legacy_import`/marker/gap-import тестов, добавлен smoke гидрации журнала >500 строк); live e2e chat→healthcheck на стенде — ещё нет.
+- [x] Fast-Path умного дома — **отложено в этап 2** (решение зафиксировано: не блокирует cutover 1A; edge — с колонкой на этапе 4).
+- [x] Финал 1A: legacy-импорт полностью абандонен (`core/memory/legacy_import.py` удалён, `run_hub_legacy_import`/`POST /v1/memory/import-legacy`/marker-gated авто-импорт убраны); при подключённом Hub file PeopleDB/Diary/journal/WM больше не пишутся (SQLite only); без Hub `PeopleDB`/`NeyraDiary` — чисто in-memory (без файлового I/O вообще); `ReflectionEngine` без Hub читает diary из `agent.diary` (RAM), а не JSONL, и не пишет `journal.json`. Cutover 1A завершён на ветке, ждёт merge.
 **Фаза 1B**
 
 - [ ] `plugin_manager` / `core/plugins/` без регрессии sandbox/reload/rollback.
@@ -279,7 +313,7 @@
 - Двусторонний WS-мост `Web UI <-> Event Bus`.
 - Браузер публикует события (чат, музыка, плагины) и подписывается на stream-ответы и статусы.
 - Управление плагинами и чатом в одном transport-контуре.
-- Задел под колонка/edge: тот же WSS-контракт (аудио-чанки / текст / события) — без обязательной реализации edge в этом этапе.
+- Задел под колонка/edge/desktop-приложение/android-приложение/ios-приложение: тот же WSS-контракт (аудио-чанки / текст / события) — без обязательной реализации edge в этом этапе.
 
 **Критерии приёмки:**
 

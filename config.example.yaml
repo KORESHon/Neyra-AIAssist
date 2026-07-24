@@ -23,6 +23,16 @@
 # RU: Этот шаблон намеренно обезличен; без приватных промптов и личных данных.
 
 # ---------------------------
+# System / Система
+# ---------------------------
+system:
+  # EN: IANA timezone for wall-clock windows / display (reflection cutoffs, WM labels).
+  #     Empty/null = host OS timezone. Hub SQLite `ts` is always stored as UTC ISO.
+  # RU: IANA-таймзона для окон/отображения (рефлексия, подписи WM).
+  #     Пусто/null = таймзона хоста. В SQLite Hub метки `ts` всегда пишутся в UTC ISO.
+  timezone: null
+
+# ---------------------------
 # Assistant personality / Личность ассистента
 # ---------------------------
 assistant:
@@ -213,16 +223,38 @@ openrouter:
 # EN: Unified user_id = uuid5(platform:id); cross-platform linking is future work.
 # RU: Единый user_id = uuid5(platform:id); связывание разных платформ — отдельная задача.
 memory:
+  # EN: SQLite Memory Hub (source of truth for chat_log / structured memory). See docs/adr/0001-memory-hub-v2.md
+  # RU: SQLite Memory Hub (истина chat_log / структурированной памяти). См. docs/adr/0001-memory-hub-v2.md
+  sqlite_path: "./memory/neyra_memory.db"
+
+  # EN: Semantic RAG write policy: off | digest | important_only (no raw full-chat embed). Escape: legacy_dialog.
+  # RU: Политика записи в семантический индекс: off | digest | important_only (без сырого full-chat). Аварийно: legacy_dialog.
+  rag_write_mode: "important_only"
+
+  # EN: Optional TTL for SQLite chat_log prune (0 = keep forever).
+  # RU: Опциональный TTL prune для chat_log (0 = без автоудаления).
+  chat_log_retention_days: 0
+
+  # EN: Short-term memory sliding window size (message pairs kept in RAM).
+  # RU: Размер скользящего окна STM (сообщений в RAM).
+  stm_max_messages: 10
+
   # EN: ChromaDB storage directory for vector memory.
   # RU: Папка ChromaDB для векторной памяти.
   chroma_db_path: "./memory/chroma_db"
 
-  # EN: JSON journal path for reflection summaries.
-  # RU: Путь к JSON-журналу итогов рефлексии.
+  # EN: [Deprecated] Ignored as a store — journal is Hub SQLite only (or in-memory when no Hub).
+  #     Key kept for backward compatibility with existing config files; safe to remove.
+  # RU: [Устарело] Не используется как стор — журнал только в Hub SQLite (или in-memory без Hub).
+  #     Ключ оставлен для совместимости со старыми конфигами; можно удалить.
   journal_path: "./memory/journal.json"
 
-  # EN: JSONL diary path for ongoing assistant notes.
-  # RU: Путь к JSONL-дневнику для текущих заметок ассистента.
+  # EN: [Deprecated] No longer read or written by NeyraDiary — Hub SQLite is the sole diary
+  #     store when a Hub is attached; without a Hub, entries are kept in-memory only. Key kept
+  #     only for backward compatibility with existing config files; safe to remove.
+  # RU: [Устарело] Больше не читается и не пишется NeyraDiary — при подключённом Hub
+  #     единственный стор дневника — SQLite; без Hub записи живут только в памяти процесса.
+  #     Ключ оставлен только для совместимости со старыми конфигами; можно удалить.
   diary_path: "./memory/neyra_diary.jsonl"
 
   # EN: File path for internal thought logs (debug/analysis).

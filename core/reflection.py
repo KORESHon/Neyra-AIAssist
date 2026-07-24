@@ -2,7 +2,8 @@
 core/reflection.py — Ночная рефлексия Нейры
 ─────────────────────────────────────────────
 APScheduler запускает задачу в 04:00 каждую ночь.
-LLM суммирует диалоги за день → journal.json.
+LLM суммирует дневник/диалоги → journal в Memory Hub SQLite
+(без Hub — только in-memory на время процесса).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 import re
 
 logger = logging.getLogger("neyra.reflection")
@@ -25,8 +27,8 @@ class ReflectionEngine:
         self.agent = agent  # Ссылка на NeyraAgent (для вызова LLM)
 
         mem_cfg = config.get("memory", {})
+        # Deprecated config key kept for event payload / old configs; never read/written as a store.
         self.journal_path = Path(mem_cfg.get("journal_path", "./memory/journal.json"))
-        self.diary_path = Path(mem_cfg.get("diary_path", "./memory/neyra_diary.jsonl"))
         self.reflect_json_path = Path(mem_cfg.get("reflection_json_path", "./memory/reflection_last.json"))
         self.chat_log_path = Path(config["logging"]["chat_log"])
         self.reflection_time = mem_cfg.get("reflection_time", "04:00")
@@ -39,26 +41,107 @@ class ReflectionEngine:
         self._last_hourly_key: str = ""
         self._last_small_key: str = ""
 
-        self.journal_path.parent.mkdir(parents=True, exist_ok=True)
+        # Hub SQLite is the source of truth. Without a Hub, journal stays in-memory only
+        # for this process (legacy journal.json store abandoned — never read or written).
+        self._journal: list[dict] = []
+        self._hydrate_journal_from_hub()
 
-        # Загружаем существующий журнал
-        self._journal: list[dict] = self._load_journal()
+    def _memory_hub(self):
+        agent = getattr(self, "agent", None)
+        return getattr(agent, "memory_hub", None) if agent is not None else None
 
-    def _load_journal(self) -> list:
-        if self.journal_path.exists():
-            try:
-                return json.loads(self.journal_path.read_text(encoding="utf-8"))
-            except Exception:
-                return []
-        return []
+    def _hydrate_journal_from_hub(self) -> int:
+        """Rebuild in-memory journal from SQLite when a Hub is attached.
 
-    def _save_journal(self):
-        self.journal_path.write_text(
-            json.dumps(self._journal, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        Fetches the most recent rows (newest first) so today's entries are never
+        pushed out by an older-first LIMIT, then reverses them for chronological
+        (oldest→newest) order in RAM.
+        """
+        hub = self._memory_hub()
+        if hub is None:
+            return 0
+        try:
+            rows = hub.list_journal_entries(limit=1000, newest_first=True)
+        except Exception as e:
+            logger.warning("Reflection journal hydrate from Hub failed: %s", e)
+            return 0
+        if not rows:
+            return 0
+        rows = list(reversed(rows))
+        rebuilt: list[dict] = []
+        for row in rows:
+            meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+            entry: dict = dict(meta) if meta else {}
+            if not entry.get("date"):
+                title = str(row.get("title") or "").strip()
+                ts = str(row.get("ts") or "").strip()
+                entry["date"] = title if len(title) == 10 and title[4] == "-" else ts[:10]
+            if not entry.get("summary"):
+                entry["summary"] = str(row.get("text") or "")
+            if "generated_at" not in entry and row.get("ts"):
+                entry["generated_at"] = row.get("ts")
+            if entry.get("date") or entry.get("summary"):
+                rebuilt.append(entry)
+        if not rebuilt:
+            return 0
+        self._journal = rebuilt
+        logger.info("Reflection journal hydrated from Hub SQLite: %s entries", len(rebuilt))
+        return len(rebuilt)
+
+    def _journal_has_date(self, date_str: str) -> bool:
+        if any(e.get("date") == date_str for e in self._journal):
+            return True
+        # With Hub attached, refresh from it so restart/empty file does not re-run reflection.
+        if self._memory_hub() is not None:
+            self._hydrate_journal_from_hub()
+            return any(e.get("date") == date_str for e in self._journal)
+        return False
+
+    def _save_journal(self) -> bool:
+        """Persist last journal entry. Returns False if Hub write failed (entry rolled back)."""
         agent = getattr(self, "agent", None)
         bus = getattr(agent, "event_bus", None) if agent is not None else None
+        hub = self._memory_hub()
+        if hub is None:
+            # No Hub: keep in-memory only (legacy journal.json store abandoned).
+            if bus is not None:
+                from core.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
+
+                bus.publish(
+                    CoreEvent(
+                        MEMORY_JOURNAL_UPDATED,
+                        "core.reflection",
+                        {"path": None, "entries": len(self._journal)},
+                    )
+                )
+            return True
+        hub_ok = False
+        if self._journal:
+            try:
+                last = self._journal[-1] if isinstance(self._journal[-1], dict) else {"text": str(self._journal[-1])}
+                text = str(last.get("summary") or last.get("text") or last.get("content") or "")
+                if not text and last:
+                    text = json.dumps(last, ensure_ascii=False)[:8000]
+                if text:
+                    hub.add_journal_entry(
+                        text,
+                        title=str(last.get("title") or last.get("date") or "")[:200] or None,
+                        kind=str(last.get("kind") or "reflection"),
+                        meta=last if isinstance(last, dict) else None,
+                        ts=str(last.get("timestamp") or last.get("date") or last.get("generated_at") or "") or None,
+                        publish_event=bus is None,
+                    )
+                    hub_ok = True
+            except Exception as e:
+                logger.warning("Reflection→Hub journal write failed: %s", e)
+        if not hub_ok:
+            if self._journal:
+                dropped = self._journal.pop()
+                logger.error(
+                    "Reflection: Hub journal write failed — entry rolled back (%s)",
+                    (dropped.get("date") if isinstance(dropped, dict) else dropped),
+                )
+            return False
         if bus is not None:
             from core.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
 
@@ -69,65 +152,7 @@ class ReflectionEngine:
                     {"path": str(self.journal_path), "entries": len(self._journal)},
                 )
             )
-
-    def _get_logs_for_date(self, date: datetime) -> str:
-        """Читает строки из chat.log за указанную дату."""
-        if not self.chat_log_path.exists():
-            return ""
-
-        date_str = date.strftime("%Y-%m-%d")
-        lines = []
-        try:
-            for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
-                if date_str in line:
-                    lines.append(line)
-        except Exception as e:
-            logger.error(f"Ошибка чтения chat.log: {e}")
-
-        return "\n".join(lines)
-
-    def _get_logs_for_last_hour(self) -> str:
-        """Читает свежие строки chat.log за последний час."""
-        if not self.chat_log_path.exists():
-            return ""
-        cutoff = datetime.now() - timedelta(hours=1)
-        lines: list[str] = []
-        try:
-            for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
-                # Формат: [YYYY-MM-DD HH:MM:SS] ...
-                if not line.startswith("[") or "]" not in line:
-                    continue
-                ts_str = line[1 : line.find("]")]
-                try:
-                    ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    continue
-                if ts >= cutoff:
-                    lines.append(line)
-        except Exception as e:
-            logger.error(f"Ошибка чтения hourly chat.log: {e}")
-        return "\n".join(lines)
-
-    def _get_logs_for_last_hours(self, hours: int) -> str:
-        """Читает строки chat.log за последние N часов."""
-        if not self.chat_log_path.exists():
-            return ""
-        cutoff = datetime.now() - timedelta(hours=max(1, int(hours)))
-        lines: list[str] = []
-        try:
-            for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
-                if not line.startswith("[") or "]" not in line:
-                    continue
-                ts_str = line[1 : line.find("]")]
-                try:
-                    ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    continue
-                if ts >= cutoff:
-                    lines.append(line)
-        except Exception as e:
-            logger.error("Ошибка чтения chat.log за %s часов: %s", hours, e)
-        return "\n".join(lines)
+        return True
 
     async def reflect(self, date: datetime = None, force: bool = False) -> str:
         """Ночная рефлексия: дневник за 24ч -> JSON (people_updates/global_lore/behavior_rules)."""
@@ -138,7 +163,7 @@ class ReflectionEngine:
         logger.info("Запускаю self-reflection за %s (force=%s)", date_str, force)
 
         # Для ночного крона — не запускать повторно в тот же день; /reflect может передать force=True.
-        if not force and any(e.get("date") == date_str for e in self._journal):
+        if not force and self._journal_has_date(date_str):
             logger.info("Рефлексия за %s уже есть, пропускаю", date_str)
             return ""
 
@@ -254,16 +279,27 @@ class ReflectionEngine:
             return
         people_db = getattr(self.agent, "people_db", None)
         diary = getattr(self.agent, "diary", None)
-        if people_db is None:
+        hub = getattr(self.agent, "memory_hub", None)
+        if people_db is None and hub is None:
             return
 
         updates = list(result.get("people_updates") or [])
         existing_norm: dict[str, set[str]] = {}
-        for pid, person in getattr(people_db, "_cache", {}).items():
-            norms: set[str] = set()
-            for row in list(person.get("dynamic_facts") or []):
-                norms.add(self._normalize_fact_text(str(row.get("fact") or "")))
-            existing_norm[pid] = norms
+        if hub is not None:
+            for person in hub.list_people():
+                pid = str(person.get("id") or "").strip()
+                if not pid or pid in existing_norm:
+                    continue
+                norms: set[str] = set()
+                for row in hub.list_person_facts(pid, limit=80):
+                    norms.add(self._normalize_fact_text(str(row.get("fact") or "")))
+                existing_norm[pid] = norms
+        elif people_db is not None:
+            for pid, person in getattr(people_db, "_cache", {}).items():
+                norms = set()
+                for row in list(person.get("dynamic_facts") or []):
+                    norms.add(self._normalize_fact_text(str(row.get("fact") or "")))
+                existing_norm[pid] = norms
 
         added: list[str] = []
         for item in updates:
@@ -273,7 +309,10 @@ class ReflectionEngine:
             fact = str(item.get("fact") or "").strip()
             if not hint or not fact or not self._is_high_signal_fact(fact):
                 continue
-            person = people_db.find(hint)
+            if hub is not None:
+                person = hub.find_person(hint)
+            else:
+                person = people_db.find(hint) if people_db is not None else None
             if not person:
                 continue
             pid = str(person.get("id") or "").strip()
@@ -284,7 +323,24 @@ class ReflectionEngine:
                 continue
             if norm in existing_norm.setdefault(pid, set()):
                 continue
-            ok = people_db.update_fact(pid, fact)
+            ok = False
+            if people_db is not None:
+                if pid not in getattr(people_db, "_cache", {}):
+                    people_db._cache[pid] = dict(person)
+                ok = people_db.update_fact(pid, fact)
+            elif hub is not None:
+                try:
+                    hub.add_person_fact(
+                        pid,
+                        fact,
+                        source="reflection",
+                        aliases=list(person.get("names") or []),
+                        display_name=(person.get("names") or [pid])[0],
+                        person_meta=person,
+                    )
+                    ok = True
+                except Exception:
+                    ok = False
             if ok:
                 existing_norm[pid].add(norm)
                 added.append(f"{pid}: {fact}")
@@ -359,37 +415,162 @@ class ReflectionEngine:
             logger.error("Ошибка small_reflection: %s", e)
             return ""
 
-    def _get_diary_last_24h(self) -> str:
-        """Читает записи из neyra_diary.jsonl за последние 24 часа."""
-        if not self.diary_path.exists():
-            return ""
-        cutoff = datetime.now() - timedelta(hours=24)
-        rows: list[str] = []
+    def _parse_iso_ts(self, raw: str) -> Optional[datetime]:
+        from core.timeutil import parse_ts
+
+        return parse_ts(raw)
+
+    def _diary_lines_from_hub(self, hub, cutoff: datetime) -> str:
+        from core.timeutil import to_local
+
+        rows: list[tuple[datetime, str]] = []
         try:
-            for line in self.diary_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    item = json.loads(line)
-                except Exception:
-                    continue
-                ts_raw = str(item.get("timestamp") or "").strip()
-                if not ts_raw:
-                    continue
-                try:
-                    ts = datetime.fromisoformat(ts_raw)
-                except Exception:
-                    continue
-                if ts < cutoff:
-                    continue
-                source = str(item.get("source") or "unknown")
-                text = str(item.get("text") or "").strip()
-                if text:
-                    rows.append(f"[{ts.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
+            notes = hub.list_diary_notes(limit=300, newest_first=True)
         except Exception as e:
-            logger.error("Ошибка чтения дневника за 24ч: %s", e)
-        return "\n".join(rows)
+            logger.error("Ошибка чтения дневника из Hub за 24ч: %s", e)
+            return ""
+        cutoff_local = to_local(cutoff)
+        for item in notes:
+            ts = self._parse_iso_ts(str(item.get("ts") or ""))
+            if ts is None:
+                continue
+            ts_local = to_local(ts)
+            # No early-break: TEXT ORDER BY ts is not chronological across mixed offsets.
+            if ts_local < cutoff_local:
+                continue
+            source = str(item.get("source") or "unknown")
+            text = str(item.get("text") or "").strip()
+            if text:
+                rows.append(
+                    (ts_local, f"[{ts_local.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
+                )
+        rows.sort(key=lambda x: x[0])
+        return "\n".join(line for _, line in rows)
+
+    def _diary_lines_from_agent(self, cutoff: datetime) -> str:
+        """No-Hub path: read agent.diary in-memory (_local via recent()), never JSONL files."""
+        from core.timeutil import to_local
+
+        agent = getattr(self, "agent", None)
+        diary = getattr(agent, "diary", None) if agent is not None else None
+        if diary is None:
+            return ""
+        cutoff_local = to_local(cutoff)
+        rows: list[tuple[datetime, str]] = []
+        try:
+            items = diary.recent(limit=500)
+        except Exception as e:
+            logger.error("Ошибка чтения дневника из agent.diary: %s", e)
+            return ""
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ts = self._parse_iso_ts(str(item.get("timestamp") or item.get("ts") or ""))
+            if ts is None:
+                continue
+            ts_local = to_local(ts)
+            if ts_local < cutoff_local:
+                continue
+            source = str(item.get("source") or "unknown")
+            text = str(item.get("text") or "").strip()
+            if text:
+                rows.append(
+                    (ts_local, f"[{ts_local.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
+                )
+        rows.sort(key=lambda x: x[0])
+        return "\n".join(line for _, line in rows)
+
+    def _get_diary_last_24h(self) -> str:
+        """Diary for nightly reflect: Hub SQLite when attached, else agent.diary RAM."""
+        from core.timeutil import cutoff_hours
+
+        cutoff = cutoff_hours(24)
+        hub = self._memory_hub()
+        if hub is not None:
+            return self._diary_lines_from_hub(hub, cutoff)
+        return self._diary_lines_from_agent(cutoff)
+
+    def _chat_lines_from_hub(self, *, cutoff: Optional[datetime] = None, date_str: Optional[str] = None) -> str:
+        from core.timeutil import to_local
+
+        hub = self._memory_hub()
+        if hub is None:
+            return ""
+        rows_out: list[tuple[datetime, str]] = []
+        try:
+            rows = hub.list_chat(limit=500, newest_first=True)
+        except Exception as e:
+            logger.error("Ошибка чтения chat_log из Hub: %s", e)
+            return ""
+        cutoff_local = to_local(cutoff) if cutoff is not None else None
+        for item in rows:
+            ts = self._parse_iso_ts(str(item.get("ts") or ""))
+            if ts is None:
+                continue
+            ts_local = to_local(ts)
+            # No early-break: mixed UTC/local ISO TEXT order is not chronological.
+            if cutoff_local is not None and ts_local < cutoff_local:
+                continue
+            if date_str is not None and ts_local.strftime("%Y-%m-%d") != date_str:
+                continue
+            role = str(item.get("role") or "?")
+            who = str(item.get("display_name") or item.get("user_id") or role)
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            rows_out.append(
+                (ts_local, f"[{ts_local.strftime('%Y-%m-%d %H:%M:%S')}] {who}: {text}")
+            )
+        rows_out.sort(key=lambda x: x[0])
+        return "\n".join(line for _, line in rows_out)
+
+    def _get_logs_for_date(self, date: datetime) -> str:
+        """Читает строки чата за указанную дату (Hub SQLite при наличии, иначе chat.log)."""
+        date_str = date.strftime("%Y-%m-%d")
+        if self._memory_hub() is not None:
+            return self._chat_lines_from_hub(date_str=date_str)
+        if not self.chat_log_path.exists():
+            return ""
+        lines = []
+        try:
+            for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
+                if date_str in line:
+                    lines.append(line)
+        except Exception as e:
+            logger.error(f"Ошибка чтения chat.log: {e}")
+        return "\n".join(lines)
+
+    def _get_logs_for_last_hour(self) -> str:
+        """Читает свежие строки чата за последний час."""
+        return self._get_logs_for_last_hours(1)
+
+    def _get_logs_for_last_hours(self, hours: int) -> str:
+        """Читает строки чата за последние N часов (Hub SQLite при наличии, иначе chat.log)."""
+        from core.timeutil import cutoff_hours
+
+        cutoff = cutoff_hours(max(1, int(hours)))
+        if self._memory_hub() is not None:
+            return self._chat_lines_from_hub(cutoff=cutoff)
+        if not self.chat_log_path.exists():
+            return ""
+        lines: list[str] = []
+        try:
+            for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
+                if not line.startswith("[") or "]" not in line:
+                    continue
+                ts_str = line[1 : line.find("]")]
+                try:
+                    ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    continue
+                # chat.log lines are naive local wall time — compare in host local
+                from core.timeutil import to_local
+
+                if to_local(ts) >= cutoff:
+                    lines.append(line)
+        except Exception as e:
+            logger.error("Ошибка чтения chat.log за %s часов: %s", hours, e)
+        return "\n".join(lines)
 
     @staticmethod
     def _extract_json_blob(raw: str) -> str:
@@ -598,10 +779,14 @@ class ReflectionEngine:
 
     def get_recent_journal(self, days: int = 7) -> str:
         """Возвращает записи журнала за последние N дней."""
+        if self._memory_hub() is not None:
+            self._hydrate_journal_from_hub()
         recent = self._journal[-days:] if self._journal else []
         if not recent:
             return "Журнал пустой."
         lines = []
         for entry in recent:
-            lines.append(f"[{entry['date']}] {entry['summary']}")
+            date = entry.get("date") or "?"
+            summary = entry.get("summary") or entry.get("text") or ""
+            lines.append(f"[{date}] {summary}")
         return "\n".join(lines)

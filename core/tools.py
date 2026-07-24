@@ -10,7 +10,8 @@ LLM может вызывать эти функции сама через Functi
   • TimeContextTool   — текущее время и дата
   • SystemMonitorTool — состояние системы (безопасные команды)
   • WebSearchTool     — поиск через DuckDuckGo
-  • MemorySearchTool  — поиск по ChromaDB
+  • MemorySearchTool  — семантический поиск (Hub / Chroma)
+  • RecallChat        — хронологический chat_log (SQLite Hub)
   • RememberKnowledge — сохранить фрагмент в ChromaDB (опционально affect_note)
   • UpdatePersonFact  — записать новый факт о человеке (опционально emotion_note)
   • GetPersonInfo     — получить досье на человека
@@ -37,6 +38,7 @@ _long_memory: "LongTermMemory | None" = None
 _people_db: "PeopleDB | None" = None
 _assistant_cfg: dict | None = None
 _neyra_config: dict | None = None
+_memory_hub = None
 
 
 def init_tools(
@@ -45,14 +47,15 @@ def init_tools(
     assistant_cfg: dict | None = None,
     *,
     neyra_config: dict | None = None,
+    memory_hub=None,
 ) -> None:
     """Инициализирует ссылки на модули памяти и корневой конфиг (для delegate_to_deep_logic)."""
-    global _long_memory, _people_db, _assistant_cfg, _neyra_config
+    global _long_memory, _people_db, _assistant_cfg, _neyra_config, _memory_hub
     _long_memory = long_memory
     _people_db = people_db
     _assistant_cfg = assistant_cfg or {}
     _neyra_config = neyra_config if isinstance(neyra_config, dict) else {}
-
+    _memory_hub = memory_hub
 
 # ─── TimeContextTool ─────────────────────────────────────────────────────────
 
@@ -177,11 +180,15 @@ def search_memory(query: str) -> str:
     Ищет в долгосрочной памяти по смыслу: прошлые фрагменты диалогов и сохранённые знания (RAG).
     Используй, когда нужно вспомнить факты, о чём договаривались, что сохраняли через remember_knowledge.
     query — суть того, что нужно найти.
+    Для хронологии («что было N сообщений назад») используй recall_chat, не search_memory.
     """
-    if _long_memory is None:
+    if _memory_hub is not None:
+        results = _memory_hub.search_semantic(query)
+    elif _long_memory is not None:
+        results = _long_memory.search(query)
+    else:
         return "Долгосрочная память не инициализирована."
 
-    results = _long_memory.search(query)
     if not results:
         return "Ничего не нашла в памяти. Либо мы это ещё не обсуждали, либо память пустая."
 
@@ -190,6 +197,50 @@ def search_memory(query: str) -> str:
         lines.append(f"[{i}] {r[:400]}")
 
     return "\n\n".join(lines)
+
+
+@tool
+def recall_chat(
+    limit: int = 10,
+    offset: int = 0,
+    user_id: str = "",
+    channel_id: str = "",
+) -> str:
+    """
+    Хронологический recall из полного chat log (SQLite), без семантического RAG.
+    Используй для «что было N сообщений назад», «повтори что я сказал раньше», ленты канала.
+    limit — сколько сообщений вернуть (1–100), offset — сколько пропустить от самых новых.
+    Обязателен хотя бы один фильтр: user_id или channel_id (без фильтра запрос отклоняется — защита от утечки чужих диалогов).
+    """
+    if _memory_hub is None:
+        return "Memory Hub не инициализирован."
+    uid = (user_id or "").strip() or None
+    cid = (channel_id or "").strip() or None
+    if not uid and not cid:
+        return (
+            "Нужен фильтр: укажи user_id и/или channel_id. "
+            "Без фильтра chat_log по всем пользователям не отдаётся."
+        )
+    lim = max(1, min(int(limit or 10), 100))
+    off = max(0, int(offset or 0))
+    rows = _memory_hub.list_chat(
+        user_id=uid,
+        channel_id=cid,
+        limit=lim,
+        offset=off,
+        newest_first=True,
+    )
+    if not rows:
+        return "В chat log пока пусто по этим фильтрам."
+    # newest_first from SQL — show oldest→newest for reading
+    rows = list(reversed(rows))
+    lines = [f"Chat log (limit={lim}, offset={off}), oldest→newest:"]
+    for r in rows:
+        ts = str(r.get("ts") or "")[:19]
+        role = r.get("role") or "?"
+        text = str(r.get("text") or "").replace("\n", " ")[:300]
+        lines.append(f"[{ts}] {role}: {text}")
+    return "\n".join(lines)
 
 
 @tool
@@ -209,20 +260,30 @@ def remember_knowledge(text: str, category: str = "general", affect_note: str = 
     category — необязательная метка: general, news, situation, meme, fact, шутки и т.п.
     affect_note — необязательно: короткая пометка «как Нейра это переживает» (тон), для богаче RAG; можно оставить пустым.
     """
-    if _long_memory is None:
-        return "Долгосрочная память не инициализирована."
-
     meta = {"source": "agent_tool", "category": (category or "general").strip()[:120]}
     aff = (affect_note or "").strip()
     if aff:
         meta["affect"] = aff[:500]
-    ok, info = _long_memory.add_knowledge(text.strip(), meta)
+    if _memory_hub is not None:
+        ok, info = _memory_hub.remember_knowledge(text.strip(), meta)
+    elif _long_memory is not None:
+        ok, info = _long_memory.add_knowledge(text.strip(), meta)
+    else:
+        return "Долгосрочная память не инициализирована."
     if ok:
         return f"Запомнила в долгую память (документ {info})."
     return f"Не удалось сохранить: {info}"
 
 
 # ─── UpdatePersonFact ────────────────────────────────────────────────────────
+
+def _find_person(name_or_id: str, discord_id: str | None = None):
+    if _memory_hub is not None:
+        return _memory_hub.find_person(name_or_id, discord_id=discord_id)
+    if _people_db is not None:
+        return _people_db.find(name_or_id, discord_id=discord_id)
+    return None
+
 
 @tool
 def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str:
@@ -233,20 +294,44 @@ def update_person_fact(person_id: str, fact: str, emotion_note: str = "") -> str
     fact — что именно узнала (кратко, своими словами).
     emotion_note — по желанию: как ты это переживаешь (коротко), сохранится рядом с фактом в досье.
     """
-    if _people_db is None:
+    if _people_db is None and _memory_hub is None:
         return "PeopleDB не инициализирована."
 
     emo = (emotion_note or "").strip() or None
-    success = _people_db.update_fact(person_id, fact, emotion=emo)
-    if success:
-        return f"Записала. Теперь знаю про {person_id}: {fact}"
-    else:
-        # Попробуем найти по нечёткому совпадению
-        person = _people_db.find(person_id)
-        if person:
-            _people_db.update_fact(person["id"], fact, emotion=emo)
-            return f"Нашла по имени и записала про {person['names'][0]}: {fact}"
-        return f"Не нашла человека '{person_id}' в базе. Проверь ID."
+    target_id = (person_id or "").strip()
+    if _people_db is not None and target_id in getattr(_people_db, "_cache", {}):
+        success = _people_db.update_fact(target_id, fact, emotion=emo)
+        if success:
+            return f"Записала. Теперь знаю про {target_id}: {fact}"
+
+    person = _find_person(person_id)
+    if person:
+        pid = str(person.get("id") or "").strip()
+        if not pid:
+            return f"Не нашла человека '{person_id}' в базе. Проверь ID."
+        if _people_db is not None:
+            # Ensure cache has the person (hydrate / create) so update_fact can dual-write.
+            if pid not in _people_db._cache:
+                _people_db._cache[pid] = dict(person)
+            success = _people_db.update_fact(pid, fact, emotion=emo)
+            if success:
+                return f"Нашла по имени и записала про {(person.get('names') or [pid])[0]}: {fact}"
+            return f"Не удалось сохранить факт про {pid} (Hub/PeopleDB)."
+        if _memory_hub is not None:
+            try:
+                _memory_hub.add_person_fact(
+                    pid,
+                    fact,
+                    emotion_note=emo,
+                    source="tool",
+                    aliases=list(person.get("names") or []),
+                    display_name=(person.get("names") or [pid])[0],
+                    person_meta=person,
+                )
+                return f"Записала. Теперь знаю про {pid}: {fact}"
+            except Exception as e:
+                return f"Не удалось сохранить: {e}"
+    return f"Не нашла человека '{person_id}' в базе. Проверь ID."
 
 
 # ─── GetPersonInfo ───────────────────────────────────────────────────────────
@@ -258,14 +343,18 @@ def get_person_info(name_or_id: str) -> str:
     Используй когда нужно вспомнить кто это такой и что о нём знаешь.
     name_or_id — имя, ник или ID человека.
     """
-    if _people_db is None:
+    if _people_db is None and _memory_hub is None:
         return "PeopleDB не инициализирована."
 
-    person = _people_db.find(name_or_id)
+    person = _find_person(name_or_id)
     if not person:
         return f"Никого с именем/ником '{name_or_id}' в базе нет. Может это новый человек?"
 
-    summary = _people_db.get_summary(person["id"])
+    pid = str(person.get("id") or "").strip()
+    if _memory_hub is not None:
+        summary = _memory_hub.get_person_summary(pid)
+    else:
+        summary = _people_db.get_summary(pid) if _people_db is not None else ""
     return summary or f"Досье на {name_or_id} есть, но оно пустое."
 
 
@@ -392,6 +481,7 @@ ALL_TOOLS = [
     check_system,
     web_search,
     search_memory,
+    recall_chat,
     remember_knowledge,
     update_person_fact,
     get_person_info,

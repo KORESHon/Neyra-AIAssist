@@ -210,6 +210,16 @@ class MemorySearchRequest(BaseModel):
     top_k: int = Field(default=3, ge=1, le=20)
 
 
+class MemoryRecallRequest(BaseModel):
+    """Chronological chat_log recall (SQLite), not semantic RAG. Requires user_id and/or channel_id."""
+
+    limit: int = Field(default=20, ge=1, le=200)
+    offset: int = Field(default=0, ge=0, le=100_000)
+    user_id: Optional[str] = Field(default=None, max_length=120)
+    channel_id: Optional[str] = Field(default=None, max_length=120)
+    newest_first: bool = True
+
+
 class MemoryWriteRequest(BaseModel):
     user_text: str = Field(min_length=1, max_length=6000)
     assistant_text: str = Field(min_length=1, max_length=6000)
@@ -659,8 +669,40 @@ def build_app(
     @app.post("/v1/memory/search")
     async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
-        rows = agent.long_memory.search(body.query, n_results=body.top_k)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is not None:
+            rows = hub.search_semantic(body.query, n_results=body.top_k)
+        else:
+            rows = agent.long_memory.search(body.query, n_results=body.top_k)
         return {"ok": True, "trace_id": trace_id, "data": {"results": rows}}
+
+    @app.post("/v1/memory/chat/recall")
+    async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_viewer)):
+        """Chronological list from SQLite chat_log (Memory Hub). Requires user_id and/or channel_id."""
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        uid = (body.user_id or "").strip() or None
+        cid = (body.channel_id or "").strip() or None
+        if not uid and not cid:
+            raise ApiError(
+                "memory_recall_filter_required",
+                "Provide user_id and/or channel_id; unfiltered chat_log recall is not allowed",
+                400,
+            )
+
+        def _run() -> list[dict[str, Any]]:
+            return hub.list_chat(
+                user_id=uid,
+                channel_id=cid,
+                limit=body.limit,
+                offset=body.offset,
+                newest_first=body.newest_first,
+            )
+
+        rows = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": {"messages": rows, "count": len(rows)}}
 
     @app.post("/v1/memory/write")
     async def v1_memory_write(body: MemoryWriteRequest, request: Request, api_role: str = Depends(dep_admin)):
@@ -672,9 +714,24 @@ def build_app(
             "user_id": uid,
             "source": "internal_api",
         }
-        agent.long_memory.save(body.user_text, body.assistant_text, meta)
-        _audit("memory_write", trace_id, api_role, {"user_id": uid})
-        return {"ok": True, "trace_id": trace_id, "data": {"written": True, "user_id": uid}}
+        hub = getattr(agent, "memory_hub", None)
+        wrote = False
+        if hub is not None:
+            wrote = bool(hub.save_dialog_semantic(body.user_text, body.assistant_text, meta))
+        else:
+            agent.long_memory.save(body.user_text, body.assistant_text, meta)
+            wrote = True
+        _audit("memory_write", trace_id, api_role, {"user_id": uid, "chroma_dialog": wrote})
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "written": wrote,
+                "user_id": uid,
+                "chroma_dialog_embed": wrote,
+                "rag_write_mode": getattr(hub, "rag_write_mode", None),
+            },
+        }
 
     @app.post("/v1/memory/add")
     async def v1_memory_add(body: MemoryAddRequest, request: Request, api_role: str = Depends(dep_admin)):
@@ -683,6 +740,9 @@ def build_app(
         trace_id = _trace_id(request)
 
         def _run() -> tuple[bool, str]:
+            hub = getattr(agent, "memory_hub", None)
+            if hub is not None:
+                return hub.remember_knowledge(body.text, body.metadata)
             return agent.long_memory.add_knowledge(body.text, body.metadata)
 
         ok, info = await asyncio.to_thread(_run)
@@ -789,17 +849,29 @@ def build_app(
                 )
                 break
         mem_cfg = (config.get("memory") or {}) if isinstance(config.get("memory"), dict) else {}
+        hub = getattr(agent, "memory_hub", None)
+        hub_stats = hub.stats() if hub is not None else {}
+        if hub_stats:
+            rag_records = int(hub_stats.get("chroma_records") or 0)
+            rag_enabled = bool(hub_stats.get("rag_enabled", getattr(agent.long_memory, "rag_enabled", True)))
+        else:
+            rag_records = agent.long_memory.count()
+            rag_enabled = bool(getattr(agent.long_memory, "rag_enabled", True))
         return {
             "ok": True,
             "trace_id": trace_id,
             "data": {
                 "short_term_messages": trimmed,
                 "agent_stats": agent.get_stats(),
+                "hub": hub_stats,
                 "rag": {
-                    "enabled": bool(getattr(agent.long_memory, "rag_enabled", True)),
-                    "records": agent.long_memory.count(),
+                    "enabled": rag_enabled,
+                    "records": rag_records,
                     "embedding_model": mem_cfg.get("embedding_model"),
                     "chroma_db_path": mem_cfg.get("chroma_db_path"),
+                    "rag_write_mode": mem_cfg.get("rag_write_mode")
+                    or hub_stats.get("rag_write_mode"),
+                    "sqlite_path": mem_cfg.get("sqlite_path") or hub_stats.get("sqlite_path"),
                 },
             },
         }
@@ -813,15 +885,125 @@ def build_app(
     @app.get("/v1/memory/stats")
     async def v1_memory_stats(request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
-        return {
-            "ok": True,
-            "trace_id": trace_id,
-            "data": {
-                "short_memory_size": len(agent.short_memory),
-                "long_memory_records": agent.long_memory.count(),
-                "people_records": len(agent.people_db._cache),
-            },
+        hub = getattr(agent, "memory_hub", None)
+        hub_stats = hub.stats() if hub is not None else None
+        if hub_stats is not None:
+            long_records = int(hub_stats.get("chroma_records") or 0)
+        else:
+            long_records = agent.long_memory.count()
+        data: dict[str, Any] = {
+            "short_memory_size": len(agent.short_memory),
+            "long_memory_records": long_records,
+            "people_records": (
+                int(hub_stats.get("people") or 0)
+                if hub_stats is not None
+                else len(agent.people_db._cache)
+            ),
         }
+        if hub_stats is not None:
+            data["hub"] = hub_stats
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/memory/people")
+    async def v1_memory_people(
+        request: Request,
+        _: None = Depends(dep_viewer),
+        limit: int = Query(100, ge=1, le=500),
+    ):
+        """List people from MemoryHub SQLite (cutover-safe)."""
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> list[dict[str, Any]]:
+            rows = hub.list_people()
+            out: list[dict[str, Any]] = []
+            for p in rows[: max(1, int(limit))]:
+                out.append(
+                    {
+                        "id": p.get("id"),
+                        "names": p.get("names") or [],
+                        "discord_ids": p.get("discord_ids") or [],
+                    }
+                )
+            return out
+
+        people = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": {"people": people, "count": len(people)}}
+
+    @app.get("/v1/memory/people/{person_id}")
+    async def v1_memory_person(person_id: str, request: Request, _: None = Depends(dep_viewer)):
+        """Person dossier summary via Hub (static_facts + recent facts)."""
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+        pid = (person_id or "").strip()
+        if not pid:
+            raise ApiError("invalid_person_id", "person_id required", 400)
+
+        def _run() -> dict[str, Any]:
+            # Same shape as GET /v1/memory/people (legacy id/names/discord_ids).
+            # Resolve by id, name, or discord so summary/facts use canonical person_id.
+            person = hub.find_person(pid)
+            if not person:
+                return {"person_id": pid, "person": None, "summary": "", "facts": []}
+            resolved = str(person.get("id") or "").strip() or pid
+            summary = hub.get_person_summary(resolved)
+            facts = (
+                hub.list_person_facts(resolved, limit=20)
+                if hasattr(hub, "list_person_facts")
+                else []
+            )
+            return {
+                "person_id": resolved,
+                "person": person,
+                "summary": summary,
+                "facts": facts,
+            }
+
+        data = await asyncio.to_thread(_run)
+        if not data.get("person") and not (data.get("summary") or "").strip():
+            raise ApiError("person_not_found", f"person '{pid}' not found", 404)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/memory/diary")
+    async def v1_memory_diary(
+        request: Request,
+        _: None = Depends(dep_viewer),
+        limit: int = Query(20, ge=1, le=200),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            rows = hub.list_diary_notes(limit=limit, newest_first=True)
+            text = hub.diary_recent_text(limit=limit)
+            return {"notes": rows, "text": text}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
+
+    @app.get("/v1/memory/journal")
+    async def v1_memory_journal(
+        request: Request,
+        _: None = Depends(dep_viewer),
+        limit: int = Query(20, ge=1, le=200),
+    ):
+        trace_id = _trace_id(request)
+        hub = getattr(agent, "memory_hub", None)
+        if hub is None:
+            raise ApiError("memory_hub_unavailable", "Memory Hub is not initialized", 503)
+
+        def _run() -> dict[str, Any]:
+            rows = hub.list_journal_entries(limit=limit, newest_first=True)
+            return {"entries": rows, "count": len(rows)}
+
+        data = await asyncio.to_thread(_run)
+        return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/memory/policies")
     async def v1_memory_policies(request: Request, _: None = Depends(dep_viewer)):
@@ -832,6 +1014,10 @@ def build_app(
             "trace_id": trace_id,
             "data": {
                 "rag_enabled": bool(mem_cfg.get("rag_enabled", True)),
+                "rag_write_mode": mem_cfg.get("rag_write_mode"),
+                "sqlite_path": mem_cfg.get("sqlite_path"),
+                "stm_max_messages": mem_cfg.get("stm_max_messages"),
+                "chat_log_retention_days": mem_cfg.get("chat_log_retention_days"),
                 "max_records_target": mem_cfg.get("max_records"),
                 "ltm_archive_dir": str(mem_cfg.get("ltm_archive_dir", "ltm_archive")),
                 "ltm_summarize_max_tokens": mem_cfg.get("ltm_summarize_max_tokens"),

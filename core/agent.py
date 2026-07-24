@@ -314,16 +314,29 @@ class NeyraAgent:
 
     def _setup_memory(self):
         """Инициализирует все модули памяти."""
-        from core.memory import LongTermMemory, NeyraDiary, PeopleDB, ShortTermMemory
+        from core.memory import LongTermMemory, MemoryHub, NeyraDiary, PeopleDB, ShortTermMemory
 
-        self.short_memory = ShortTermMemory(max_messages=10)
+        mem_cfg = self.config.get("memory", {}) or {}
+        stm_max = int(mem_cfg.get("stm_max_messages") or 10)
+        self.short_memory = ShortTermMemory(max_messages=max(2, stm_max))
         self.long_memory = LongTermMemory(self.config)
         self.people_db = PeopleDB(self.config)
         self.diary = NeyraDiary(self.config)
+        self.memory_hub = MemoryHub(
+            self.config,
+            long_memory=self.long_memory,
+            event_bus=self.event_bus,
+        )
+        self.people_db.memory_hub = self.memory_hub
+        self.diary.memory_hub = self.memory_hub
+        # Hub SQLite is the source of truth for PeopleDB — always hydrate in-memory cache from it.
+        try:
+            self.people_db.hydrate_from_hub(self.memory_hub)
+        except Exception as e:
+            logger.warning("PeopleDB hydrate_from_hub failed: %s", e)
 
         # Не блокируем старт бота тяжёлой загрузкой embedder'а:
         # RAG поднимется в фоне, а при первом запросе есть ленивый fallback.
-        mem_cfg = self.config.get("memory", {}) or {}
         if bool(mem_cfg.get("rag_init_in_background", True)):
             logger.info("Инициализирую долгосрочную память в фоне...")
             self.long_memory.initialize_async()
@@ -334,6 +347,54 @@ class NeyraAgent:
         # Создаём начальные досье если их нет
         self._init_people_db()
 
+    async def _append_turn_to_chat_log(
+        self,
+        *,
+        user_text: str,
+        assistant_text: str,
+        internal_user_id: str,
+        display_name: Optional[str],
+        channel_id: Optional[str],
+        source: Optional[str],
+        meta: Optional[dict] = None,
+        latency_ms: Optional[float] = None,
+    ) -> str:
+        """Dual-write full turn into SQLite chat_log (Memory Hub). Returns turn_id."""
+        turn_id = self.memory_hub.new_turn_id()
+        base_meta = dict(meta or {})
+        asst_cfg = self.config.get("assistant") if isinstance(self.config.get("assistant"), dict) else {}
+        assistant_name = str(asst_cfg.get("name") or "").strip() or None
+        rows = [
+            {
+                "role": "user",
+                "text": user_text,
+                "user_id": internal_user_id,
+                "display_name": display_name,
+                "channel_id": channel_id,
+                "source": source or "agent",
+                "turn_id": turn_id,
+                "meta": base_meta,
+            },
+            {
+                "role": "assistant",
+                "text": assistant_text,
+                "user_id": internal_user_id,
+                "display_name": assistant_name,
+                "channel_id": channel_id,
+                "source": source or "agent",
+                "turn_id": turn_id,
+                "latency_ms": latency_ms,
+                "meta": base_meta,
+            },
+        ]
+        try:
+            # Offload blocking SQLite IMMEDIATE txn off the event loop (ADR-0001).
+            await asyncio.to_thread(self.memory_hub.append_chat_batch, rows)
+        except Exception as e:
+            logger.exception("MemoryHub chat_log append failed: %s", e)
+            return ""
+        return turn_id
+
     def _setup_tools(self):
         """Инициализирует инструменты (вызываются вручную, не через bind_tools)."""
         from core.tools import ALL_TOOLS, init_tools
@@ -343,6 +404,7 @@ class NeyraAgent:
             self.people_db,
             self.config.get("assistant") or {},
             neyra_config=self.config,
+            memory_hub=self.memory_hub,
         )
         self.tools = {t.name: t for t in ALL_TOOLS}
         self.mcp_manager = None
@@ -394,9 +456,18 @@ class NeyraAgent:
         self.chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _init_people_db(self):
-        """Создаёт базовые досье если папка пустая."""
-        if len(list(self.people_db.db_dir.glob("*.json"))) > 0:
-            return  # Уже есть файлы
+        """Засеивает базовые досье, только если Hub/PeopleDB ещё пусты (никакого JSON-импорта)."""
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None:
+            try:
+                people_n = int(hub.stats().get("people") or 0)
+            except Exception:
+                people_n = 0
+            if people_n > 0 or self.people_db._cache:
+                return
+        else:
+            if self.people_db._cache:
+                return
 
         logger.info("Создаю начальные досье PeopleDB...")
 
@@ -489,23 +560,27 @@ class NeyraAgent:
                 "static_facts": {
                     "city": "Киров (рядом с Димой)",
                     "car": "Lada",
-                    "traits": "клички принимает и не обижается",
+                    "traits": "клички принимает и не обиждается",
                     "notes": "В дискорде не сидит."
                 },
                 "dynamic_facts": [],
             },
         ]
 
-        import json
         for person in people:
             person.setdefault("last_seen", None)
-            path = self.people_db.db_dir / f"{person['id']}.json"
-            path.write_text(
-                json.dumps(person, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
+            self.people_db._cache[person["id"]] = person
+            if hub is not None:
+                try:
+                    hub.upsert_person(
+                        person["id"],
+                        display_name=(person.get("names") or [person["id"]])[0],
+                        aliases=list(person.get("names") or []),
+                        meta=person,
+                    )
+                except Exception as e:
+                    logger.warning("PeopleDB seed→Hub failed for %s: %s", person["id"], e)
 
-        self.people_db._load_all()
         logger.info(f"Создано {len(people)} начальных досье")
 
     # ─── Системный промпт ──────────────────────────────────────────────────
@@ -922,7 +997,7 @@ class NeyraAgent:
         u = (username or "").strip()
         disp = (author_display_name or "").strip()
         if u:
-            person = self.people_db.find(u, discord_id=discord_user_id)
+            person = self.memory_hub.find_person(u, discord_id=discord_user_id)
             if person and person.get("names"):
                 return f"{person['names'][0]} (Discord-ник: {u})"
             return disp or u
@@ -1096,9 +1171,9 @@ class NeyraAgent:
         return "\n".join(lines)
 
     def _read_working_memory_for_prompt(self, internal_user_id: str) -> str:
-        from core import working_memory as wm
-
-        return wm.read_snippet_for_prompt(self.config, self._project_root, internal_user_id)
+        return self.memory_hub.working_memory_for_prompt(
+            internal_user_id, root=self._project_root
+        )
 
     async def _run_working_memory_refresh(
         self,
@@ -1181,7 +1256,11 @@ class NeyraAgent:
             )
             if tag:
                 md["assistant_emotion"] = tag
-        self.long_memory.save(user_message, clean_text, md)
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None:
+            hub.save_dialog_semantic(user_message, clean_text, md)
+        else:
+            self.long_memory.save(user_message, clean_text, md)
 
     def _schedule_emotion_diary(
         self,
@@ -1643,7 +1722,7 @@ class NeyraAgent:
         """Определение известных имён/ников с учетом русских окончаний (падежей)."""
         import re
         text_lower = text.lower()
-        name_map = self.people_db.get_all_names_map()
+        name_map = self.memory_hub.get_all_names_map()
         found = []
         for name_lower, pid in name_map.items():
             if pid in found:
@@ -1675,14 +1754,14 @@ class NeyraAgent:
         active_pid: Optional[str] = None
         u = (username or "").strip()
         if u:
-            ap = self.people_db.find(u, discord_id=discord_user_id)
+            ap = self.memory_hub.find_person(u, discord_id=discord_user_id)
             if ap:
                 active_pid = ap["id"]
-        active_block = (self.people_db.get_summary(active_pid) or "").strip() if active_pid else ""
+        active_block = (self.memory_hub.get_person_summary(active_pid) or "").strip() if active_pid else ""
         other_ids = [pid for pid in mentioned if not active_pid or pid != active_pid]
         if not other_ids:
             return active_block, ""
-        summaries = [self.people_db.get_summary(pid) for pid in other_ids]
+        summaries = [self.memory_hub.get_person_summary(pid) for pid in other_ids]
         others = "\n\n".join(s for s in summaries if s)
         return active_block, others
 
@@ -1875,7 +1954,7 @@ class NeyraAgent:
 
             # Кому сохраняем? Если в тексте упомянуты конкретные люди, сохраняем ИМ.
             # Иначе сохраняем самому отправителю.
-            author_p = self.people_db.find(username) if username else None
+            author_p = self.memory_hub.find_person(username) if username else None
             
             # Автор сам всегда попадает в mentioned из-за логики chat_stream, вычистим его для поиска "кого упомянули"
             mentioned_others = [m for m in mentioned if not (author_p and m == author_p["id"])]
@@ -1897,7 +1976,7 @@ class NeyraAgent:
         return self.diary.add_entry(text=text, source=source, meta=meta)
 
     def get_recent_diary(self, limit: int = 12) -> str:
-        return self.diary.recent_text(limit=limit) or "Дневник пока пуст."
+        return self.memory_hub.diary_recent_text(limit=limit) or "Дневник пока пуст."
 
     def _handle_websearch_trigger(self, text: str) -> str:
         """Эвристический веб-поиск: актуальные темы/новости/фактуальные вопросы без явных триггеров."""
@@ -2083,7 +2162,7 @@ class NeyraAgent:
         # 2. Ищем упомянутых людей
         mentioned = self._detect_mentioned_names(user_message)
         if username:
-            person = self.people_db.find(username, discord_id=discord_user_id)
+            person = self.memory_hub.find_person(username, discord_id=discord_user_id)
             if person and person["id"] not in mentioned:
                 mentioned.append(person["id"])
 
@@ -2093,7 +2172,7 @@ class NeyraAgent:
         people_active, people_others = self._split_people_context_for_prompt(
             mentioned, username, discord_user_id
         )
-        diary_ctx = self.diary.recent_text(limit=6)
+        diary_ctx = self.memory_hub.diary_recent_text(limit=6)
 
         # Эвристический веб-поиск
         web_ctx = self._handle_websearch_trigger(user_message)
@@ -2256,12 +2335,21 @@ class NeyraAgent:
         )
         self.short_memory.add("assistant", clean_text)
 
-        # 9. Сохраняем в RAG и логах (не ждём — fire and forget)
+        # 9. Сохраняем в RAG и логах (chat_log — to_thread; LTM — отдельно)
         metadata = {
             "username": username or "unknown",
             "discord_id": discord_user_id or "",
             "user_id": internal_uid,
         }
+        await self._append_turn_to_chat_log(
+            user_text=self._format_spoken_user_message(user_message, speaker_label),
+            assistant_text=clean_text,
+            internal_user_id=internal_uid,
+            display_name=username or speaker_label,
+            channel_id=channel_id,
+            source="chat",
+            meta=metadata,
+        )
         await self._save_dialog_to_ltm_with_emotion(user_message, clean_text, metadata, speaker_label)
 
         # 10. Логи
@@ -2351,7 +2439,7 @@ class NeyraAgent:
         memories = self.long_memory.search(user_message)
         mentioned = self._detect_mentioned_names(user_message)
         if username:
-            person = self.people_db.find(username, discord_id=discord_user_id)
+            person = self.memory_hub.find_person(username, discord_id=discord_user_id)
             if person and person["id"] not in mentioned:
                 mentioned.append(person["id"])
 
@@ -2361,7 +2449,7 @@ class NeyraAgent:
         people_active, people_others = self._split_people_context_for_prompt(
             mentioned, username, discord_user_id
         )
-        diary_ctx = self.diary.recent_text(limit=6)
+        diary_ctx = self.memory_hub.diary_recent_text(limit=6)
 
         # Эвристический веб-поиск
         web_ctx = self._handle_websearch_trigger(user_message)
@@ -2631,6 +2719,15 @@ class NeyraAgent:
             "discord_id": discord_user_id or "",
             "user_id": internal_uid,
         }
+        await self._append_turn_to_chat_log(
+            user_text=self._format_spoken_user_message(user_message, speaker_label),
+            assistant_text=clean_text,
+            internal_user_id=internal_uid,
+            display_name=username or speaker_label,
+            channel_id=channel_id,
+            source="chat_stream",
+            meta=metadata,
+        )
         await self._save_dialog_to_ltm_with_emotion(user_message, clean_text, metadata, speaker_label)
         self._log_thought(thoughts, user_message)
         self._log_chat(user_message, clean_text, metadata)

@@ -113,17 +113,41 @@ export function DashboardPage() {
           {loading ? (
             <div className="grid-3"><Skeleton className="h-20" /><Skeleton className="h-20" /><Skeleton className="h-20" /></div>
           ) : (
-            <div className="grid-3">
-              {[
-                { label: 'Краткая память', value: memory?.short_memory_size },
-                { label: 'RAG', value: memory?.long_memory_records },
-                { label: 'PeopleDB', value: memory?.people_records },
-              ].map(({ label, value }) => (
-                <div key={label} className="stat-tile">
-                  <p className="stat-label">{label}</p>
-                  <p className="stat-value">{value ?? '—'}</p>
+            <div className="stack-sm">
+              <div className="grid-3">
+                {[
+                  { label: 'STM', value: memory?.short_memory_size },
+                  { label: 'Chroma (RAG)', value: memory?.hub?.chroma_records ?? memory?.long_memory_records },
+                  { label: 'People (cache)', value: memory?.people_records },
+                ].map(({ label, value }) => (
+                  <div key={label} className="stat-tile">
+                    <p className="stat-label">{label}</p>
+                    <p className="stat-value">{value ?? '—'}</p>
+                  </div>
+                ))}
+              </div>
+              {memory?.hub && (
+                <div className="grid-3" style={{ marginTop: '0.5rem' }}>
+                  {[
+                    { label: 'chat_log', value: memory.hub.chat_log },
+                    { label: 'people (SQLite)', value: memory.hub.people },
+                    { label: 'diary', value: memory.hub.diary_notes },
+                    { label: 'journal', value: memory.hub.journal_entries },
+                    { label: 'WM snaps', value: memory.hub.working_memory_snapshots },
+                    { label: 'rag_write', value: memory.hub.rag_write_mode },
+                  ].map(({ label, value }) => (
+                    <div key={label} className="stat-tile">
+                      <p className="stat-label">{label}</p>
+                      <p className="stat-value-md">{value ?? '—'}</p>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
+              {!memory?.hub && (
+                <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                  Memory Hub stats появятся после ядра с `/v1/memory/stats` → `hub`.
+                </p>
+              )}
             </div>
           )}
         </div>

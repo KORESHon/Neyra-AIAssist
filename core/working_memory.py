@@ -8,9 +8,10 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from core.timeutil import now_local
 
 logger = logging.getLogger("neyra.working_memory")
 
@@ -49,7 +50,7 @@ def resolve_wm_path(config: dict, root: Path, internal_user_id: str) -> Path:
 
 
 def _default_template() -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    ts = now_local().strftime("%Y-%m-%d %H:%M %Z")
     return (
         "# Рабочая память (1–3 дня)\n\n"
         f"_Последнее обновление: {ts}_\n\n"
@@ -117,21 +118,35 @@ async def refresh_working_memory_async(
     path = resolve_wm_path(config, root, internal_user_id)
     max_file = max(2000, int(w.get("max_file_chars", 12000)))
     max_out = max(256, int(w.get("llm_max_tokens", 1400)))
+    hub = getattr(agent, "memory_hub", None)
 
-    with _LOCK:
-        if not path.exists():
+    current = ""
+    if hub is not None:
+        try:
+            snap = hub.sqlite.latest_wm_snapshot(user_id=internal_user_id)
+            if snap and str(snap.get("content") or "").strip():
+                current = str(snap["content"]).strip()
+        except Exception as e:
+            # Same as file-path: do not rewrite from empty template on read failure.
+            logger.warning("working_memory Hub read for refresh: %s", e)
+            return
+        if not current:
             current = _default_template()
-            try:
-                path.write_text(current, encoding="utf-8")
-            except Exception as e:
-                logger.warning("working_memory init file: %s", e)
-                return
-        else:
-            try:
-                current = path.read_text(encoding="utf-8")
-            except Exception as e:
-                logger.warning("working_memory read for refresh: %s", e)
-                return
+    else:
+        with _LOCK:
+            if not path.exists():
+                current = _default_template()
+                try:
+                    path.write_text(current, encoding="utf-8")
+                except Exception as e:
+                    logger.warning("working_memory init file: %s", e)
+                    return
+            else:
+                try:
+                    current = path.read_text(encoding="utf-8")
+                except Exception as e:
+                    logger.warning("working_memory read for refresh: %s", e)
+                    return
 
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -142,7 +157,7 @@ async def refresh_working_memory_async(
             "без пояснений снаружи и без оборачивания в code fence.\n"
             "Правила:\n"
             "- Сохрани смысл заголовка первой строки (# Рабочая память …) или очень близкий вариант.\n"
-            "- Сразу после H1 добавь строку вида _Последнее обновление: <UTC ISO>_ с актуальным временем.\n"
+            "- Сразу после H1 добавь строку вида _Последнее обновление: <локальное время хоста ISO>_ с актуальным временем.\n"
             "- Убери устаревшее и явно выполненное; добавь новые договорённости, задачи, важные детали из обмена.\n"
             "- Не выдумывай факты, которых не было во входе.\n"
             "- Будь компактной: в приоритете буллеты, без воды; без тегов мышления.\n"
@@ -175,11 +190,37 @@ async def refresh_working_memory_async(
             return
         if len(text) > max_file:
             text = text[: max_file - 80].rstrip() + "\n\n…[обрезано по max_file_chars]…"
-        with _LOCK:
-            path.write_text(text.strip() + "\n", encoding="utf-8")
-        logger.info("working_memory обновлён | path=%s | reason=%s | chars=%s", path, reason, len(text))
+        if hub is None:
+            # No Hub: markdown file remains the store (emergency/console-only use).
+            with _LOCK:
+                path.write_text(text.strip() + "\n", encoding="utf-8")
+            logger.info("working_memory обновлён | path=%s | reason=%s | chars=%s", path, reason, len(text))
+        hub_ok = False
+        if hub is not None:
+            try:
+                hub.save_wm_snapshot(
+                    text.strip(),
+                    user_id=internal_user_id,
+                    meta={"path": str(path), "reason": reason},
+                    publish_event=False,
+                )
+                hub_ok = True
+                logger.info(
+                    "working_memory обновлён (Hub only) | user=%s | reason=%s | chars=%s",
+                    internal_user_id,
+                    reason,
+                    len(text),
+                )
+            except Exception as e:
+                logger.warning("working_memory→Hub write failed: %s", e)
+        if hub is not None and not hub_ok:
+            logger.error(
+                "working_memory: Hub write failed — snapshot dropped (no file fallback when Hub attached) | user=%s",
+                internal_user_id,
+            )
+            return
         bus = getattr(agent, "event_bus", None)
-        if bus is not None:
+        if bus is not None and (hub is None or hub_ok):
             try:
                 from core.event_bus import MEMORY_WORKING_MEMORY_UPDATED, CoreEvent
 

@@ -478,7 +478,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Создаём нужные директории
-    for d in ["./logs", "./memory", "./sounds", "./memory/chroma_db", "./memory/people_db"]:
+    for d in ["./logs", "./memory", "./sounds", "./memory/chroma_db"]:
         Path(d).mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Старт | mode={args.mode} | backend={BACKEND}")
