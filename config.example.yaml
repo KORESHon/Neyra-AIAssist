@@ -243,12 +243,10 @@ memory:
   # RU: Папка ChromaDB для векторной памяти.
   chroma_db_path: "./memory/chroma_db"
 
-  # EN: [Deprecated] Only used as a write-only console artifact when no MemoryHub is attached
-  #     at all (never loaded back). Hub SQLite is the sole journal store otherwise — legacy
-  #     json import has been abandoned, not just disabled.
-  # RU: [Устарело] Используется только как write-only артефакт при отсутствии MemoryHub
-  #     (никогда не читается обратно). Во всех остальных случаях единственный стор журнала —
-  #     Hub SQLite; legacy-импорт json полностью упразднён, а не просто выключен.
+  # EN: [Deprecated] Ignored as a store — journal is Hub SQLite only (or in-memory when no Hub).
+  #     Key kept for backward compatibility with existing config files; safe to remove.
+  # RU: [Устарело] Не используется как стор — журнал только в Hub SQLite (или in-memory без Hub).
+  #     Ключ оставлен для совместимости со старыми конфигами; можно удалить.
   journal_path: "./memory/journal.json"
 
   # EN: [Deprecated] No longer read or written by NeyraDiary — Hub SQLite is the sole diary

@@ -352,6 +352,35 @@ def main() -> int:
         chat_hour = refl_d._get_logs_for_last_hours(2)
         assert "привет cutover" in chat_hour, chat_hour
 
+        # No-Hub: diary lives in RAM (_local); reflect must read agent.diary, not JSONL.
+        diary_jsonl = root / "ghost_diary.jsonl"
+        diary_jsonl.write_text(
+            '{"timestamp":"2099-01-01T00:00:00","source":"ghost","text":"must not appear"}\n',
+            encoding="utf-8",
+        )
+        diary_ram = NeyraDiary({"memory": {}})
+        assert diary_ram.add_entry("ram-only note for reflect", source="smoke") is True
+        assert not (root / "neyra_diary.jsonl").exists()
+
+        class _AgentNoHub:
+            memory_hub = None
+            event_bus = None
+            diary = diary_ram
+
+        refl_no_hub = ReflectionEngine(
+            {
+                "memory": {"diary_path": str(diary_jsonl), "journal_path": str(root / "j_nohub.json")},
+                "logging": {"chat_log": str(root / "chat2.log")},
+            },
+            _AgentNoHub(),
+        )
+        diary_ram_24 = refl_no_hub._get_diary_last_24h()
+        assert "ram-only note for reflect" in diary_ram_24, diary_ram_24
+        assert "must not appear" not in diary_ram_24
+        refl_no_hub._journal.append({"date": "2099-01-02", "summary": "nohub journal"})
+        assert refl_no_hub._save_journal() is True
+        assert not (root / "j_nohub.json").exists()
+
         # Blocker repro: UTC-stored Hub ts must still match host-local cutoff window
         from datetime import timezone as _tz
         from core.timeutil import now_local

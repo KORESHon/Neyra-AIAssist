@@ -2,7 +2,8 @@
 core/reflection.py — Ночная рефлексия Нейры
 ─────────────────────────────────────────────
 APScheduler запускает задачу в 04:00 каждую ночь.
-LLM суммирует диалоги за день → journal.json.
+LLM суммирует дневник/диалоги → journal в Memory Hub SQLite
+(без Hub — только in-memory на время процесса).
 """
 
 from __future__ import annotations
@@ -26,8 +27,8 @@ class ReflectionEngine:
         self.agent = agent  # Ссылка на NeyraAgent (для вызова LLM)
 
         mem_cfg = config.get("memory", {})
+        # Deprecated config key kept for event payload / old configs; never read/written as a store.
         self.journal_path = Path(mem_cfg.get("journal_path", "./memory/journal.json"))
-        self.diary_path = Path(mem_cfg.get("diary_path", "./memory/neyra_diary.jsonl"))
         self.reflect_json_path = Path(mem_cfg.get("reflection_json_path", "./memory/reflection_last.json"))
         self.chat_log_path = Path(config["logging"]["chat_log"])
         self.reflection_time = mem_cfg.get("reflection_time", "04:00")
@@ -40,11 +41,8 @@ class ReflectionEngine:
         self._last_hourly_key: str = ""
         self._last_small_key: str = ""
 
-        self.journal_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Hub SQLite is the source of truth; journal.json is never loaded as a seed
-        # (no legacy file import). Without a Hub attached, the journal stays in-memory
-        # only for this process (console-only, nothing to hydrate from).
+        # Hub SQLite is the source of truth. Without a Hub, journal stays in-memory only
+        # for this process (legacy journal.json store abandoned — never read or written).
         self._journal: list[dict] = []
         self._hydrate_journal_from_hub()
 
@@ -100,18 +98,25 @@ class ReflectionEngine:
         return False
 
     def _save_journal(self) -> bool:
-        """Persist last journal entry. Returns False if Hub-only write failed (entry rolled back)."""
+        """Persist last journal entry. Returns False if Hub write failed (entry rolled back)."""
         agent = getattr(self, "agent", None)
         bus = getattr(agent, "event_bus", None) if agent is not None else None
         hub = self._memory_hub()
         if hub is None:
-            # No Hub: best-effort console-only artifact, write-only (never loaded back).
-            self.journal_path.write_text(
-                json.dumps(self._journal, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            # No Hub: keep in-memory only (legacy journal.json store abandoned).
+            if bus is not None:
+                from core.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
+
+                bus.publish(
+                    CoreEvent(
+                        MEMORY_JOURNAL_UPDATED,
+                        "core.reflection",
+                        {"path": None, "entries": len(self._journal)},
+                    )
+                )
+            return True
         hub_ok = False
-        if hub is not None and self._journal:
+        if self._journal:
             try:
                 last = self._journal[-1] if isinstance(self._journal[-1], dict) else {"text": str(self._journal[-1])}
                 text = str(last.get("summary") or last.get("text") or last.get("content") or "")
@@ -124,16 +129,16 @@ class ReflectionEngine:
                         kind=str(last.get("kind") or "reflection"),
                         meta=last if isinstance(last, dict) else None,
                         ts=str(last.get("timestamp") or last.get("date") or last.get("generated_at") or "") or None,
-                        publish_event=bus is None,  # avoid double event if we publish below
+                        publish_event=bus is None,
                     )
                     hub_ok = True
             except Exception as e:
-                logger.warning("Reflection→Hub journal dual-write failed: %s", e)
-        if hub is not None and not hub_ok:
+                logger.warning("Reflection→Hub journal write failed: %s", e)
+        if not hub_ok:
             if self._journal:
                 dropped = self._journal.pop()
                 logger.error(
-                    "Reflection: Hub journal write failed — entry rolled back (no file fallback when Hub attached) (%s)",
+                    "Reflection: Hub journal write failed — entry rolled back (%s)",
                     (dropped.get("date") if isinstance(dropped, dict) else dropped),
                 )
             return False
@@ -442,45 +447,48 @@ class ReflectionEngine:
         rows.sort(key=lambda x: x[0])
         return "\n".join(line for _, line in rows)
 
-    def _diary_lines_from_file(self, cutoff: datetime) -> str:
+    def _diary_lines_from_agent(self, cutoff: datetime) -> str:
+        """No-Hub path: read agent.diary in-memory (_local via recent()), never JSONL files."""
         from core.timeutil import to_local
 
-        if not self.diary_path.exists():
+        agent = getattr(self, "agent", None)
+        diary = getattr(agent, "diary", None) if agent is not None else None
+        if diary is None:
             return ""
         cutoff_local = to_local(cutoff)
-        rows: list[str] = []
+        rows: list[tuple[datetime, str]] = []
         try:
-            for line in self.diary_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    item = json.loads(line)
-                except Exception:
-                    continue
-                ts = self._parse_iso_ts(str(item.get("timestamp") or ""))
-                if ts is None:
-                    continue
-                ts_local = to_local(ts)
-                if ts_local < cutoff_local:
-                    continue
-                source = str(item.get("source") or "unknown")
-                text = str(item.get("text") or "").strip()
-                if text:
-                    rows.append(f"[{ts_local.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
+            items = diary.recent(limit=500)
         except Exception as e:
-            logger.error("Ошибка чтения дневника за 24ч: %s", e)
-        return "\n".join(rows)
+            logger.error("Ошибка чтения дневника из agent.diary: %s", e)
+            return ""
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ts = self._parse_iso_ts(str(item.get("timestamp") or item.get("ts") or ""))
+            if ts is None:
+                continue
+            ts_local = to_local(ts)
+            if ts_local < cutoff_local:
+                continue
+            source = str(item.get("source") or "unknown")
+            text = str(item.get("text") or "").strip()
+            if text:
+                rows.append(
+                    (ts_local, f"[{ts_local.strftime('%Y-%m-%d %H:%M')} | {source}] {text}")
+                )
+        rows.sort(key=lambda x: x[0])
+        return "\n".join(line for _, line in rows)
 
     def _get_diary_last_24h(self) -> str:
-        """Diary for nightly reflect: Hub SQLite when attached, else legacy JSONL."""
+        """Diary for nightly reflect: Hub SQLite when attached, else agent.diary RAM."""
         from core.timeutil import cutoff_hours
 
         cutoff = cutoff_hours(24)
         hub = self._memory_hub()
         if hub is not None:
             return self._diary_lines_from_hub(hub, cutoff)
-        return self._diary_lines_from_file(cutoff)
+        return self._diary_lines_from_agent(cutoff)
 
     def _chat_lines_from_hub(self, *, cutoff: Optional[datetime] = None, date_str: Optional[str] = None) -> str:
         from core.timeutil import to_local
