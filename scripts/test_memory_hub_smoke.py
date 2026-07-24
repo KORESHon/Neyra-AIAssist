@@ -225,10 +225,49 @@ def main() -> int:
         assert rep_auto.get("skipped") is not True, rep_auto
         assert rep_auto["people"]["people"] == 1, rep_auto
 
-        # Idempotent: marker file gates a second automatic run.
+        # Idempotent: marker file gates a second automatic run when Hub layers are filled.
         rep_auto2 = run_hub_legacy_import(hub_auto, cfg_auto, force=False)
         assert rep_auto2.get("skipped") is True, rep_auto2
+
+        # Stale marker + wiped Hub must re-import (Auto Review major).
+        marker = Path(str(root / "auto.db") + ".legacy_import_done")
+        assert marker.is_file(), marker
         hub_auto.close()
+        (root / "auto.db").unlink(missing_ok=True)
+        hub_wiped = MemoryHub(cfg_auto)
+        assert int(hub_wiped.stats().get("people") or 0) == 0
+        rep_stale = run_hub_legacy_import(hub_wiped, cfg_auto, force=False)
+        assert rep_stale.get("skipped") is not True, rep_stale
+        assert hub_wiped.find_person("Авто") is not None
+        hub_wiped.close()
+
+        # Gap import: diary-only Hub + people JSON on disk → import people layer only
+        with tempfile.TemporaryDirectory() as tmp_gap:
+            groot = Path(tmp_gap)
+            gp = groot / "people_db"
+            gp.mkdir()
+            (gp / "gap.json").write_text(
+                json.dumps({"id": "gap_user", "names": ["Gap"], "dynamic_facts": []}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            gcfg = {
+                "memory": {
+                    "sqlite_path": str(groot / "gap.db"),
+                    "chroma_db_path": str(groot / "chroma_db"),
+                    "diary_path": str(groot / "d.jsonl"),
+                }
+            }
+            (groot / "chroma_db").mkdir()
+            hub_gap = MemoryHub(gcfg)
+            hub_gap.add_diary_note("already in hub", source="test")
+            assert int(hub_gap.stats().get("people") or 0) == 0
+            from core.memory.legacy_import import layers_needing_import
+
+            assert "people" in layers_needing_import(hub_gap, gcfg)
+            rep_gap = run_hub_legacy_import(hub_gap, gcfg, force=False)
+            assert rep_gap.get("skipped") is not True, rep_gap
+            assert hub_gap.find_person("Gap") is not None
+            hub_gap.close()
 
     # Journal read-path (Hub-only) + PeopleDB hydrate semantics
     with tempfile.TemporaryDirectory() as tmp3:

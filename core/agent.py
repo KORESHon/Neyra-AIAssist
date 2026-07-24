@@ -354,24 +354,18 @@ class NeyraAgent:
         self._init_people_db()
 
     def _maybe_auto_legacy_import(self) -> None:
-        """If Hub is empty but legacy on-disk stores still have data, import once (marker-gated)."""
+        """Import any Hub layers that are empty while leftover legacy files still exist."""
         hub = self.memory_hub
         if hub is None:
             return
-        try:
-            people_n = int(hub.stats().get("people") or 0)
-            diary_n = int(hub.stats().get("diary_notes") or 0)
-            journal_n = int(hub.stats().get("journal_entries") or 0)
-        except Exception:
-            people_n = diary_n = journal_n = 0
-        if people_n > 0 or diary_n > 0 or journal_n > 0:
-            return
-        from core.memory.legacy_import import legacy_files_present, run_hub_legacy_import
+        from core.memory.legacy_import import layers_needing_import, run_hub_legacy_import
 
-        if not legacy_files_present(self.config):
+        need = layers_needing_import(hub, self.config)
+        if not need:
             return
         logger.warning(
-            "Hub SQLite empty but legacy memory files found — running one-shot hub_legacy_import (marker-gated)"
+            "Hub missing layers %s but legacy files found — running hub_legacy_import",
+            need,
         )
         report = run_hub_legacy_import(hub, self.config, force=False)
         logger.info("auto hub_legacy_import completed: %s", report)
@@ -485,27 +479,41 @@ class NeyraAgent:
         self.chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _init_people_db(self):
-        """Создаёт базовые досье если PeopleDB/Hub ещё пустые (не после cutover)."""
+        """Создаёт базовые досье если Hub/PeopleDB ещё пустые."""
         hub = getattr(self, "memory_hub", None)
-        # With Hub attached, JSON seed files are never (re)written — Hub SQLite is authoritative.
+        # With Hub attached, JSON is never the runtime store — import or seed into SQLite.
         if hub is not None:
             try:
-                if int(hub.stats().get("people") or 0) > 0 or self.people_db._cache:
-                    return
+                people_n = int(hub.stats().get("people") or 0)
             except Exception:
-                if self.people_db._cache:
-                    return
-        if len(list(self.people_db.db_dir.glob("*.json"))) > 0:
-            return  # Уже есть файлы
-        if self.people_db._cache:
-            return
-        if hub is not None:
-            try:
-                if int(hub.stats().get("people") or 0) > 0:
+                people_n = 0
+            if people_n > 0 or self.people_db._cache:
+                return
+            json_files = list(self.people_db.db_dir.glob("*.json"))
+            if json_files:
+                from core.memory.legacy_import import run_hub_legacy_import
+
+                logger.warning(
+                    "Hub people empty but %s JSON dossier(s) on disk — importing legacy people",
+                    len(json_files),
+                )
+                run_hub_legacy_import(hub, self.config, force=False)
+                try:
                     self.people_db.hydrate_from_hub(hub)
-                    return
-            except Exception:
-                pass
+                except Exception as e:
+                    logger.warning("PeopleDB hydrate after import failed: %s", e)
+                try:
+                    if int(hub.stats().get("people") or 0) > 0 or self.people_db._cache:
+                        return
+                except Exception:
+                    if self.people_db._cache:
+                        return
+            # Fall through to seed into Hub when no usable legacy people remain.
+        else:
+            if len(list(self.people_db.db_dir.glob("*.json"))) > 0:
+                return  # no-Hub: files already present
+            if self.people_db._cache:
+                return
 
         logger.info("Создаю начальные досье PeopleDB...")
 

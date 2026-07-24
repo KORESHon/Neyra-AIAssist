@@ -152,8 +152,65 @@ def import_working_memory_dir(hub: Any, wm_dir: Path) -> dict[str, int]:
     return stats
 
 
+def _hub_layer_counts(hub: Any) -> dict[str, int]:
+    try:
+        st = hub.stats() if hasattr(hub, "stats") else {}
+    except Exception:
+        st = {}
+    return {
+        "people": int(st.get("people") or 0),
+        "diary": int(st.get("diary_notes") or 0),
+        "journal": int(st.get("journal_entries") or 0),
+        "working_memory": int(st.get("working_memory_snapshots") or 0),
+    }
+
+
+def _legacy_paths(config: dict[str, Any]) -> dict[str, Path]:
+    mem = config.get("memory") if isinstance(config.get("memory"), dict) else {}
+    chroma = Path(str(mem.get("chroma_db_path") or "./memory/chroma_db"))
+    base = chroma.parent
+    return {
+        "people": base / "people_db",
+        "diary": Path(str(mem.get("diary_path") or "./memory/neyra_diary.jsonl")),
+        "journal": Path(str(mem.get("journal_path") or "./memory/journal.json")),
+        "working_memory": Path(
+            str((mem.get("working_memory") or {}).get("storage_dir") or "./memory/working_memory")
+        ),
+    }
+
+
+def layers_needing_import(hub: Any, config: dict[str, Any]) -> list[str]:
+    """Layers that are empty in Hub but still have on-disk legacy data."""
+    counts = _hub_layer_counts(hub)
+    paths = _legacy_paths(config)
+    need: list[str] = []
+    people_dir = paths["people"]
+    if counts["people"] == 0 and people_dir.is_dir() and any(people_dir.glob("*.json")):
+        need.append("people")
+    diary_path = paths["diary"]
+    if counts["diary"] == 0 and diary_path.is_file() and diary_path.stat().st_size > 0:
+        need.append("diary")
+    journal_path = paths["journal"]
+    if counts["journal"] == 0 and journal_path.is_file() and journal_path.stat().st_size > 2:
+        try:
+            data = _read_json(journal_path)
+            if (isinstance(data, list) and data) or (isinstance(data, dict) and data):
+                need.append("journal")
+        except Exception:
+            need.append("journal")
+    wm_dir = paths["working_memory"]
+    if (
+        counts["working_memory"] == 0
+        and wm_dir.is_dir()
+        and any(p.is_file() and p.stat().st_size > 0 for p in wm_dir.glob("*.md"))
+    ):
+        need.append("working_memory")
+    return need
+
+
 def legacy_files_present(config: dict[str, Any]) -> bool:
     """True if any classic on-disk people/diary/journal/WM store still has data."""
+    # Reuse path checks without needing a Hub instance.
     mem = config.get("memory") if isinstance(config.get("memory"), dict) else {}
     chroma = Path(str(mem.get("chroma_db_path") or "./memory/chroma_db"))
     people_dir = chroma.parent / "people_db"
@@ -193,35 +250,63 @@ def run_hub_legacy_import(
     Import legacy on-disk stores into SQLite via Hub.
     Paths follow current memory.* config (same as PeopleDB / Diary / journal / WM).
 
-    Idempotent by default: after a successful run a marker file is written next to
-    the Hub SQLite DB. Subsequent calls skip unless force=True.
+    Idempotent by default via marker next to the Hub SQLite DB. Marker is ignored when
+    Hub still has empty layers that have leftover legacy files (stale marker after DB wipe).
     """
     marker = _legacy_import_marker_path(hub)
+    need = layers_needing_import(hub, config)
+    counts = _hub_layer_counts(hub)
+    hub_struct_empty = all(v == 0 for v in counts.values())
+
     if marker.is_file() and not force:
-        logger.info("hub_legacy_import skipped (marker exists): %s", marker)
+        if hub_struct_empty and legacy_files_present(config):
+            logger.warning(
+                "Ignoring stale legacy_import marker (%s): Hub empty but legacy files present",
+                marker,
+            )
+        elif not need:
+            logger.info("hub_legacy_import skipped (marker exists, Hub layers filled): %s", marker)
+            return {
+                "skipped": True,
+                "reason": "already_imported",
+                "marker": str(marker),
+            }
+        else:
+            logger.warning(
+                "Marker present but Hub missing layers %s with legacy files — importing gaps",
+                need,
+            )
+
+    if not force and not need and not hub_struct_empty:
         return {
             "skipped": True,
-            "reason": "already_imported",
+            "reason": "no_gaps",
             "marker": str(marker),
         }
 
-    mem = config.get("memory") if isinstance(config.get("memory"), dict) else {}
-    chroma = Path(str(mem.get("chroma_db_path") or "./memory/chroma_db"))
-    base = chroma.parent
-    people_dir = base / "people_db"
-    diary_path = Path(str(mem.get("diary_path") or "./memory/neyra_diary.jsonl"))
-    journal_path = Path(str(mem.get("journal_path") or "./memory/journal.json"))
-    wm_dir = Path(str((mem.get("working_memory") or {}).get("storage_dir") or "./memory/working_memory"))
+    paths = _legacy_paths(config)
+    import_all = force or hub_struct_empty or not need
+    layers = ["people", "diary", "journal", "working_memory"] if import_all else list(need)
 
     report: dict[str, Any] = {
-        "people": import_people_dir(hub, people_dir),
-        "diary": import_diary_jsonl(hub, diary_path),
-        "journal": import_journal_json(hub, journal_path),
-        "working_memory": import_working_memory_dir(hub, wm_dir),
+        "people": {"people": 0, "facts": 0, "files": 0, "errors": 0},
+        "diary": {"notes": 0, "errors": 0},
+        "journal": {"entries": 0, "errors": 0},
+        "working_memory": {"snapshots": 0, "errors": 0},
         "skipped": False,
         "forced": bool(force),
+        "layers": layers,
         "marker": str(marker),
     }
+    if "people" in layers:
+        report["people"] = import_people_dir(hub, paths["people"])
+    if "diary" in layers:
+        report["diary"] = import_diary_jsonl(hub, paths["diary"])
+    if "journal" in layers:
+        report["journal"] = import_journal_json(hub, paths["journal"])
+    if "working_memory" in layers:
+        report["working_memory"] = import_working_memory_dir(hub, paths["working_memory"])
+
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(
@@ -229,6 +314,7 @@ def run_hub_legacy_import(
                 {
                     "imported_at": datetime.now(timezone.utc).isoformat(),
                     "forced": bool(force),
+                    "layers": layers,
                     "report": {
                         k: report[k]
                         for k in ("people", "diary", "journal", "working_memory")
