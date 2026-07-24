@@ -944,11 +944,20 @@ def build_app(
             raise ApiError("invalid_person_id", "person_id required", 400)
 
         def _run() -> dict[str, Any]:
-            person = hub.get_person(pid) or hub.find_person(pid)
-            summary = hub.get_person_summary(pid)
-            facts = hub.list_person_facts(pid, limit=20) if hasattr(hub, "list_person_facts") else []
+            # Same shape as GET /v1/memory/people (legacy id/names/discord_ids).
+            # Resolve by id, name, or discord so summary/facts use canonical person_id.
+            person = hub.find_person(pid)
+            if not person:
+                return {"person_id": pid, "person": None, "summary": "", "facts": []}
+            resolved = str(person.get("id") or "").strip() or pid
+            summary = hub.get_person_summary(resolved)
+            facts = (
+                hub.list_person_facts(resolved, limit=20)
+                if hasattr(hub, "list_person_facts")
+                else []
+            )
             return {
-                "person_id": pid,
+                "person_id": resolved,
                 "person": person,
                 "summary": summary,
                 "facts": facts,

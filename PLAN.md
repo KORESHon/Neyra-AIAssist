@@ -77,8 +77,10 @@
 | 1 | People/diary/journal/WM: dual-write ещё включён по умолчанию; истина должна стать **только SQLite** | `[~]` offline cutover green; flags в example ещё on |
 | 2 | Cutover flags: `hub_legacy_import/fallback/dual_write` → `false` на стенде после импорта | `[ ]` |
 | 3 | **Удалить** file PeopleDB/Diary/journal/WM stores + dual-write shims из кода | `[ ]` финал |
-| 4 | Полный e2e на стенде: chat → Hub chat_log → `/v1/memory/*` / healthcheck | `[~]` offline `scripts/test_memory_cutover_offline.py`; live — нет |
+| 4 | Полный e2e на стенде: chat → Hub chat_log → `/v1/memory/*` / healthcheck | `[~]` offline cutover + people detail resolve; live — нет |
 | 5 | Merge PR #1 в `main` после зелёного cutover | `[ ]` |
+
+**API cutover-safe (на ветке):** `GET /v1/memory/people/{id}` резолвит id/имя → legacy-shape + summary/facts по каноническому `person_id` (как list).
 
 **Не блокирует 1A:** Fast-Path умного дома → этап 2. Фаза **1B** (раскладка `core/`) — только после зелёной 1A.
 

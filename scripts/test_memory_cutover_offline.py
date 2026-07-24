@@ -152,8 +152,12 @@ def main() -> int:
         # Identity + summary survive without JSON
         found = hub_b.find_person("Катя", discord_id="123456789012345678")
         assert found and found.get("id") == "cutover_user", found
-        summary = hub_b.get_person_summary("cutover_user")
+        assert "names" in found and "person_id" not in found
+        # Mirror GET /v1/memory/people/{person_id}: resolve name → dossier fields
+        resolved = str(found.get("id") or "")
+        summary = hub_b.get_person_summary(resolved)
         assert "любит чай" in summary, summary
+        assert hub_b.list_person_facts(resolved, limit=5)
         assert hub_b.get_all_names_map().get("катя") == "cutover_user"
 
         # Diary / journal / chat / WM reads

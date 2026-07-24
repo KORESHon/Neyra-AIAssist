@@ -412,6 +412,13 @@ def main() -> int:
         hub_d.add_person_fact("seed1", "любит чай", emotion_note="ок")
         summary1 = hub_d.get_person_summary("seed1")
         assert "Киров" in summary1 and "любит чай" in summary1, summary1
+        # API people/{id} contract: name lookup → legacy shape + summary via resolved id
+        by_name = hub_d.find_person("Сид")
+        assert by_name and by_name.get("id") == "seed1", by_name
+        assert "names" in by_name and "person_id" not in by_name
+        resolved = str(by_name["id"])
+        assert "любит чай" in hub_d.get_person_summary(resolved)
+        assert hub_d.list_person_facts(resolved, limit=5)
 
         # Hub WM read failure must abort refresh (not overwrite with default template)
         import asyncio
