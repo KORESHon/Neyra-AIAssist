@@ -52,7 +52,7 @@ class ReflectionEngine:
 
     def _hub_dual_write(self) -> bool:
         hub = self._memory_hub()
-        return hub is None or bool(getattr(hub, "hub_dual_write_legacy", False))
+        return hub is None or bool(getattr(hub, "hub_dual_write_legacy", True))
 
     def _load_journal(self) -> list:
         if self.journal_path.exists():
@@ -63,14 +63,19 @@ class ReflectionEngine:
         return []
 
     def _hydrate_journal_from_hub(self) -> int:
-        """Rebuild in-memory journal from SQLite when Hub is primary (cutover)."""
+        """Rebuild in-memory journal from SQLite when Hub is primary (cutover).
+
+        If Hub has no rows yet, keep any file-loaded journal (do not wipe).
+        """
         hub = self._memory_hub()
-        if hub is None or bool(getattr(hub, "hub_dual_write_legacy", False)):
+        if hub is None or bool(getattr(hub, "hub_dual_write_legacy", True)):
             return 0
         try:
             rows = hub.list_journal_entries(limit=500, newest_first=False)
         except Exception as e:
             logger.warning("Reflection journal hydrate from Hub failed: %s", e)
+            return 0
+        if not rows:
             return 0
         rebuilt: list[dict] = []
         for row in rows:
@@ -86,6 +91,8 @@ class ReflectionEngine:
                 entry["generated_at"] = row.get("ts")
             if entry.get("date") or entry.get("summary"):
                 rebuilt.append(entry)
+        if not rebuilt:
+            return 0
         self._journal = rebuilt
         logger.info("Reflection journal hydrated from Hub SQLite: %s entries", len(rebuilt))
         return len(rebuilt)

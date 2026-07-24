@@ -119,7 +119,7 @@ async def refresh_working_memory_async(
     max_file = max(2000, int(w.get("max_file_chars", 12000)))
     max_out = max(256, int(w.get("llm_max_tokens", 1400)))
     hub = getattr(agent, "memory_hub", None)
-    dual = hub is None or getattr(hub, "hub_dual_write_legacy", False)
+    dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
 
     current = ""
     if hub is not None and not dual:

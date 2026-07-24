@@ -243,13 +243,14 @@ memory:
   # RU: Разовый импорт legacy json/jsonl в Hub при старте (выключить после обнуления/cutover).
   hub_legacy_import: false
 
-  # EN: Allow Hub prompt reads to fall back to legacy files when SQLite has no rows (cutover/test). Set false before deleting legacy.
-  # RU: Разрешить fallback чтения промпта из legacy-файлов, если в SQLite пусто (cutover/тест). Перед удалением legacy — false.
-  # After live Hub e2e (2026-07): default OFF — SQLite is source of truth.
+  # EN: Allow Hub prompt reads to fall back to legacy files when SQLite has no rows.
+  #     Code default if key omitted: true (safe upgrade). Example/stand after import: false.
+  # RU: Fallback чтения из legacy при пустом SQLite. В коде без ключа — true; после import на стенде — false.
   hub_legacy_fallback: false
 
-  # EN: Also write people/diary to legacy json/jsonl (dual-write). Set false when SQLite is sole store.
-  # RU: Параллельно писать people/diary в legacy json/jsonl. Выключить, когда истина только SQLite.
+  # EN: Also write people/diary to legacy json/jsonl. Code default if omitted: true.
+  #     Example/stand after import: false (SQLite sole store).
+  # RU: Dual-write в json/jsonl. В коде без ключа — true; после import на стенде — false.
   hub_dual_write_legacy: false
 
   # EN: ChromaDB storage directory for vector memory.

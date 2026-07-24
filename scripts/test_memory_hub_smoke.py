@@ -211,6 +211,36 @@ def main() -> int:
         assert not journal_path.exists() or journal_path.read_text(encoding="utf-8").strip() in {"", "[]"}
         assert hub_c.stats()["journal_entries"] == 1
 
+        # Empty Hub must NOT wipe a file-loaded journal when dual_write=false
+        file_journal = root / "journal_keep.json"
+        file_journal.write_text(
+            json.dumps(
+                [{"date": "2026-07-20", "summary": "from file journal"}],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        cfg_keep = {
+            "memory": {
+                "sqlite_path": str(root / "empty_hub.db"),
+                "journal_path": str(file_journal),
+                "hub_dual_write_legacy": False,
+                "hub_legacy_fallback": False,
+                "rag_write_mode": "important_only",
+            },
+            "logging": {"chat_log": str(chat_log)},
+        }
+        hub_empty = MemoryHub(cfg_keep, long_memory=_FakeLTM())
+
+        class _AgentEmpty:
+            memory_hub = hub_empty
+            event_bus = None
+
+        refl_keep = ReflectionEngine(cfg_keep, _AgentEmpty())
+        assert any(e.get("date") == "2026-07-20" for e in refl_keep._journal), refl_keep._journal
+        assert "from file journal" in refl_keep.get_recent_journal(7)
+        hub_empty.close()
+
         # Simulate restart: empty file journal, Hub still has entry
         refl2 = ReflectionEngine(cfg, _Agent())
         assert refl2._journal_has_date("2026-07-23")

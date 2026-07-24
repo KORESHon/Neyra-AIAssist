@@ -152,6 +152,32 @@ def import_working_memory_dir(hub: Any, wm_dir: Path) -> dict[str, int]:
     return stats
 
 
+def legacy_files_present(config: dict[str, Any]) -> bool:
+    """True if any classic on-disk people/diary/journal/WM store still has data."""
+    mem = config.get("memory") if isinstance(config.get("memory"), dict) else {}
+    chroma = Path(str(mem.get("chroma_db_path") or "./memory/chroma_db"))
+    people_dir = chroma.parent / "people_db"
+    if people_dir.is_dir() and any(people_dir.glob("*.json")):
+        return True
+    diary_path = Path(str(mem.get("diary_path") or "./memory/neyra_diary.jsonl"))
+    if diary_path.is_file() and diary_path.stat().st_size > 0:
+        return True
+    journal_path = Path(str(mem.get("journal_path") or "./memory/journal.json"))
+    if journal_path.is_file() and journal_path.stat().st_size > 2:
+        try:
+            data = _read_json(journal_path)
+            if isinstance(data, list) and data:
+                return True
+            if isinstance(data, dict) and data:
+                return True
+        except Exception:
+            return True
+    wm_dir = Path(str((mem.get("working_memory") or {}).get("storage_dir") or "./memory/working_memory"))
+    if wm_dir.is_dir() and any(p.is_file() and p.stat().st_size > 0 for p in wm_dir.glob("*.md")):
+        return True
+    return False
+
+
 def _legacy_import_marker_path(hub: Any) -> Path:
     sqlite_path = Path(getattr(getattr(hub, "sqlite", None), "path", None) or "./memory/neyra_memory.db")
     return Path(str(sqlite_path) + ".legacy_import_done")

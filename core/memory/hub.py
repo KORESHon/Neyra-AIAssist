@@ -56,8 +56,10 @@ class MemoryHub:
         if self.rag_write_mode not in {"off", "digest", "important_only", "legacy_dialog"}:
             logger.warning("Unknown rag_write_mode=%r — using important_only", self.rag_write_mode)
             self.rag_write_mode = "important_only"
-        self.hub_legacy_fallback = bool(mem.get("hub_legacy_fallback", False))
-        self.hub_dual_write_legacy = bool(mem.get("hub_dual_write_legacy", False))
+        # Safe missing-key defaults: True until legacy stores are deleted (Phase 1A #3).
+        # Stand/example may set false after hub_legacy_import; do not flip code defaults early.
+        self.hub_legacy_fallback = bool(mem.get("hub_legacy_fallback", True))
+        self.hub_dual_write_legacy = bool(mem.get("hub_dual_write_legacy", True))
         sys_cfg = config.get("system") if isinstance(config.get("system"), dict) else {}
         tz_name = str(sys_cfg.get("timezone") or mem.get("timezone") or "").strip() or None
         self.timezone_name = tz_name

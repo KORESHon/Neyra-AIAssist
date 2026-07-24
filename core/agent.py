@@ -331,6 +331,11 @@ class NeyraAgent:
         )
         self.people_db.memory_hub = self.memory_hub
         self.diary.memory_hub = self.memory_hub
+        # Cutover footgun guard: flags off + empty Hub + leftover legacy files → one-shot import.
+        try:
+            self._maybe_auto_legacy_import(mem_cfg)
+        except Exception as e:
+            logger.exception("auto hub_legacy_import failed: %s", e)
         # Hydrate PeopleDB from SQLite only when Hub is primary (cutover) or JSON cache empty.
         # Never overwrite a non-empty JSON cache while dual_write is still on.
         try:
@@ -360,6 +365,36 @@ class NeyraAgent:
 
         # Создаём начальные досье если их нет
         self._init_people_db()
+
+    def _maybe_auto_legacy_import(self, mem_cfg: dict) -> None:
+        """If cutover flags are off but Hub is empty and legacy files exist, import once (marker-gated)."""
+        hub = self.memory_hub
+        if hub is None:
+            return
+        # Explicit config import is handled separately; this is the upgrade safety net.
+        if bool(mem_cfg.get("hub_legacy_import", False)):
+            return
+        cutover = (not hub.hub_legacy_fallback) or (not hub.hub_dual_write_legacy)
+        if not cutover:
+            return
+        try:
+            people_n = int(hub.stats().get("people") or 0)
+            diary_n = int(hub.stats().get("diary_notes") or 0)
+            journal_n = int(hub.stats().get("journal_entries") or 0)
+        except Exception:
+            people_n = diary_n = journal_n = 0
+        if people_n > 0 or diary_n > 0 or journal_n > 0:
+            return
+        from core.memory.legacy_import import legacy_files_present, run_hub_legacy_import
+
+        if not legacy_files_present(self.config):
+            return
+        logger.warning(
+            "Hub SQLite empty but legacy memory files found while cutover flags are off — "
+            "running one-shot hub_legacy_import (marker-gated)"
+        )
+        report = run_hub_legacy_import(hub, self.config, force=False)
+        logger.info("auto hub_legacy_import completed: %s", report)
 
     async def _append_turn_to_chat_log(
         self,
@@ -472,7 +507,7 @@ class NeyraAgent:
     def _init_people_db(self):
         """Создаёт базовые досье если PeopleDB/Hub ещё пустые (не после cutover)."""
         hub = getattr(self, "memory_hub", None)
-        dual = hub is None or bool(getattr(hub, "hub_dual_write_legacy", False))
+        dual = hub is None or bool(getattr(hub, "hub_dual_write_legacy", True))
         # After cutover: Hub is primary — never reseed JSON over hydrated SQLite people.
         if hub is not None and not dual:
             try:

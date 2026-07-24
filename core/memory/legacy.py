@@ -502,7 +502,11 @@ class PeopleDB:
         self.db_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, dict] = {}
         self.memory_hub = None  # set by agent after MemoryHub init (dual-write)
-        self._load_all()
+        # When dual_write is off, do not seed cache from leftover JSON (Hub hydrate is source).
+        if bool(mem_cfg.get("hub_dual_write_legacy", True)):
+            self._load_all()
+        else:
+            logger.info("PeopleDB: skip JSON load (hub_dual_write_legacy=false); expect Hub hydrate")
 
     def _load_all(self) -> None:
         """Загружает все JSON-файлы в кэш."""
@@ -515,12 +519,15 @@ class PeopleDB:
         logger.info(f"PeopleDB загружена: {len(self._cache)} записей")
 
     def _save(self, person_id: str) -> None:
-        """Сохраняет досье на диск (можно отключить через memory.hub_dual_write_legacy)."""
+        """Legacy JSON write — only when dual_write is on (or no Hub)."""
         if person_id not in self._cache:
             return
         hub = getattr(self, "memory_hub", None)
-        if hub is not None and not getattr(hub, "hub_dual_write_legacy", False):
+        if hub is not None and not getattr(hub, "hub_dual_write_legacy", True):
             return
+        if hub is None:
+            # No Hub: keep file store for emergency/console-only use.
+            pass
         path = self.db_dir / f"{person_id}.json"
         path.write_text(
             json.dumps(self._cache[person_id], ensure_ascii=False, indent=2),
@@ -589,7 +596,7 @@ class PeopleDB:
                 hub_ok = True
             except Exception as e:
                 logger.warning("PeopleDB→Hub dual-write failed: %s", e)
-        dual = hub is None or getattr(hub, "hub_dual_write_legacy", False)
+        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
         if hub is not None and not dual and not hub_ok:
             self._cache[person_id]["dynamic_facts"] = prev_facts
             self._cache[person_id]["last_seen"] = prev_seen
@@ -625,7 +632,7 @@ class PeopleDB:
                 hub_ok = True
             except Exception as e:
                 logger.warning("PeopleDB→Hub link_discord_id failed: %s", e)
-        dual = hub is None or getattr(hub, "hub_dual_write_legacy", False)
+        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
         if hub is not None and not dual and not hub_ok:
             self._cache[person_id]["discord_ids"] = prev_ids
             logger.error(
@@ -662,7 +669,7 @@ class PeopleDB:
                 hub_ok = True
             except Exception as e:
                 logger.warning("PeopleDB→Hub upsert failed: %s", e)
-        dual = hub is None or getattr(hub, "hub_dual_write_legacy", False)
+        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
         if hub is not None and not dual and not hub_ok:
             self._cache.pop(person_id, None)
             logger.error(
@@ -779,7 +786,7 @@ class NeyraDiary:
         }
         try:
             hub = getattr(self, "memory_hub", None)
-            dual = hub is None or getattr(hub, "hub_dual_write_legacy", False)
+            dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
             legacy_ok = False
             hub_ok = False
             if dual:
@@ -842,21 +849,37 @@ class NeyraDiary:
         )
 
     def recent(self, limit: int = 10) -> list[dict]:
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None and not getattr(hub, "hub_dual_write_legacy", True):
+            try:
+                rows = hub.list_diary_notes(limit=max(1, int(limit)), newest_first=True)
+                # oldest→newest for parity with file tail
+                return list(reversed(rows)) if rows else []
+            except Exception as e:
+                logger.warning("NeyraDiary.recent Hub read failed: %s", e)
+                return []
         rows = self._read_all()
         return rows[-max(1, int(limit)) :]
 
     def recent_text(self, limit: int = 10) -> str:
+        hub = getattr(self, "memory_hub", None)
+        if hub is not None and not getattr(hub, "hub_dual_write_legacy", True):
+            try:
+                return hub.diary_recent_text(limit=limit) or ""
+            except Exception as e:
+                logger.warning("NeyraDiary.recent_text Hub read failed: %s", e)
+                return ""
         items = self.recent(limit=limit)
         if not items:
             return ""
         lines = []
         for e in items:
-            ts = e.get("timestamp", "")
+            ts = e.get("timestamp") or e.get("ts") or ""
             src = e.get("source", "manual")
             txt = str(e.get("text", "")).strip()
             if txt:
                 meta = e.get("meta") or {}
-                emo = str(meta.get("emotion") or meta.get("assistant_mood") or "").strip()
+                emo = str(meta.get("emotion") or meta.get("assistant_mood") or e.get("emotion") or "").strip()
                 suf = f" | настр.: {emo}" if emo else ""
                 lines.append(f"[{ts} | {src}{suf}] {txt}")
         return "\n".join(lines)
