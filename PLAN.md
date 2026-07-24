@@ -266,8 +266,8 @@ Cutover-флаги (`hub_legacy_import`, `hub_legacy_fallback`, `hub_dual_write_
 |---|--------|-----------|--------|
 | 1 | **`core/plugins/` (plugin_manager):** перенести loader/config/sdk/builder; `__init__.py` реэкспортирует публичный API (`PluginLoader`, `PluginManifest`, `PluginContext`, `merge_plugin_configs`, `create_or_edit_plugin_impl`, …) | path jail / `rollback_plugin` / reload builder-пути живы; `scripts/invoke_plugin.py` + Internal API plugins работают | `[x]` |
 | 2 | **Shim-слой плагинов:** `core/plugin_*.py` → re-export из `core.plugins` | старые `from core.plugin_loader import …` не ломаются | `[x]` |
-| 3 | **`core/llm/`:** перенести profile/retry/openrouter_balance (+ при необходимости тонкий `__init__`) | все callers обновлены или через shim; resolve_* / backoff без регрессии | `[ ]` |
-| 4 | **`core/runtime/`:** server / health / win_runtime / secrets | `main.py` / `run_neyra_server` / healthcheck зелёные | `[ ]` |
+| 3 | **`core/llm/`:** перенести profile/retry/openrouter_balance (+ при необходимости тонкий `__init__`) | все callers обновлены или через shim; resolve_* / backoff без регрессии | `[x]` |
+| 4 | **`core/runtime/`:** server / health / win_runtime / secrets | `main.py` / `run_neyra_server` / healthcheck зелёные | `[x]` |
 | 5 | **`core/voice/` унификация:** свести root `stt.py` / `yandex_tts.py` с пакетом `voice/`; убрать дубли импортов | один канонический путь импорта; Discord/voice callers ок | `[ ]` |
 | 6 | **Memory naming cleanup:** переименовать `core/memory/legacy.py` в нейтральное имя; обновить `__init__` + shims | нет «legacy» в имени модуля при полностью abandoned file-store; smokes зелёные | `[ ]` |
 | 7 | **Чистка дублей / мёртвого кода** после cutover: unused imports, устаревшие комментарии «dual-write/fallback», мёртвые пути | `rg` по `hub_legacy`/`dual_write`/`import-legacy` в коде = только docs/history; compileall чистый | `[ ]` |

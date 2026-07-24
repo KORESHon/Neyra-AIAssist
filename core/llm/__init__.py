@@ -1,7 +1,13 @@
-"""Compat shim — prefer ``from core.llm import …`` or ``core.llm.profile``."""
+"""
+LLM connection helpers: OpenAI-compatible profiles, retries, OpenRouter usage.
+
+Canonical imports live here. Flat ``core.llm_profile`` / ``core.llm_retry`` /
+``core.openrouter_balance`` remain as thin compat shims.
+"""
 
 from __future__ import annotations
 
+from core.llm.openrouter_balance import fetch_openrouter_key_usage
 from core.llm.profile import (
     OpenAICompatibleConnection,
     expand_openrouter_nested,
@@ -16,11 +22,15 @@ from core.llm.profile import (
     resolved_talk_model,
     resolved_vision_model_id,
 )
+from core.llm.retry import ainvoke_with_rate_limit_backoff, is_retryable_llm_error
 
 __all__ = [
     "OpenAICompatibleConnection",
+    "ainvoke_with_rate_limit_backoff",
     "expand_openrouter_nested",
+    "fetch_openrouter_key_usage",
     "is_local_openai_compatible_provider",
+    "is_retryable_llm_error",
     "merge_llm_tuning_options",
     "merged_vision_pipeline",
     "resolve_openai_compatible_connection",
