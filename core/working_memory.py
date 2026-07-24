@@ -119,10 +119,9 @@ async def refresh_working_memory_async(
     max_file = max(2000, int(w.get("max_file_chars", 12000)))
     max_out = max(256, int(w.get("llm_max_tokens", 1400)))
     hub = getattr(agent, "memory_hub", None)
-    dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
 
     current = ""
-    if hub is not None and not dual:
+    if hub is not None:
         try:
             snap = hub.sqlite.latest_wm_snapshot(user_id=internal_user_id)
             if snap and str(snap.get("content") or "").strip():
@@ -191,7 +190,8 @@ async def refresh_working_memory_async(
             return
         if len(text) > max_file:
             text = text[: max_file - 80].rstrip() + "\n\n…[обрезано по max_file_chars]…"
-        if dual:
+        if hub is None:
+            # No Hub: markdown file remains the store (emergency/console-only use).
             with _LOCK:
                 path.write_text(text.strip() + "\n", encoding="utf-8")
             logger.info("working_memory обновлён | path=%s | reason=%s | chars=%s", path, reason, len(text))
@@ -205,23 +205,22 @@ async def refresh_working_memory_async(
                     publish_event=False,
                 )
                 hub_ok = True
-                if not dual:
-                    logger.info(
-                        "working_memory обновлён (Hub only) | user=%s | reason=%s | chars=%s",
-                        internal_user_id,
-                        reason,
-                        len(text),
-                    )
+                logger.info(
+                    "working_memory обновлён (Hub only) | user=%s | reason=%s | chars=%s",
+                    internal_user_id,
+                    reason,
+                    len(text),
+                )
             except Exception as e:
-                logger.warning("working_memory→Hub dual-write failed: %s", e)
-        if hub is not None and not dual and not hub_ok:
+                logger.warning("working_memory→Hub write failed: %s", e)
+        if hub is not None and not hub_ok:
             logger.error(
-                "working_memory: Hub write failed and dual_write disabled — snapshot dropped | user=%s",
+                "working_memory: Hub write failed — snapshot dropped (no file fallback when Hub attached) | user=%s",
                 internal_user_id,
             )
             return
         bus = getattr(agent, "event_bus", None)
-        if bus is not None and (dual or hub_ok):
+        if bus is not None and (hub is None or hub_ok):
             try:
                 from core.event_bus import MEMORY_WORKING_MEMORY_UPDATED, CoreEvent
 

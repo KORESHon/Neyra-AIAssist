@@ -248,9 +248,12 @@ memory:
   # RU: Fallback чтения из legacy при пустом SQLite. В коде без ключа — true; после import на стенде — false.
   hub_legacy_fallback: false
 
-  # EN: Also write people/diary to legacy json/jsonl. Code default if omitted: true.
-  #     Example/stand after import: false (SQLite sole store).
-  # RU: Dual-write в json/jsonl. В коде без ключа — true; после import на стенде — false.
+  # EN: Legacy — no longer gates writes: once MemoryHub is attached, people/diary/journal/WM
+  #     are Hub SQLite only (no json/jsonl/md writes), regardless of this flag. Kept only for
+  #     read-path compat / tests; irrelevant with no Hub attached (file store is always used then).
+  # RU: Больше не влияет на запись: при подключённом MemoryHub people/diary/journal/WM пишутся
+  #     только в SQLite (без json/jsonl/md), независимо от флага. Оставлен для read-path/тестов;
+  #     без Hub роли не играет (тогда всегда используется файловое хранилище).
   hub_dual_write_legacy: false
 
   # EN: ChromaDB storage directory for vector memory.

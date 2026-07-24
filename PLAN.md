@@ -76,7 +76,7 @@
 |---|--------|--------|
 | 1 | People/diary/journal/WM: dual-write ещё включён по умолчанию; истина должна стать **только SQLite** | `[x]` example/stand `false`; **code default True** (safe missing-key) + auto-import guard |
 | 2 | Cutover flags: `hub_legacy_import/fallback/dual_write` → `false` на стенде после импорта | `[x]` stand + example; auto-import если Hub пуст + legacy files |
-| 3 | **Удалить** file PeopleDB/Diary/journal/WM stores + dual-write shims из кода | `[~]` Hub-primary paths; JSON load skipped when dual=false; diary recent→Hub; full shim delete next |
+| 3 | **Удалить** file PeopleDB/Diary/journal/WM dual-write как реальный стор при подключённом Hub | `[x]` при `agent.memory_hub`/`self.memory_hub` — только SQLite (json/jsonl/md больше не пишутся, даже при `hub_dual_write_legacy: true`); файловый стор остаётся только как fallback при отсутствии Hub; тонкие read-обёртки (`PeopleDB`, `NeyraDiary`, `ReflectionEngine.get_recent_journal`, WM refresh) сохранены; smoke обновлены |
 | 4 | Полный e2e на стенде: chat → Hub chat_log → `/v1/memory/*` / healthcheck | `[x]` live 2026-07-24 MCP |
 | 5 | Merge PR #1 в `main` после зелёного cutover | `[ ]` после #3 green + Auto Review |
 
@@ -265,17 +265,17 @@
 
 - [x] SQLite init/migrate; chat_log на каждый ход параллельно STM. *(пакет `core/memory/`, dual-write из agent)*
 - [x] Tool/API `recall_chat` / chronological list — «N сообщений назад» без RAG. *(фильтр `user_id` и/или `channel_id` обязателен)*
-- [~] People / diary / journal / WM через Hub → SQLite. *(Hub write/read: people, diary+reflect input, journal, WM, chat_log для small/hourly reflection; dual-write flags ещё on)*
+- [x] People / diary / journal / WM через Hub → SQLite. *(Hub write/read: people, diary+reflect input, journal, WM, chat_log для small/hourly reflection; при подключённом Hub — только SQLite, файловый dual-write отключён независимо от флага)*
 - [x] Chroma: raw full-chat embed выключен по умолчанию (`rag_write_mode` ≠ `legacy_dialog`); knowledge через Hub.
 - [x] `rag_write_mode` и пути из конфига (`sqlite_path`, `stm_max_messages`, …); example + local синхронизированы.
 - [x] Event Bus: `memory.chat_log_append`; прежние `memory.*` сохранены (journal/WM/STM/LTM).
 - [x] `/v1/memory/*`, `/v1/debug/memory` — Hub stats / recall / search / import-legacy / people / diary / journal; MCP + dashboard Hub counts.
-- [~] Cutover: import + флаги есть; **legacy stores ещё в коде** (удаление — финал 1A, см. таблицу «Что осталось»).
+- [x] Cutover: import + флаги есть; при подключённом Hub json/jsonl/md больше не пишутся (файловый стор остаётся только как fallback без Hub), см. таблицу «Что осталось» п.3.
 - [x] Backup учитывает `.db` (+ wal/shm) и Chroma (`backup_manifest.json`).
 - [x] Промпт talk/brain читает people / diary / WM через Hub (fallback legacy внутри Hub на время cutover).
 - [~] Smoke: `test_memory_hub_smoke.py` + `test_memory_cutover_offline.py`; live e2e chat→healthcheck на стенде — ещё нет.
 - [x] Fast-Path умного дома — **отложено в этап 2** (решение зафиксировано: не блокирует cutover 1A; edge — с колонкой на этапе 4).
-- [ ] Финал 1A: выключить legacy flags → удалить file PeopleDB/Diary/journal/WM stores и dual-write shims из кода.
+- [x] Финал 1A: legacy flags выключены на стенде; dual-write shims из кода убраны — при подключённом Hub file PeopleDB/Diary/journal/WM больше не пишутся (SQLite only); файловые классы остаются только как no-Hub fallback (тонкие обёртки).
 **Фаза 1B**
 
 - [ ] `plugin_manager` / `core/plugins/` без регрессии sandbox/reload/rollback.

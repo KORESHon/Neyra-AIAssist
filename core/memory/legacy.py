@@ -519,15 +519,12 @@ class PeopleDB:
         logger.info(f"PeopleDB загружена: {len(self._cache)} записей")
 
     def _save(self, person_id: str) -> None:
-        """Legacy JSON write — only when dual_write is on (or no Hub)."""
+        """Legacy JSON write — only when no Hub is attached (console-only/emergency use)."""
         if person_id not in self._cache:
             return
         hub = getattr(self, "memory_hub", None)
-        if hub is not None and not getattr(hub, "hub_dual_write_legacy", True):
-            return
-        if hub is None:
-            # No Hub: keep file store for emergency/console-only use.
-            pass
+        if hub is not None:
+            return  # Hub SQLite is authoritative once attached — no JSON writes.
         path = self.db_dir / f"{person_id}.json"
         path.write_text(
             json.dumps(self._cache[person_id], ensure_ascii=False, indent=2),
@@ -596,12 +593,11 @@ class PeopleDB:
                 hub_ok = True
             except Exception as e:
                 logger.warning("PeopleDB→Hub dual-write failed: %s", e)
-        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
-        if hub is not None and not dual and not hub_ok:
+        if hub is not None and not hub_ok:
             self._cache[person_id]["dynamic_facts"] = prev_facts
             self._cache[person_id]["last_seen"] = prev_seen
             logger.error(
-                "PeopleDB: Hub write failed and dual_write disabled — fact dropped [%s]",
+                "PeopleDB: Hub write failed — fact dropped (no file fallback when Hub attached) [%s]",
                 person_id,
             )
             return False
@@ -632,11 +628,10 @@ class PeopleDB:
                 hub_ok = True
             except Exception as e:
                 logger.warning("PeopleDB→Hub link_discord_id failed: %s", e)
-        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
-        if hub is not None and not dual and not hub_ok:
+        if hub is not None and not hub_ok:
             self._cache[person_id]["discord_ids"] = prev_ids
             logger.error(
-                "PeopleDB: Hub link failed and dual_write disabled — discord_id rolled back [%s]",
+                "PeopleDB: Hub link failed — discord_id rolled back (no file fallback when Hub attached) [%s]",
                 person_id,
             )
             return False
@@ -669,11 +664,10 @@ class PeopleDB:
                 hub_ok = True
             except Exception as e:
                 logger.warning("PeopleDB→Hub upsert failed: %s", e)
-        dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
-        if hub is not None and not dual and not hub_ok:
+        if hub is not None and not hub_ok:
             self._cache.pop(person_id, None)
             logger.error(
-                "PeopleDB: Hub upsert failed and dual_write disabled — person dropped [%s]",
+                "PeopleDB: Hub upsert failed — person dropped (no file fallback when Hub attached) [%s]",
                 person_id,
             )
             return {}
@@ -784,39 +778,32 @@ class NeyraDiary:
             "text": text,
             "meta": meta or {},
         }
+        hub = getattr(self, "memory_hub", None)
         try:
-            hub = getattr(self, "memory_hub", None)
-            dual = hub is None or getattr(hub, "hub_dual_write_legacy", True)
-            legacy_ok = False
-            hub_ok = False
-            if dual:
+            if hub is None:
+                # No Hub: JSONL remains the store (emergency/console-only use).
                 with open(self.path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 self._trim_if_needed()
-                legacy_ok = True
-            if hub is not None:
-                try:
-                    emo = None
-                    if isinstance(meta, dict):
-                        emo = meta.get("emotion") or meta.get("assistant_emotion")
-                    hub.add_diary_note(
-                        text,
-                        source=source,
-                        emotion=str(emo)[:500] if emo else None,
-                        meta=meta,
-                        ts=entry["timestamp"],
-                    )
-                    hub_ok = True
-                except Exception as e:
-                    logger.warning("NeyraDiary→Hub dual-write failed: %s", e)
-            if hub is not None and not dual:
-                if not hub_ok:
-                    logger.error(
-                        "NeyraDiary: Hub write failed and dual_write disabled — entry dropped"
-                    )
-                    return False
                 return True
-            return legacy_ok or hub_ok
+            try:
+                emo = None
+                if isinstance(meta, dict):
+                    emo = meta.get("emotion") or meta.get("assistant_emotion")
+                hub.add_diary_note(
+                    text,
+                    source=source,
+                    emotion=str(emo)[:500] if emo else None,
+                    meta=meta,
+                    ts=entry["timestamp"],
+                )
+                return True
+            except Exception as e:
+                logger.error(
+                    "NeyraDiary: Hub write failed — entry dropped (no file fallback when Hub attached): %s",
+                    e,
+                )
+                return False
         except Exception as e:
             logger.error(f"NeyraDiary: ошибка записи: {e}")
             return False

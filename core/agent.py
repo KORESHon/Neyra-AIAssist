@@ -507,9 +507,8 @@ class NeyraAgent:
     def _init_people_db(self):
         """Создаёт базовые досье если PeopleDB/Hub ещё пустые (не после cutover)."""
         hub = getattr(self, "memory_hub", None)
-        dual = hub is None or bool(getattr(hub, "hub_dual_write_legacy", True))
-        # After cutover: Hub is primary — never reseed JSON over hydrated SQLite people.
-        if hub is not None and not dual:
+        # With Hub attached, JSON seed files are never (re)written — Hub SQLite is authoritative.
+        if hub is not None:
             try:
                 if int(hub.stats().get("people") or 0) > 0 or self.people_db._cache:
                     return
@@ -630,13 +629,13 @@ class NeyraAgent:
         for person in people:
             person.setdefault("last_seen", None)
             self.people_db._cache[person["id"]] = person
-            if dual:
+            if hub is None:
                 path = self.people_db.db_dir / f"{person['id']}.json"
                 path.write_text(
                     json.dumps(person, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
-            if hub is not None:
+            else:
                 try:
                     hub.upsert_person(
                         person["id"],
@@ -647,7 +646,7 @@ class NeyraAgent:
                 except Exception as e:
                     logger.warning("PeopleDB seed→Hub failed for %s: %s", person["id"], e)
 
-        if dual:
+        if hub is None:
             self.people_db._load_all()
         logger.info(f"Создано {len(people)} начальных досье")
 

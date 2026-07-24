@@ -111,8 +111,8 @@ class ReflectionEngine:
         agent = getattr(self, "agent", None)
         bus = getattr(agent, "event_bus", None) if agent is not None else None
         hub = self._memory_hub()
-        dual = self._hub_dual_write()
-        if dual:
+        if hub is None:
+            # No Hub: journal.json remains the store (emergency/console-only use).
             self.journal_path.write_text(
                 json.dumps(self._journal, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -136,15 +136,15 @@ class ReflectionEngine:
                     hub_ok = True
             except Exception as e:
                 logger.warning("Reflection→Hub journal dual-write failed: %s", e)
-        if hub is not None and not dual and not hub_ok:
+        if hub is not None and not hub_ok:
             if self._journal:
                 dropped = self._journal.pop()
                 logger.error(
-                    "Reflection: Hub journal write failed and dual_write disabled — entry rolled back (%s)",
+                    "Reflection: Hub journal write failed — entry rolled back (no file fallback when Hub attached) (%s)",
                     (dropped.get("date") if isinstance(dropped, dict) else dropped),
                 )
             return False
-        if bus is not None and (dual or hub_ok):
+        if bus is not None:
             from core.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
 
             bus.publish(

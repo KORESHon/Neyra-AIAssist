@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Offline cutover acceptance for Memory Hub Phase 1A (no live Discord/API server).
 
-Simulates: dual-write on → data in SQLite → flags off → restart Hub → all reads still work
+Simulates: hub_dual_write_legacy=True (flag on) → data lands in SQLite only (Hub attached means
+no JSON/JSONL/MD writes regardless of the flag) → flags off → restart Hub → all reads still work
 without JSON/JSONL/MD primary files.
 """
 
@@ -114,9 +115,15 @@ def main() -> int:
         assert st_a["people"] >= 1 and st_a["person_facts"] >= 1
         assert st_a["diary_notes"] >= 1 and st_a["journal_entries"] >= 1
         assert st_a["working_memory_snapshots"] >= 1 and st_a["chat_log"] >= 2
+
+        # Phase 1A #3: with Hub attached, legacy files are NEVER written (Hub SQLite only),
+        # even while hub_dual_write_legacy=True — the flag no longer gates writes, only
+        # remains for read-path/tests. No JSON/JSONL/MD files should exist on disk here.
+        assert not (people.db_dir / "cutover_user.json").exists()
+        assert not (root / "neyra_diary.jsonl").exists()
         hub_a.close()
 
-        # Remove legacy files to prove Hub is enough after cutover
+        # Remove legacy files (no-op now — kept to document the old pre-cutover layout)
         for p in [
             root / "neyra_diary.jsonl",
             root / "journal.json",
