@@ -50,10 +50,6 @@ class ReflectionEngine:
         agent = getattr(self, "agent", None)
         return getattr(agent, "memory_hub", None) if agent is not None else None
 
-    def _hub_dual_write(self) -> bool:
-        hub = self._memory_hub()
-        return hub is None or bool(getattr(hub, "hub_dual_write_legacy", True))
-
     def _load_journal(self) -> list:
         if self.journal_path.exists():
             try:
@@ -68,7 +64,7 @@ class ReflectionEngine:
         If Hub has no rows yet, keep any file-loaded journal (do not wipe).
         """
         hub = self._memory_hub()
-        if hub is None or bool(getattr(hub, "hub_dual_write_legacy", True)):
+        if hub is None:
             return 0
         try:
             rows = hub.list_journal_entries(limit=500, newest_first=False)
@@ -100,8 +96,8 @@ class ReflectionEngine:
     def _journal_has_date(self, date_str: str) -> bool:
         if any(e.get("date") == date_str for e in self._journal):
             return True
-        # After cutover, refresh from Hub so restart/empty file does not re-run reflection.
-        if not self._hub_dual_write():
+        # With Hub attached, refresh from it so restart/empty file does not re-run reflection.
+        if self._memory_hub() is not None:
             self._hydrate_journal_from_hub()
             return any(e.get("date") == date_str for e in self._journal)
         return False
@@ -480,19 +476,14 @@ class ReflectionEngine:
         return "\n".join(rows)
 
     def _get_diary_last_24h(self) -> str:
-        """Diary for nightly reflect: Hub SQLite when cutover, else JSONL (+ Hub fallback)."""
+        """Diary for nightly reflect: Hub SQLite when attached, else legacy JSONL."""
         from core.timeutil import cutoff_hours
 
         cutoff = cutoff_hours(24)
         hub = self._memory_hub()
-        if hub is not None and not self._hub_dual_write():
-            return self._diary_lines_from_hub(hub, cutoff)
-        file_text = self._diary_lines_from_file(cutoff)
-        if file_text:
-            return file_text
         if hub is not None:
             return self._diary_lines_from_hub(hub, cutoff)
-        return ""
+        return self._diary_lines_from_file(cutoff)
 
     def _chat_lines_from_hub(self, *, cutoff: Optional[datetime] = None, date_str: Optional[str] = None) -> str:
         from core.timeutil import to_local
@@ -529,13 +520,12 @@ class ReflectionEngine:
         return "\n".join(line for _, line in rows_out)
 
     def _get_logs_for_date(self, date: datetime) -> str:
-        """Читает строки чата за указанную дату (Hub при cutover, иначе chat.log)."""
+        """Читает строки чата за указанную дату (Hub SQLite при наличии, иначе chat.log)."""
         date_str = date.strftime("%Y-%m-%d")
-        if not self._hub_dual_write():
+        if self._memory_hub() is not None:
             return self._chat_lines_from_hub(date_str=date_str)
         if not self.chat_log_path.exists():
-            hub_text = self._chat_lines_from_hub(date_str=date_str)
-            return hub_text
+            return ""
         lines = []
         try:
             for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
@@ -543,22 +533,21 @@ class ReflectionEngine:
                     lines.append(line)
         except Exception as e:
             logger.error(f"Ошибка чтения chat.log: {e}")
-        text = "\n".join(lines)
-        return text or self._chat_lines_from_hub(date_str=date_str)
+        return "\n".join(lines)
 
     def _get_logs_for_last_hour(self) -> str:
         """Читает свежие строки чата за последний час."""
         return self._get_logs_for_last_hours(1)
 
     def _get_logs_for_last_hours(self, hours: int) -> str:
-        """Читает строки чата за последние N часов (Hub при cutover, иначе chat.log)."""
+        """Читает строки чата за последние N часов (Hub SQLite при наличии, иначе chat.log)."""
         from core.timeutil import cutoff_hours
 
         cutoff = cutoff_hours(max(1, int(hours)))
-        if not self._hub_dual_write():
+        if self._memory_hub() is not None:
             return self._chat_lines_from_hub(cutoff=cutoff)
         if not self.chat_log_path.exists():
-            return self._chat_lines_from_hub(cutoff=cutoff)
+            return ""
         lines: list[str] = []
         try:
             for line in self.chat_log_path.read_text(encoding="utf-8").splitlines():
@@ -576,8 +565,7 @@ class ReflectionEngine:
                     lines.append(line)
         except Exception as e:
             logger.error("Ошибка чтения chat.log за %s часов: %s", hours, e)
-        text = "\n".join(lines)
-        return text or self._chat_lines_from_hub(cutoff=cutoff)
+        return "\n".join(lines)
 
     @staticmethod
     def _extract_json_blob(raw: str) -> str:
@@ -786,7 +774,7 @@ class ReflectionEngine:
 
     def get_recent_journal(self, days: int = 7) -> str:
         """Возвращает записи журнала за последние N дней."""
-        if not self._hub_dual_write():
+        if self._memory_hub() is not None:
             self._hydrate_journal_from_hub()
         recent = self._journal[-days:] if self._journal else []
         if not recent:

@@ -30,8 +30,7 @@ One writer contour per process: sync `sqlite3` with a process-wide `threading.RL
 Config `memory.rag_write_mode`: `off` | `digest` | `important_only`.  
 Raw full-chat embed on every turn is **forbidden** (Hub `save_dialog_semantic` no-ops).  
 Escape hatch for migration only: `legacy_dialog`.  
-Knowledge / important fragments still go through `remember_knowledge` (unless `off`).  
-During cutover, people/diary/journal/WM **dual-write** SQLite + legacy files; SQLite is the growing source of truth.
+Knowledge / important fragments still go through `remember_knowledge` (unless `off`).
 
 ## Events
 
@@ -47,14 +46,22 @@ During cutover, people/diary/journal/WM **dual-write** SQLite + legacy files; SQ
 
 `SemanticIndex` protocol + Chroma adapter. Future sqlite-vss (Stage 4) plugs in without changing agent call sites.
 
-## Cutover
+## Cutover (done)
 
-After Phase 1A green: json/jsonl/md people/diary/journal/WM are not primary.  
-Optional one-shot `memory.hub_legacy_import`, then set `hub_legacy_import`, `hub_legacy_fallback`, and `hub_dual_write_legacy` to `false`.  
-**Legacy file stores and dual-write shims must be deleted at the end of Phase 1A** (temporary for migration/tests only). Chroma semantic index + STM remain.
+The `hub_legacy_import` / `hub_legacy_fallback` / `hub_dual_write_legacy` config flags have been
+**removed entirely** — Hub SQLite is now the sole store for people/diary/journal/WM whenever a
+`MemoryHub` is attached (no JSON/JSONL/MD writes, no fallback reads). Two things remain by design:
+
+- `run_hub_legacy_import()` + `POST /v1/memory/import-legacy` (admin) for manual/one-off imports.
+- An automatic, marker-gated one-shot import at startup when Hub SQLite is empty but legacy
+  files are still found on disk (safety net for upgrades/restores, not a permanent mode).
+
+`PeopleDB` / `NeyraDiary` / `ReflectionEngine` / working-memory helpers remain as thin read/write
+wrappers around Hub; they only touch the filesystem when no `MemoryHub` is attached at all
+(console/emergency use).
 
 ## Consequences
 
 - Agents, Internal API `/v1/memory/*`, tools (`recall_chat`, `search_memory`, …), MCP debug, and dashboard must talk to Hub.
-- Prompt injection (people / diary / WM / semantic) goes through Hub; during cutover Hub may fall back to legacy stores for reads until SQLite is fully populated.
+- Prompt injection (people / diary / WM / semantic) goes through Hub only; no legacy-file fallback once a Hub is attached.
 - Phase 1B may rearrange packages; import shims stay stable (`from core.memory import …`).

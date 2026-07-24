@@ -326,33 +326,20 @@ class NeyraAgent:
             self.config,
             long_memory=self.long_memory,
             event_bus=self.event_bus,
-            people_db=self.people_db,
-            diary=self.diary,
         )
         self.people_db.memory_hub = self.memory_hub
         self.diary.memory_hub = self.memory_hub
-        # Cutover footgun guard: flags off + empty Hub + leftover legacy files → one-shot import.
+        # Safety net: Hub empty but legacy files still on disk (e.g. fresh checkout / restore)
+        # → one-shot import (marker-gated, see run_hub_legacy_import).
         try:
-            self._maybe_auto_legacy_import(mem_cfg)
+            self._maybe_auto_legacy_import()
         except Exception as e:
             logger.exception("auto hub_legacy_import failed: %s", e)
-        # Hydrate PeopleDB from SQLite only when Hub is primary (cutover) or JSON cache empty.
-        # Never overwrite a non-empty JSON cache while dual_write is still on.
+        # Hub SQLite is the source of truth for PeopleDB — always hydrate in-memory cache from it.
         try:
-            if (not self.memory_hub.hub_dual_write_legacy) or (not self.people_db._cache):
-                self.people_db.hydrate_from_hub(self.memory_hub)
+            self.people_db.hydrate_from_hub(self.memory_hub)
         except Exception as e:
             logger.warning("PeopleDB hydrate_from_hub failed: %s", e)
-
-        if bool(mem_cfg.get("hub_legacy_import", False)):
-            try:
-                from core.memory.legacy_import import run_hub_legacy_import
-
-                report = run_hub_legacy_import(self.memory_hub, self.config)
-                logger.info("hub_legacy_import completed: %s", report)
-                self.people_db.hydrate_from_hub(self.memory_hub)
-            except Exception as e:
-                logger.exception("hub_legacy_import failed: %s", e)
 
         # Не блокируем старт бота тяжёлой загрузкой embedder'а:
         # RAG поднимется в фоне, а при первом запросе есть ленивый fallback.
@@ -366,16 +353,10 @@ class NeyraAgent:
         # Создаём начальные досье если их нет
         self._init_people_db()
 
-    def _maybe_auto_legacy_import(self, mem_cfg: dict) -> None:
-        """If cutover flags are off but Hub is empty and legacy files exist, import once (marker-gated)."""
+    def _maybe_auto_legacy_import(self) -> None:
+        """If Hub is empty but legacy on-disk stores still have data, import once (marker-gated)."""
         hub = self.memory_hub
         if hub is None:
-            return
-        # Explicit config import is handled separately; this is the upgrade safety net.
-        if bool(mem_cfg.get("hub_legacy_import", False)):
-            return
-        cutover = (not hub.hub_legacy_fallback) or (not hub.hub_dual_write_legacy)
-        if not cutover:
             return
         try:
             people_n = int(hub.stats().get("people") or 0)
@@ -390,8 +371,7 @@ class NeyraAgent:
         if not legacy_files_present(self.config):
             return
         logger.warning(
-            "Hub SQLite empty but legacy memory files found while cutover flags are off — "
-            "running one-shot hub_legacy_import (marker-gated)"
+            "Hub SQLite empty but legacy memory files found — running one-shot hub_legacy_import (marker-gated)"
         )
         report = run_hub_legacy_import(hub, self.config, force=False)
         logger.info("auto hub_legacy_import completed: %s", report)

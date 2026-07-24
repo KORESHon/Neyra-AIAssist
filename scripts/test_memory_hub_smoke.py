@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Smoke: MemoryHub SQLite chat_log + people/diary + rag_write_mode gate."""
+"""Smoke: MemoryHub SQLite chat_log + people/diary + rag_write_mode gate.
+
+No cutover flags: Hub SQLite is always the sole store for people/diary/journal/WM
+once a MemoryHub is attached. Covers Hub-only read/write, the legacy-import helper
+(manual + marker-gated auto), journal file/Hub interplay (hydrate never wipes an
+empty-Hub-but-file-loaded journal), and the diary recursion fix (NeyraDiary.recent_text
+must format locally and must never call hub.diary_recent_text).
+"""
 
 from __future__ import annotations
 
@@ -14,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from core.event_bus import MEMORY_CHAT_LOG_APPEND, EventBus
 from core.memory import MemoryHub
+from core.memory.legacy import NeyraDiary, PeopleDB
 
 
 class _FakeLTM:
@@ -89,7 +97,7 @@ def main() -> int:
         hub.add_journal_entry("итог", title="день", kind="reflection", publish_event=False)
         hub.save_wm_snapshot("# WM\n- task", user_id="u1", publish_event=False)
 
-        # Cutover-safe identity: SQLite lookup without legacy PeopleDB cache
+        # Hub-only identity lookup (no legacy PeopleDB fallback exists anymore)
         found = hub.find_person("Алиса")
         assert found and found.get("id") == "p1", found
         assert hub.find_person("nobody") is None
@@ -100,6 +108,21 @@ def main() -> int:
         assert "task" in snip or "WM" in snip, snip
         assert "заметка дня" in hub.diary_recent_text(limit=5)
 
+        # Diary recursion guard: NeyraDiary.recent_text must format locally from
+        # hub.list_diary_notes and must NEVER call hub.diary_recent_text.
+        diary_wrap = NeyraDiary({"memory": {"diary_path": str(Path(tmp) / "unused_diary.jsonl")}})
+        diary_wrap.memory_hub = hub
+
+        def _boom_diary_recent_text(*a, **k):
+            raise AssertionError("NeyraDiary.recent_text must not call hub.diary_recent_text")
+
+        hub.diary_recent_text = _boom_diary_recent_text  # type: ignore[method-assign]
+        try:
+            text_via_wrapper = diary_wrap.recent_text(limit=5)
+        finally:
+            del hub.diary_recent_text  # restore class method
+        assert "заметка дня" in text_via_wrapper, text_via_wrapper
+
         st = hub.stats()
         assert st["chat_log"] == 2, st
         assert st["people"] == 1, st
@@ -108,10 +131,11 @@ def main() -> int:
         assert st["journal_entries"] == 1, st
         assert st["working_memory_snapshots"] == 1, st
         assert st["allows_raw_dialog_embed"] is False
+        assert "hub_legacy_fallback" not in st and "hub_dual_write_legacy" not in st, st
 
         # Restart simulation: new Hub on same DB still finds the person
         hub_re = MemoryHub(
-            {"memory": {"sqlite_path": str(db), "rag_write_mode": "important_only", "hub_legacy_fallback": False}},
+            {"memory": {"sqlite_path": str(db), "rag_write_mode": "important_only"}},
             long_memory=fake,
             event_bus=bus,
         )
@@ -130,7 +154,7 @@ def main() -> int:
 
     assert MEMORY_CHAT_LOG_APPEND in events, events
 
-    # legacy import smoke
+    # Manual legacy import (POST /v1/memory/import-legacy equivalent)
     with tempfile.TemporaryDirectory() as tmp2:
         root = Path(tmp2)
         people = root / "people_db"
@@ -160,8 +184,6 @@ def main() -> int:
                 "diary_path": str(diary),
                 "journal_path": str(root / "missing_journal.json"),
                 "working_memory": {"storage_dir": str(root / "wm")},
-                "hub_legacy_fallback": False,
-                "hub_dual_write_legacy": False,
             }
         }
         (root / "chroma_db").mkdir()
@@ -176,7 +198,39 @@ def main() -> int:
         assert "из jsonl" in hub_i.diary_recent_text(5)
         hub_i.close()
 
-    # Cutover journal read-path + PeopleDB hydrate gating
+    # Auto-import helper (agent._maybe_auto_legacy_import equivalent): marker-gated,
+    # triggered only by "Hub empty + legacy files present" — no flags involved.
+    with tempfile.TemporaryDirectory() as tmp_auto:
+        root = Path(tmp_auto)
+        people_dir = root / "people_db"
+        people_dir.mkdir()
+        (people_dir / "auto.json").write_text(
+            json.dumps({"id": "auto", "names": ["Авто"], "dynamic_facts": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        cfg_auto = {
+            "memory": {
+                "sqlite_path": str(root / "auto.db"),
+                "chroma_db_path": str(root / "chroma_db"),
+            }
+        }
+        (root / "chroma_db").mkdir()
+        hub_auto = MemoryHub(cfg_auto)
+        from core.memory.legacy_import import legacy_files_present, run_hub_legacy_import
+
+        assert int(hub_auto.stats().get("people") or 0) == 0
+        assert legacy_files_present(cfg_auto) is True
+
+        rep_auto = run_hub_legacy_import(hub_auto, cfg_auto, force=False)
+        assert rep_auto.get("skipped") is not True, rep_auto
+        assert rep_auto["people"]["people"] == 1, rep_auto
+
+        # Idempotent: marker file gates a second automatic run.
+        rep_auto2 = run_hub_legacy_import(hub_auto, cfg_auto, force=False)
+        assert rep_auto2.get("skipped") is True, rep_auto2
+        hub_auto.close()
+
+    # Journal read-path (Hub-only) + PeopleDB hydrate semantics
     with tempfile.TemporaryDirectory() as tmp3:
         root = Path(tmp3)
         db = root / "cutover.db"
@@ -188,8 +242,6 @@ def main() -> int:
                 "sqlite_path": str(db),
                 "journal_path": str(journal_path),
                 "diary_path": str(root / "diary.jsonl"),
-                "hub_dual_write_legacy": False,
-                "hub_legacy_fallback": False,
                 "rag_write_mode": "important_only",
             },
             "logging": {"chat_log": str(chat_log)},
@@ -201,7 +253,6 @@ def main() -> int:
             event_bus = None
 
         from core.reflection import ReflectionEngine
-        from core.memory.legacy import PeopleDB
 
         refl = ReflectionEngine(cfg, _Agent())
         refl._journal.append(
@@ -211,7 +262,7 @@ def main() -> int:
         assert not journal_path.exists() or journal_path.read_text(encoding="utf-8").strip() in {"", "[]"}
         assert hub_c.stats()["journal_entries"] == 1
 
-        # Empty Hub must NOT wipe a file-loaded journal when dual_write=false
+        # Empty Hub must NOT wipe a file-loaded journal (hydrate only replaces when Hub has rows)
         file_journal = root / "journal_keep.json"
         file_journal.write_text(
             json.dumps(
@@ -224,8 +275,6 @@ def main() -> int:
             "memory": {
                 "sqlite_path": str(root / "empty_hub.db"),
                 "journal_path": str(file_journal),
-                "hub_dual_write_legacy": False,
-                "hub_legacy_fallback": False,
                 "rag_write_mode": "important_only",
             },
             "logging": {"chat_log": str(chat_log)},
@@ -247,7 +296,7 @@ def main() -> int:
         recent = refl2.get_recent_journal(7)
         assert "итог дня cutover" in recent, recent
 
-        # Hub-only failure rolls back in-memory entry
+        # Hub-only failure rolls back in-memory entry (no file fallback with Hub attached)
         def _boom(*a, **k):
             raise RuntimeError("boom")
 
@@ -256,7 +305,8 @@ def main() -> int:
         assert refl2._save_journal() is False
         assert not any(e.get("date") == "2026-07-24" for e in refl2._journal)
 
-        # PeopleDB hydrate must NOT wipe JSON cache while dual_write=true
+        # PeopleDB always hydrates from Hub; hydrate must MERGE, never wipe unrelated
+        # cache entries loaded independently (e.g. a manual _load_all() JSON read).
         people_dir = root / "people_db"
         people_dir.mkdir()
         (people_dir / "bob.json").write_text(
@@ -275,41 +325,33 @@ def main() -> int:
             "memory": {
                 "sqlite_path": str(root / "dual.db"),
                 "chroma_db_path": str(root / "chroma_db"),
-                "hub_dual_write_legacy": True,
             }
         }
         (root / "chroma_db").mkdir(exist_ok=True)
-        # PeopleDB resolves people_db from chroma parent
+        # PeopleDB.__init__ never auto-loads JSON anymore — explicit _load_all() only.
         pdb = PeopleDB(cfg_dual)
-        # Force db_dir to our temp people dir
+        assert pdb._cache == {}
         pdb.db_dir = people_dir
-        pdb._cache.clear()
         pdb._load_all()
         assert "bob" in pdb._cache
+
         hub_dual = MemoryHub(cfg_dual, long_memory=_FakeLTM())
         hub_dual.add_person_fact("hub_only", "из sqlite", aliases=["HubOnly"], display_name="HubOnly")
-        # Mimic agent gate: dual_write + non-empty cache → skip hydrate
-        if (not hub_dual.hub_dual_write_legacy) or (not pdb._cache):
-            pdb.hydrate_from_hub(hub_dual)
+        # Agent always hydrates unconditionally — no gating on any flag.
+        pdb.hydrate_from_hub(hub_dual)
         assert "bob" in pdb._cache
         assert any(
             f.get("fact") == "только в json" for f in pdb._cache["bob"].get("dynamic_facts") or []
         ), pdb._cache["bob"]
-        # Cutover gate: dual off → hydrate ok
-        hub_dual.hub_dual_write_legacy = False
-        if (not hub_dual.hub_dual_write_legacy) or (not pdb._cache):
-            pdb.hydrate_from_hub(hub_dual)
         assert pdb.find("HubOnly") is not None or hub_dual.find_person("HubOnly") is not None
 
-        # Diary input for reflect after cutover (Hub-only, no JSONL)
+        # Diary input for reflect (Hub-only, no JSONL primary)
         diary_path = root / "neyra_diary.jsonl"
         cfg_diary = {
             "memory": {
                 "sqlite_path": str(root / "diary_cutover.db"),
                 "diary_path": str(diary_path),
                 "journal_path": str(root / "j2.json"),
-                "hub_dual_write_legacy": False,
-                "hub_legacy_fallback": False,
             },
             "logging": {"chat_log": str(root / "chat2.log")},
         }
@@ -401,20 +443,16 @@ def main() -> int:
         assert mos.endswith("+03:00") or "+03:00" in mos or mos.endswith("+04:00") or "+04:00" in mos, mos
         configure_timezone(None)  # restore host for later tests
 
-        # link_discord_id must persist via Hub when dual_write=false
-        from core.memory.legacy import PeopleDB as _PDB
-
+        # link_discord_id must persist via Hub (no legacy fallback exists anymore)
         cfg_link = {
             "memory": {
                 "sqlite_path": str(root / "link.db"),
                 "chroma_db_path": str(root / "chroma_link"),
-                "hub_dual_write_legacy": False,
-                "hub_legacy_fallback": False,
             }
         }
         (root / "chroma_link").mkdir(exist_ok=True)
         hub_l = MemoryHub(cfg_link, long_memory=_FakeLTM())
-        pdb_l = _PDB(cfg_link)
+        pdb_l = PeopleDB(cfg_link)
         pdb_l.memory_hub = hub_l
         pdb_l.add_person("alice", ["Алиса"], discord_ids=[])
         assert pdb_l.link_discord_id("alice", "999888777666555444") is True
@@ -424,13 +462,12 @@ def main() -> int:
         hub_l.close()
         hub_l2.close()
 
-        # WM refresh source: Hub snapshot when dual_write=false (no .md required)
+        # WM refresh source: Hub snapshot (no .md file required)
         hub_d.save_wm_snapshot("# WM\n- from hub only", user_id="u_wm", publish_event=False)
         snap = hub_d.sqlite.latest_wm_snapshot(user_id="u_wm")
         assert snap and "from hub only" in str(snap.get("content") or ""), snap
 
-        # Person summary: static_facts from meta even with 0 person_facts (cutover seed)
-        hub_d.hub_legacy_fallback = False
+        # Person summary: static_facts from meta even with 0 person_facts (seed scenario)
         hub_d.upsert_person(
             "seed1",
             display_name="Сид",
@@ -474,7 +511,6 @@ def main() -> int:
                 _AgentWM(),
                 {
                     "memory": {
-                        "hub_dual_write_legacy": False,
                         "working_memory": {"enabled": True, "storage_dir": str(root / "wm_x")},
                     }
                 },

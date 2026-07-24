@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Offline cutover acceptance for Memory Hub Phase 1A (no live Discord/API server).
+"""Offline acceptance for Memory Hub Phase 1A (no live Discord/API server), post cutover-flag removal.
 
-Simulates: hub_dual_write_legacy=True (flag on) → data lands in SQLite only (Hub attached means
-no JSON/JSONL/MD writes regardless of the flag) → flags off → restart Hub → all reads still work
-without JSON/JSONL/MD primary files.
+No `hub_legacy_import` / `hub_legacy_fallback` / `hub_dual_write_legacy` flags exist anymore.
+Whenever a MemoryHub is attached, people/diary/journal/WM are SQLite-only: no JSON/JSONL/MD
+writes and no fallback reads. This script simulates two agent starts against the same SQLite
+DB (fresh write, then "restart" with a brand-new PeopleDB/NeyraDiary/ReflectionEngine wired to
+the same Hub) and asserts every read path still works without any legacy files on disk.
 """
 
 from __future__ import annotations
@@ -38,16 +40,13 @@ class _FakeLTM:
         return 0
 
 
-def _cfg(root: Path, *, dual: bool, fallback: bool) -> dict:
+def _cfg(root: Path) -> dict:
     return {
         "memory": {
             "sqlite_path": str(root / "neyra_memory.db"),
             "chroma_db_path": str(root / "chroma_db"),
             "diary_path": str(root / "neyra_diary.jsonl"),
             "journal_path": str(root / "journal.json"),
-            "hub_dual_write_legacy": dual,
-            "hub_legacy_fallback": fallback,
-            "hub_legacy_import": False,
             "rag_write_mode": "important_only",
             "working_memory": {
                 "enabled": True,
@@ -65,11 +64,13 @@ def main() -> int:
         (root / "chroma_db").mkdir()
         (root / "chat.log").write_text("", encoding="utf-8")
 
-        # --- Phase A: dual-write ON (migration contour) ---
-        cfg_a = _cfg(root, dual=True, fallback=True)
+        # --- "Session A": first agent start writes via the thin wrappers ---
+        cfg_a = _cfg(root)
         hub_a = MemoryHub(cfg_a, long_memory=_FakeLTM())
         people = PeopleDB(cfg_a)
         people.memory_hub = hub_a
+        # PeopleDB.__init__ never auto-loads JSON; nothing to hydrate on a fresh Hub.
+        people.hydrate_from_hub(hub_a)
         diary = NeyraDiary(cfg_a)
         diary.memory_hub = hub_a
 
@@ -115,34 +116,18 @@ def main() -> int:
         assert st_a["people"] >= 1 and st_a["person_facts"] >= 1
         assert st_a["diary_notes"] >= 1 and st_a["journal_entries"] >= 1
         assert st_a["working_memory_snapshots"] >= 1 and st_a["chat_log"] >= 2
+        assert "hub_legacy_fallback" not in st_a and "hub_dual_write_legacy" not in st_a, st_a
 
-        # Phase 1A #3: with Hub attached, legacy files are NEVER written (Hub SQLite only),
-        # even while hub_dual_write_legacy=True — the flag no longer gates writes, only
-        # remains for read-path/tests. No JSON/JSONL/MD files should exist on disk here.
+        # Hub-only invariant: with a Hub attached, legacy files are NEVER written to disk.
         assert not (people.db_dir / "cutover_user.json").exists()
         assert not (root / "neyra_diary.jsonl").exists()
         hub_a.close()
 
-        # Remove legacy files (no-op now — kept to document the old pre-cutover layout)
-        for p in [
-            root / "neyra_diary.jsonl",
-            root / "journal.json",
-        ]:
-            if p.exists():
-                p.unlink()
-        pdb_dir = people.db_dir
-        if pdb_dir.is_dir():
-            for jf in pdb_dir.glob("*.json"):
-                jf.unlink()
-        wm_dir = root / "working_memory"
-        if wm_dir.is_dir():
-            for f in wm_dir.glob("*.md"):
-                f.unlink()
-
-        # --- Phase B: dual_write OFF + fallback OFF (cutover) ---
-        cfg_b = _cfg(root, dual=False, fallback=False)
+        # --- "Session B": fresh wrappers against the same Hub SQLite DB ("restart") ---
+        cfg_b = _cfg(root)
         hub_b = MemoryHub(cfg_b, long_memory=_FakeLTM())
         people_b = PeopleDB(cfg_b)
+        assert people_b._cache == {}  # __init__ never auto-loads JSON
         people_b.memory_hub = hub_b
         people_b.hydrate_from_hub(hub_b)
         diary_b = NeyraDiary(cfg_b)
@@ -156,7 +141,7 @@ def main() -> int:
 
         refl = ReflectionEngine(cfg_b, _Agent())
 
-        # Identity + summary survive without JSON
+        # Identity + summary survive without any JSON/JSONL on disk
         found = hub_b.find_person("Катя", discord_id="123456789012345678")
         assert found and found.get("id") == "cutover_user", found
         assert "names" in found and "person_id" not in found
@@ -166,13 +151,28 @@ def main() -> int:
         assert "любит чай" in summary, summary
         assert hub_b.list_person_facts(resolved, limit=5)
         assert hub_b.get_all_names_map().get("катя") == "cutover_user"
+        # PeopleDB thin wrapper reflects the same hydrated data
+        assert people_b.find("Катя") is not None
+        assert "любит чай" in people_b.get_summary("cutover_user")
 
-        # Diary / journal / chat / WM reads
+        # Diary / journal / chat / WM reads (Hub only, no recursion between
+        # NeyraDiary.recent_text and MemoryHub.diary_recent_text)
         assert "заметка dual" in hub_b.diary_recent_text(10)
+        assert "заметка dual" in diary_b.recent_text(10)
         assert "заметка dual" in refl._get_diary_last_24h()
         assert hub_b.list_journal_entries(limit=5)
         assert "привет cutover" in refl._get_logs_for_last_hours(24)
         assert "task dual" in hub_b.working_memory_for_prompt("u_cut")
+
+        # Diary recursion guard: hub.diary_recent_text must not depend on diary_b.recent_text
+        def _boom(*a, **k):
+            raise AssertionError("MemoryHub.diary_recent_text must not call NeyraDiary.recent_text")
+
+        diary_b.recent_text = _boom  # type: ignore[method-assign]
+        try:
+            assert "заметка dual" in hub_b.diary_recent_text(10)
+        finally:
+            del diary_b.recent_text
 
         # Hub-only writes still work
         assert diary_b.add_entry("после cutover", source="cutover") is True
@@ -180,12 +180,11 @@ def main() -> int:
         assert people_b.update_fact("cutover_user", "факт после cutover") is True
         assert "факт после cutover" in hub_b.get_person_summary("cutover_user")
 
-        # Seed must NOT wipe Hub people when JSON dir empty under dual=false
-        # (agent._init_people_db logic mirrored)
+        # Hub people survive restart without any JSON seed re-creation
         if int(hub_b.stats().get("people") or 0) > 0 or people_b._cache:
-            pass  # skip seed — required cutover invariant
+            pass  # invariant holds
         else:
-            raise AssertionError("Hub people missing after cutover restart")
+            raise AssertionError("Hub people missing after restart")
 
         hub_b.close()
 

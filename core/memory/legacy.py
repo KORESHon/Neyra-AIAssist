@@ -501,12 +501,10 @@ class PeopleDB:
         self.db_dir = base / "people_db"
         self.db_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, dict] = {}
-        self.memory_hub = None  # set by agent after MemoryHub init (dual-write)
-        # When dual_write is off, do not seed cache from leftover JSON (Hub hydrate is source).
-        if bool(mem_cfg.get("hub_dual_write_legacy", True)):
-            self._load_all()
-        else:
-            logger.info("PeopleDB: skip JSON load (hub_dual_write_legacy=false); expect Hub hydrate")
+        self.memory_hub = None  # set by agent after MemoryHub init
+        # No JSON load here: when a Hub is attached the agent calls hydrate_from_hub()
+        # right after construction. Only a no-Hub console/emergency caller should
+        # explicitly call _load_all() itself.
 
     def _load_all(self) -> None:
         """Загружает все JSON-файлы в кэш."""
@@ -837,7 +835,7 @@ class NeyraDiary:
 
     def recent(self, limit: int = 10) -> list[dict]:
         hub = getattr(self, "memory_hub", None)
-        if hub is not None and not getattr(hub, "hub_dual_write_legacy", True):
+        if hub is not None:
             try:
                 rows = hub.list_diary_notes(limit=max(1, int(limit)), newest_first=True)
                 # oldest→newest for parity with file tail
@@ -849,13 +847,7 @@ class NeyraDiary:
         return rows[-max(1, int(limit)) :]
 
     def recent_text(self, limit: int = 10) -> str:
-        hub = getattr(self, "memory_hub", None)
-        if hub is not None and not getattr(hub, "hub_dual_write_legacy", True):
-            try:
-                return hub.diary_recent_text(limit=limit) or ""
-            except Exception as e:
-                logger.warning("NeyraDiary.recent_text Hub read failed: %s", e)
-                return ""
+        """Format recent entries locally (never call hub.diary_recent_text — would recurse)."""
         items = self.recent(limit=limit)
         if not items:
             return ""

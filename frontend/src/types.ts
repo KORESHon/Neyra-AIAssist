@@ -11,8 +11,6 @@ export type MemoryHubStats = {
   schema_version?: number
   rag_write_mode?: string
   allows_raw_dialog_embed?: boolean
-  hub_legacy_fallback?: boolean
-  hub_dual_write_legacy?: boolean
   chat_log?: number
   people?: number
   person_facts?: number
@@ -37,9 +35,6 @@ export type MemoryPolicies = {
   sqlite_path?: string
   stm_max_messages?: number
   chat_log_retention_days?: number
-  hub_legacy_import?: boolean
-  hub_legacy_fallback?: boolean
-  hub_dual_write_legacy?: boolean
   max_records_target?: number
   ltm_archive_dir?: string
   ltm_summarize_max_tokens?: number

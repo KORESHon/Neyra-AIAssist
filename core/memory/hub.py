@@ -30,7 +30,8 @@ def _now_iso() -> str:
 class MemoryHub:
     """
     Source of truth for chat_log + structured layers in SQLite.
-    Semantic index via adapter. Legacy JSON/JSONL dual-write remains until full cutover.
+    Semantic index via adapter. Once attached, Hub SQLite is the only durable store for
+    people/diary/journal/WM — no JSON/JSONL/MD writes or fallback reads.
     """
 
     def __init__(
@@ -40,26 +41,18 @@ class MemoryHub:
         long_memory: Any = None,
         event_bus: Any = None,
         semantic: Optional[SemanticIndex] = None,
-        people_db: Any = None,
-        diary: Any = None,
     ):
         mem = config.get("memory") if isinstance(config.get("memory"), dict) else {}
         self.config = config
         self.mem_cfg = mem
         self.event_bus = event_bus
         self._long_memory = long_memory
-        self._people_db = people_db
-        self._diary = diary
         path = str(mem.get("sqlite_path") or "./memory/neyra_memory.db")
         self.sqlite = SqliteStore(path)
         self.rag_write_mode = str(mem.get("rag_write_mode") or "important_only").strip().lower()
         if self.rag_write_mode not in {"off", "digest", "important_only", "legacy_dialog"}:
             logger.warning("Unknown rag_write_mode=%r — using important_only", self.rag_write_mode)
             self.rag_write_mode = "important_only"
-        # Safe missing-key defaults: True until legacy stores are deleted (Phase 1A #3).
-        # Stand/example may set false after hub_legacy_import; do not flip code defaults early.
-        self.hub_legacy_fallback = bool(mem.get("hub_legacy_fallback", True))
-        self.hub_dual_write_legacy = bool(mem.get("hub_dual_write_legacy", True))
         sys_cfg = config.get("system") if isinstance(config.get("system"), dict) else {}
         tz_name = str(sys_cfg.get("timezone") or mem.get("timezone") or "").strip() or None
         self.timezone_name = tz_name
@@ -71,12 +64,10 @@ class MemoryHub:
         else:
             self.semantic = ChromaSemanticIndex(_NullLTM())
         logger.info(
-            "MemoryHub ready | sqlite=%s | schema_v%s | rag_write_mode=%s | legacy_fallback=%s | dual_write=%s | tz=%s",
+            "MemoryHub ready | sqlite=%s | schema_v%s | rag_write_mode=%s | tz=%s",
             path,
             self.sqlite.schema_version(),
             self.rag_write_mode,
-            self.hub_legacy_fallback,
-            self.hub_dual_write_legacy,
             getattr(active_tz, "key", None) or str(active_tz),
         )
 
@@ -355,13 +346,6 @@ class MemoryHub:
                 logger.debug("wm_updated event failed: %s", e)
         return row_id
 
-    def attach_legacy(self, *, people_db: Any = None, diary: Any = None) -> None:
-        """Wire legacy stores for prompt-read fallback during cutover."""
-        if people_db is not None:
-            self._people_db = people_db
-        if diary is not None:
-            self._diary = diary
-
     @staticmethod
     def _aliases_list(raw: Any) -> list[str]:
         if raw is None:
@@ -410,7 +394,7 @@ class MemoryHub:
         return [self._person_as_legacy_dict(r) for r in self.sqlite.list_people()]
 
     def find_person(self, identifier: str, discord_id: Optional[str] = None) -> Optional[dict[str, Any]]:
-        """Identity lookup: SQLite first (cutover-safe), then legacy PeopleDB if fallback on."""
+        """Identity lookup: SQLite only (Hub is the sole people store once attached)."""
         ident = (identifier or "").strip()
         ident_lower = ident.lower()
         discord = (discord_id or "").strip() or None
@@ -427,13 +411,10 @@ class MemoryHub:
                 return person
             if any(ident_lower in n or n in ident_lower for n in names_lower if n):
                 return person
-
-        if self.hub_legacy_fallback and self._people_db is not None:
-            return self._people_db.find(identifier, discord_id=discord_id)
         return None
 
     def get_all_names_map(self) -> dict[str, str]:
-        """Map lowercased name/alias → person_id (SQLite primary)."""
+        """Map lowercased name/alias → person_id (SQLite only)."""
         result: dict[str, str] = {}
         for person in self.list_people():
             pid = str(person.get("id") or "").strip()
@@ -444,9 +425,6 @@ class MemoryHub:
                 key = str(name).strip().lower()
                 if key:
                     result[key] = pid
-        if self.hub_legacy_fallback and self._people_db is not None:
-            for key, pid in self._people_db.get_all_names_map().items():
-                result.setdefault(key, pid)
         return result
 
     def get_person_summary(self, person_id: str) -> str:
@@ -493,40 +471,33 @@ class MemoryHub:
                     else:
                         lines.append(f"    [{ts}] {fact_line}")
             return "\n".join(lines)
-        if self._people_db is not None and self.hub_legacy_fallback:
-            return self._people_db.get_summary(pid) or ""
         return ""
 
     def diary_recent_text(self, limit: int = 10) -> str:
-        """Diary for prompt: SQLite first if rows exist, else legacy JSONL."""
+        """Diary for prompt: formatted directly from SQLite rows (Hub is the sole diary store)."""
         lim = max(1, int(limit))
         rows = self.list_diary_notes(limit=lim, newest_first=True)
-        if rows:
-            rows = list(reversed(rows))
-            lines: list[str] = []
-            for e in rows:
-                ts = e.get("ts") or ""
-                src = e.get("source") or "manual"
-                txt = str(e.get("text") or "").strip()
-                if not txt:
-                    continue
-                emo = str(e.get("emotion") or "").strip()
-                if not emo and isinstance(e.get("meta"), dict):
-                    emo = str(e["meta"].get("emotion") or e["meta"].get("assistant_mood") or "").strip()
-                suf = f" | настр.: {emo}" if emo else ""
-                lines.append(f"[{ts} | {src}{suf}] {txt}")
-            if lines:
-                return "\n".join(lines)
-        if self._diary is not None and self.hub_legacy_fallback:
-            return self._diary.recent_text(limit=lim) or ""
-        return ""
+        if not rows:
+            return ""
+        rows = list(reversed(rows))
+        lines: list[str] = []
+        for e in rows:
+            ts = e.get("ts") or ""
+            src = e.get("source") or "manual"
+            txt = str(e.get("text") or "").strip()
+            if not txt:
+                continue
+            emo = str(e.get("emotion") or "").strip()
+            if not emo and isinstance(e.get("meta"), dict):
+                emo = str(e["meta"].get("emotion") or e["meta"].get("assistant_mood") or "").strip()
+            suf = f" | настр.: {emo}" if emo else ""
+            lines.append(f"[{ts} | {src}{suf}] {txt}")
+        return "\n".join(lines)
 
     def working_memory_for_prompt(
         self, internal_user_id: str, *, root: Any = None
     ) -> str:
-        """WM snippet for prompt: latest SQLite snapshot if any, else legacy markdown file."""
-        from pathlib import Path
-
+        """WM snippet for prompt: latest SQLite snapshot only (Hub is the sole WM store)."""
         from core import working_memory as wm
 
         snap = self.sqlite.latest_wm_snapshot(user_id=internal_user_id)
@@ -540,10 +511,7 @@ class MemoryHub:
             if cut > 0 and cut < 400:
                 tail = tail[cut + 1 :]
             return "[…фрагмент рабочей памяти (SQLite), хвост…]\n" + tail.strip()
-        if not self.hub_legacy_fallback or not wm.wm_enabled(self.config):
-            return ""
-        project_root = Path(root) if root is not None else Path(__file__).resolve().parents[2]
-        return wm.read_snippet_for_prompt(self.config, project_root, internal_user_id)
+        return ""
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -551,8 +519,6 @@ class MemoryHub:
             "schema_version": self.sqlite.schema_version(),
             "rag_write_mode": self.rag_write_mode,
             "allows_raw_dialog_embed": self.allows_raw_dialog_embed(),
-            "hub_legacy_fallback": self.hub_legacy_fallback,
-            "hub_dual_write_legacy": self.hub_dual_write_legacy,
             "chat_log": self.sqlite.count_table("chat_log"),
             "people": self.sqlite.count_table("people"),
             "person_facts": self.sqlite.count_table("person_facts"),
