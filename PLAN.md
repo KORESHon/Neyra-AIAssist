@@ -44,7 +44,7 @@
 | **Канон импорта** | `from core.neyra import NeyraAgent` (lazy re-export: `from core.agent import NeyraAgent`) |
 | **Интерфейсы** | Discord resident + Internal API (`:8787`) + dashboard; MCP debug-server |
 | **ADR** | [0001](docs/adr/0001-memory-hub-v2.md) Hub · [0002](docs/adr/0002-core-layout-1b.md) layout · [0003](docs/adr/0003-core-refactor-1r.md) refactor |
-| **Активный фокус** | **Этап 2** — 2A/2B + voice-конфиг готовы; дальше 2C→2D→2E→2F(код) · [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) |
+| **Активный фокус** | **Этап 2** — 2A/2B/2C + voice cfg; дальше 2D→2E→2F(код) · [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) |
 
 **Windows runtime:** `.venv_win` + `run_neyra.bat` → `scripts/neyra_win_launcher.ps1`.  
 **Linux/WSL:** `run_neyra.sh` (`*.sh` → LF via `.gitattributes`); venv `.venv` или `~/neyra-venv` на `/mnt`.
@@ -135,7 +135,7 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 | **2A** | Persona pack (`persona.md` / `appearance.md`) | ✅ код | Осталось: smoke Discord/MCP на обычный чат |
 | **2B** | Pre-context (diary + user-scoped WM) | ✅ код | `memory.pre_context.enabled` default **false**; semantic source — позже |
 | **Voice cfg** | Канон `voice.stt`/`voice.tts` × prefer/enable + soft ERROR | ✅ | Фундамент для 2F; Auto Review majors закрыты |
-| **2C** | Session archive (overflow / `/reset`) | ⬜ todo | Hub digest + STM policy + event bus |
+| **2C** | Session archive (overflow / `/reset`) | ✅ код | `memory.session_archive.*`; event `memory.session_archived`; default off |
 | **2D** | Security pass | ⬜ todo | Секреты, user-scope recall, docs |
 | **2E** | Fast-Path умного дома | ⬜ todo | Allowlist intents → `home.*`; user-scoped «ещё раз» |
 | **2F** | OpenRouter Whisper STT (код провайдера) | 🟡 частич. | Конфиг/резолвер готовы; **нет** реального `STTEngine` OpenRouter + smoke |
@@ -143,12 +143,11 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 
 **Осталось сделать (порядок рекомендуемый):**
 
-1. **2C** — контролируемое архивирование сессии при overflow / `/reset`.
-2. **2D** — security pass (чеклист + доки).
-3. **2E** — Fast-Path home (серверный контур, не колонка).
-4. **2F** — дописать провайдер OpenRouter в `STTEngine` + smoke на клипе.
-5. **2A smoke** — Discord/MCP: обычный текст не деградирует.
-6. **Регрессия этапа 2** — полный чеклист ниже перед merge/закрытием.
+1. **2D** — security pass (чеклист + доки).
+2. **2E** — Fast-Path home (серверный контур, не колонка).
+3. **2F** — дописать провайдер OpenRouter в `STTEngine` + smoke на клипе.
+4. **2A smoke** — Discord/MCP: обычный текст не деградирует.
+5. **Регрессия этапа 2** — полный чеклист ниже перед merge/закрытием.
 
 ### Карта фаз
 
@@ -156,7 +155,7 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 |------|--------|--------|-----------|
 | **2A — Persona pack** | база личности + визуал как отдельные редактируемые артефакты | ✅ код / ⬜ smoke | два файла/ключа в промпт-пайплайне; example + local; smoke чат |
 | **2B — Pre-context thoughts** | короткий «мысль/намёк» из Hub перед talk | ✅ | блок в system/context; выкл. флагом; WM только с `user_id` |
-| **2C — Session archive** | политика при overflow STM/контекста | ⬜ | dump в Hub + trim/clean start; событие на шине |
+| **2C — Session archive** | политика при overflow STM/контекста | ✅ код | dump в Hub + trim/clean start; событие на шине |
 | **2D — Security pass** | сверка секретов и границ людей | ⬜ | чеклист закрыт; нет утечек; доки |
 | **2E — Fast-Path home** | короткие команды дома без полного brain+RAG | ⬜ | intent → `home.*`; fallback brain; smoke 2 users |
 | **2F — Voice STT OpenRouter** | провайдер STT через OpenRouter Whisper | 🟡 cfg ✅ / код ⬜ | turbo clip smoke; soft ERROR; deepgram/groq/local OK |
@@ -231,9 +230,10 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 
 **Приёмка:**
 
-- [ ] Симулированный overflow или ручной reset пишет в Hub ожидаемый артефакт (при включённых флагах).
-- [ ] STM после политики соответствует `clear_stm_after`.
-- [ ] Событие на шине (если ввели) видно в debug/fire_event или подписчике.
+- [x] Код: `archive_session` + hooks overflow / `/reset` / optional STM threshold; config example+local.
+- [x] Событие `memory.session_archived` публикуется при успешном прогоне политики.
+- [x] Default `enabled: false` — поведение как раньше; LTM только digest (`remember_knowledge`), не raw chat.
+- [ ] Live smoke: включить флаги → `/reset` пишет diary note; overflow path логирует archive.
 
 ---
 

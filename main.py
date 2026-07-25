@@ -303,7 +303,7 @@ async def run_console() -> None:
             break
 
         if user_input == "/reset":
-            agent.reset_context()
+            await agent.reset_context_async()
             console.print("[dim]── Память сброшена. Новый диалог. ──[/dim]")
             continue
 

@@ -347,6 +347,22 @@ memory:
     sources: [diary, wm]
     inject_lane: talk   # talk | brain | both
 
+  # EN: Stage 2C — archive STM before overflow trim / /reset (off by default).
+  # RU: Этап 2C — архив STM перед trim при overflow / /reset (выкл. по умолчанию).
+  # EN: LTM path writes digest only (never raw full-chat into Chroma).
+  # RU: в LTM пишется только digest, не сырой полный чат.
+  session_archive:
+    enabled: false
+    on_overflow: true
+    on_manual_reset: true
+    on_stm_threshold: false
+    threshold_messages: 0      # 0 = off; else archive when len(STM) >= N
+    write_diary: true
+    write_ltm_digest: false    # LLM call — keep false unless needed
+    clear_stm_after: false     # overflow/threshold: true = clear STM; false = keep trim
+    max_window_chars: 8000
+    max_diary_chars: 1200
+
   # EN: Persona affect in diary / PeopleDB / LTM metadata (memory_model). ltm_emotion_sync adds latency per turn.
   # RU: Эмоции персоны в дневнике / досье / метаданные LTM; ltm_emotion_sync — доп. задержка на ход.
   emotional_layer:

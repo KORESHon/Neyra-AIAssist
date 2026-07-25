@@ -40,6 +40,22 @@ async def iter_chat_stream(
         lyrics_marker=lyrics_marker,
         log_lane="stream",
     )
+    try:
+        from core.agent.session_archive import archive_session, should_archive_stm_threshold
+
+        if should_archive_stm_threshold(agent):
+            arch = await archive_session(
+                agent,
+                reason="stm_threshold",
+                user_id=prep.internal_uid,
+                channel_id=channel_id,
+                apply_stm_policy=True,
+            )
+            if not arch.get("stm_cleared"):
+                agent.short_memory.trim_to_half()
+    except Exception as thr_e:
+        logger.warning("session_archive stm_threshold failed (soft): %s", thr_e)
+
     caption_ok = (prep.attached_caption or "").strip()
     brain_context = ""
     try:
@@ -120,10 +136,24 @@ async def iter_chat_stream(
         ):
             context_exceeded = True
             logger.warning(
-                "Контекст переполнен (LMStudio n_ctx мал)! Очищаю историю до 1 сообщения и урезаю промпт..."
+                "Контекст переполнен (LMStudio n_ctx мал)! Архив (если вкл.) + trim STM / урезание промпта..."
             )
-            agent.short_memory.trim_to_half()
-            agent.short_memory.trim_to_half()
+            try:
+                from core.agent.session_archive import archive_session
+
+                arch = await archive_session(
+                    agent,
+                    reason="overflow",
+                    user_id=prep.internal_uid,
+                    channel_id=channel_id,
+                    apply_stm_policy=True,
+                )
+            except Exception as arch_e:
+                logger.warning("session_archive on overflow failed (soft): %s", arch_e)
+                arch = {"stm_cleared": False}
+            if not arch.get("stm_cleared"):
+                agent.short_memory.trim_to_half()
+                agent.short_memory.trim_to_half()
             system_prompt = build_talk_system_prompt(
                 agent,
                 prep,

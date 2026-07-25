@@ -40,6 +40,22 @@ async def run_chat(
         lyrics_marker=lyrics_marker,
         log_lane="chat",
     )
+    try:
+        from core.agent.session_archive import archive_session, should_archive_stm_threshold
+
+        if should_archive_stm_threshold(agent):
+            arch = await archive_session(
+                agent,
+                reason="stm_threshold",
+                user_id=prep.internal_uid,
+                channel_id=channel_id,
+                apply_stm_policy=True,
+            )
+            if not arch.get("stm_cleared"):
+                agent.short_memory.trim_to_half()
+    except Exception as thr_e:
+        logger.warning("session_archive stm_threshold failed (soft): %s", thr_e)
+
     caption_ok = (prep.attached_caption or "").strip()
     brain_context = ""
     try:

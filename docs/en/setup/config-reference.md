@@ -12,7 +12,7 @@
 ## Key sections
 - `assistant` — `name`, `persona_path` / `appearance_path` (Stage 2A), `system_prompt` fallback
 - `BACKEND`, `openrouter`, `llm` — per-role nested blocks: **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** (VL + vision pipeline; no top-level **`vision:`**).
-- `memory` — includes Stage 2B `pre_context` (short diary+WM hint; off by default)
+- `memory` — Stage 2B `pre_context`; Stage 2C `session_archive` (STM archive on overflow/reset; off by default)
 - `voice` — per modality: `stt` / `tts` each with `prefer` + `local`/`cloud`.`enable` (soft ERROR if unset; legacy `voice_cloud` / `is_local` still normalized)
 - `health_monitor`
 - `backup`, `external_storage`

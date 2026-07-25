@@ -809,13 +809,34 @@ class NeyraAgent:
         )
 
     def reset_context(self, channel_id: Optional[str] = None):
-        """Сбрасывает краткую память; для Discord — ещё заметку последнего скрина в этом канале."""
+        """Синхронный сброс STM (без archive). Предпочитай ``reset_context_async``."""
         self.short_memory.clear()
         if channel_id is not None:
             self._last_vision_note_by_channel.pop(str(channel_id), None)
         else:
             self._last_vision_note_by_channel.clear()
         logger.info("Краткосрочная память сброшена")
+
+    async def reset_context_async(
+        self,
+        channel_id: Optional[str] = None,
+        *,
+        user_id: str = "",
+    ) -> None:
+        """Archive STM (если session_archive.on_manual_reset) затем очистить память."""
+        from core.agent.session_archive import archive_session
+
+        try:
+            await archive_session(
+                self,
+                reason="manual_reset",
+                user_id=user_id,
+                channel_id=channel_id,
+                apply_stm_policy=False,
+            )
+        except Exception as e:
+            logger.warning("session_archive on reset failed (soft): %s", e)
+        self.reset_context(channel_id)
 
     def get_stats(self) -> dict:
         """Возвращает статистику агента."""
