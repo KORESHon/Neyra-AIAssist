@@ -60,7 +60,7 @@
 
 **Цель:** пересобрать базу памяти и структуру ядра: один Memory API, SQLite как source of truth для основного контента, Chroma только как семантический индекс «что вспомнить», полный chat log в БД; затем — чистка дублей и раскладка `core/` по папкам. Фундамент должен быть жёстким: без полуlegacy-путей и без «файлов-призраков» рядом с Hub.
 
-**Статус:** **1A принято в `main`** ([PR #1](https://github.com/KORESHon/Neyra-AIAssist/pull/1)). **1B** — на ветке `feat/core-layout-1b` ([PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6)): пакетная раскладка `core/` готова; offline-приёмка зелёная; split `agent.py` **отложен** (не блокер merge 1B).
+**Статус:** **1A принято в `main`**. **1B** (layout packages) — [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6), offline-приёмка зелёная → merge. Дальше — фаза **1R** (глубокий рефакторинг / split монолитов / раскладка остатков `core/`).
 
 ### Прогресс фазы 1A (факт в main)
 
@@ -93,9 +93,10 @@
 | Фаза | Фокус | Done when |
 |------|--------|-----------|
 | **1A — Memory Hub** | SQLite + Hub + chat log + перенос слоёв + Chroma semantic + API/tools/events/debug | Агент и `/v1/memory/*` живут только через Hub; legacy primary store выключен |
-| **1B — Core layout** | `plugin_manager`, раскладка `core/` по папкам, чистка дублей, импорты | `compileall` + healthcheck + resident Discord без регрессий |
+| **1B — Core layout** | Пакеты `plugins` / `llm` / `runtime` / `voice` / `memory.stores` + shims + lazy imports | `compileall` + memory smokes + healthcheck + Auto Review; без смены поведения |
+| **1R — Core refactor** | Split монолитов (`agent.py` и др.), логические имена файлов, аудит костылей/багов, финальная раскладка по подпапкам `core/` | Код читаем по полкам; shims сняты или сужены; smokes/healthcheck/Discord без регрессий |
 
-Правило: **сначала 1A зелёный**, потом 1B. Исключение — крошечные compat-shim импорты, если без них 1A не собрать.
+Правило: **1A → 1B → 1R**. Не смешивать миграцию памяти с большой раскладкой; не смешивать package-move (1B) с глубоким рефакторингом логики (1R).
 
 ---
 
@@ -246,7 +247,7 @@ Cutover-флаги (`hub_legacy_import`, `hub_legacy_fallback`, `hub_dual_write_
 - Не менять External API / Event Bus имена событий.
 - Не раздувать scope: Fast-Path / этап 2 / sqlite-vss — **вне** 1B.
 - После каждого логического шага: `python -m compileall -q core interfaces scripts main.py` + memory smokes + `scripts/healthcheck.py`.
-- **Split `agent.py` не обязателен для закрытия 1B** — это follow-up на читаемость монолита (~2.6k строк), не на корректность layout/plugins.
+- Split / глубокий рефакторинг — **фаза 1R**, не 1B.
 
 #### Целевая раскладка
 
@@ -257,9 +258,10 @@ Cutover-флаги (`hub_legacy_import`, `hub_legacy_fallback`, `hub_dual_write_
 | `core/llm/` | profile / retry / openrouter_balance | ✅ + flat shims; lazy `__init__` |
 | `core/runtime/` | server / health / win_runtime / secrets | ✅ + flat shims; lazy heavy exports |
 | `core/voice/` | STT + Yandex TTS | ✅ канон; root `stt`/`yandex_tts` — shims |
-| `core/agent/` | оркестрация из монолита `agent.py` | ⏸ **отложено** (не блокер 1B) |
+| `core/agent/` | оркестрация из монолита `agent.py` | → **фаза 1R** |
+| `core/` root leftovers | `tools`, `reflection`, `working_memory`, … | пакеты/переименования → **фаза 1R** |
 
-Оставить на корне `core/` (осознанно): `event_bus.py`, `tools.py`, `reflection.py`, `working_memory.py`, `emotional_layer.py`, `backup_manager.py`, `identity.py`, `mcp_client.py`, `external_storage.py`, `timeutil.py`, `vision_util.py`, `ltm_maintenance.py`, `agent.py`.
+Оставить на корне после 1B (до 1R): `event_bus.py`, `tools.py`, `reflection.py`, `working_memory.py`, `emotional_layer.py`, `backup_manager.py`, `identity.py`, `mcp_client.py`, `external_storage.py`, `timeutil.py`, `vision_util.py`, `ltm_maintenance.py`, `agent.py` (+ flat shims пакетов).
 
 #### Чеклист задач 1B (порядок выполнения)
 
@@ -272,30 +274,41 @@ Cutover-флаги (`hub_legacy_import`, `hub_legacy_fallback`, `hub_dual_write_
 | 5 | **`core/voice/` унификация** | канон `core.voice.*`; root shims | `[x]` |
 | 6 | **Memory naming:** `legacy.py` → `stores.py` | smokes зелёные; alias `legacy` на один релиз | `[x]` |
 | 7 | **Чистка dual-write / hub_legacy в коде** | в `.py` нет флагов/import-legacy (кроме assert/docs в smokes) | `[x]` |
-| 8 | **`agent.py` → `core/agent/`** | опционально; публичный `NeyraAgent` стабилен | `[–]` **отложено** — см. ниже «Зачем split» |
-| 9 | **Импорты потребителей** | канон или shim; `main` + Internal API на каноне | `[x]` (Discord/scripts через shim — ок) |
-| 10 | **Доки** ADR-0002 + PLAN | канон vs shim понятен | `[x]` |
-| 11 | **Приёмка offline** | compileall + memory smokes + healthcheck + Auto Review | `[x]` 2026-07-25 |
-| 12 | **Discord resident на стенде** | ручной/MCP ping при поднятом ядре | `[~]` стенд не обязателен для merge layout; проверить при деплое |
+| 8 | **Импорты потребителей** | канон или shim; `main` + Internal API на каноне | `[x]` |
+| 9 | **Доки** ADR-0002 + PLAN | канон vs shim понятен | `[x]` |
+| 10 | **Приёмка offline** | compileall + memory smokes + healthcheck + Auto Review | `[x]` 2026-07-25 |
 
-#### Зачем (и когда) split `agent.py`
+Split `agent.py` / глубокий рефакторинг / «расфасовка по полкам» — **не в 1B**, см. **фазу 1R**.
 
-**Не для закрытия 1B.** Layout пакетов и plugin_manager уже дают Done phase 1B.
+#### Вне scope 1B
 
-Split имеет смысл **позже**, только как maintainability:
-- файл ~2.6k строк смешивает init LLM, prompt build, chat turn, tools, memory wiring — тяжело ревьюить и искать баги;
-- вынос кусков в `core/agent/` (prompt / turn / tools) упрощает следующие фичи (Fast-Path, session archive) без «правки гигантского файла».
+- Фаза **1R** (split монолитов, переименования, аудит костылей, раскладка остатков)
+- Fast-Path / этап 2 / sqlite-vss / frontend redesign
 
-**Риск сейчас:** большой mechanical move без смены поведения легко словить скрытую регрессию оркестрации при слабом e2e. Поэтому **не делаем в этом PR**; можно отдельным follow-up после merge 1B.
+---
 
-#### Вне scope 1B (не делать в этом PR)
+### Фаза 1R — глубокий рефакторинг `core/` (после merge 1B)
 
-- Fast-Path умного дома (этап 2)
-- Смена схемы Memory Hub / новые таблицы
-- Замена Chroma / sqlite-vss
-- Большой рефактор `tools.py` / reflection логики (кроме переноса файлов и импортов)
-- Frontend redesign
-- Split монолита `agent.py` (follow-up, не блокер)
+**Трек:** отдельный PR / ветка `feat/core-refactor-1r` (создаётся после merge 1B).
+
+**Суть (простыми словами):** да, «расфасовать по полкам» — большие файлы режем на логические модули, даём файлам понятные имена, раскладываем по подпапкам `core/`, попутно вычищаем костыли и баги. Это уже не package-move 1B, а полный рефакторинг кода.
+
+**Правила 1R:**
+- Поведение снаружи (API, Event Bus, Discord UX) не менять без явной причины в PR.
+- После каждого крупного split: `compileall` + memory smokes + healthcheck; Auto Review.
+- Compat shims 1B снимать только когда все callers переведены на канон.
+- Не трогать контракты Memory Hub без ADR.
+
+#### Чеклист 1R (стартовый)
+
+| # | Задача | Done when | Статус |
+|---|--------|-----------|--------|
+| 1 | Inventory: монолиты и «корень `core/`» (`agent.py`, `tools.py`, `reflection.py`, …) | список файлов + целевые пакеты/имена в PLAN/PR | `[ ]` |
+| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[ ]` |
+| 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[ ]` |
+| 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[ ]` |
+| 5 | Финальная раскладка по подпапкам `core/` + сужение/снятие shims 1B | канонические импорты везде критичных callers | `[ ]` |
+| 6 | Доки (ADR-0003 или раздел PLAN) + приёмка | compileall + smokes + healthcheck + Auto Review; Discord на стенде | `[ ]` |
 
 ---
 
@@ -317,13 +330,21 @@ Split имеет смысл **позже**, только как maintainability:
 - [x] Fast-Path умного дома — **отложено в этап 2** (решение зафиксировано: не блокирует cutover 1A; edge — с колонкой на этапе 4).
 - [x] Финал 1A: legacy-импорт полностью абандонен (`core/memory/legacy_import.py` удалён, `run_hub_legacy_import`/`POST /v1/memory/import-legacy`/marker-gated авто-импорт убраны); при подключённом Hub file PeopleDB/Diary/journal/WM больше не пишутся (SQLite only); без Hub `PeopleDB`/`NeyraDiary` — чисто in-memory (без файлового I/O вообще); `ReflectionEngine` без Hub читает diary из `agent.diary` (RAM), а не JSONL, и не пишет `journal.json`. **Merged в main 2026-07-24.**
 
-**Фаза 1B** *(трек: [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6) / `feat/core-layout-1b`)*
+**Фаза 1B** *(трек: [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6))*
 
-- [x] `core/plugins/` (plugin_manager): loader/config/sdk/builder + path jail / reload / rollback; shims на старые `core.plugin_*`; lazy builder в `__init__`.
-- [x] `core/llm/` + `core/runtime/` + унификация `core/voice/`; lazy heavy exports; импорты потребителей зелёные (канон или shim).
-- [x] Memory module naming cleanup (`legacy.py` → `stores.py` + alias) + нет `hub_legacy_*` / import-legacy в runtime-коде.
-- [–] Раскладка монолита `agent.py` — **отложена** (не блокер 1B; follow-up на maintainability).
-- [x] Offline приёмка: `compileall` + memory smokes + `healthcheck` + Auto Review SUCCESS (2026-07-25). Discord resident — проверить на стенде при деплое (`[~]`).
+- [x] `core/plugins/` (plugin_manager): loader/config/sdk/builder + path jail / reload / rollback; shims; lazy builder.
+- [x] `core/llm/` + `core/runtime/` + унификация `core/voice/`; lazy heavy exports; импорты зелёные (канон или shim).
+- [x] Memory naming (`stores.py` + alias) + нет `hub_legacy_*` / import-legacy в runtime-коде.
+- [x] Offline приёмка: `compileall` + memory smokes + `healthcheck` + Auto Review SUCCESS.
+- [x] Split `agent.py` / глубокий рефакторинг — **вынесены в фазу 1R** (не блокер 1B).
+
+**Фаза 1R** *(после merge 1B)*
+
+- [ ] Inventory монолитов + целевая карта пакетов/имён.
+- [ ] Split `agent.py` и других крупных модулей «по полкам».
+- [ ] Переименования по логическому назначению; аудит костылей/багов.
+- [ ] Финальная раскладка в подпапки `core/`; сужение shims 1B.
+- [ ] `compileall` + memory smokes + healthcheck + Auto Review; Discord на стенде.
 ## Этап 2 — Дополнительные улучшения (пакет мелких задач)
 
 *Бывший этап 1 — сдвинут после Memory Hub.*
