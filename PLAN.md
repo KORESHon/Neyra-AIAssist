@@ -60,7 +60,7 @@
 
 **Цель:** пересобрать базу памяти и структуру ядра: один Memory API, SQLite как source of truth для основного контента, Chroma только как семантический индекс «что вспомнить», полный chat log в БД; затем — чистка дублей и раскладка `core/` по папкам. Фундамент должен быть жёстким: без полуlegacy-путей и без «файлов-призраков» рядом с Hub.
 
-**Статус:** **1A** и **1B** приняты в `main` ([PR #1](https://github.com/KORESHon/Neyra-AIAssist/pull/1), [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6) merged `1d61ed5`). Дальше — фаза **1R** (глубокий рефакторинг / split монолитов / раскладка остатков `core/`).
+**Статус:** **1A**, **1B** и **1R** приняты в `main` ([PR #1](https://github.com/KORESHon/Neyra-AIAssist/pull/1), [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6), [PR #7](https://github.com/KORESHon/Neyra-AIAssist/pull/7) merged `1b873d0`). Дальше — этап 2 (мелкие улучшения) по мере необходимости.
 
 ### Прогресс фазы 1A (факт в main)
 
