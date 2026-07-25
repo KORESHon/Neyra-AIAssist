@@ -306,9 +306,9 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 | 1 | Inventory: монолиты и «корень `core/`» (`agent.py`, `tools.py`, `reflection.py`, …) | список файлов + целевые пакеты/имена в PLAN/PR | `[x]` см. карту ниже |
 | 2 | Split `agent.py` → shelves + главный `core/neyra.py` | `NeyraAgent` API стабилен; smokes зелёные | `[x]` оркестратор в `core/neyra.py`; полки в `core/agent/` |
 | 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[x]` `agent/` `reflection/` `tools/` `memory/*` `runtime/*` `voice/*` |
-| 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[~]` seed deepcopy; caption_ok; overflow retry без micro-plan prefill |
+| 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[x]` seed deepcopy; caption_ok; overflow prefill; short re-ask → reply_pipeline |
 | 5 | Финальная раскладка: в корне `core/` только пакеты + один главный `.py` | канон `from core.neyra import NeyraAgent`; helpers в пакетах | `[x]` корень: `__init__.py` + `neyra.py` + пакеты |
-| 6 | Доки (ADR-0003 или раздел PLAN) + приёмка | compileall + smokes + healthcheck + Auto Review; Discord на стенде | `[~]` offline зелёные + Auto Review; Discord на стенде ещё |
+| 6 | Доки (ADR-0003 или раздел PLAN) + приёмка | compileall + smokes + healthcheck + Auto Review; Discord на стенде | `[x]` offline + MCP chat/WS stream + Discord UX 2026-07-25; Auto Review green |
 | 7 | Удалить дубли/flat shims в корне `core/` | нет теневых shim-файлов; импорты только канонические | `[x]` shims удалены; event_bus/timeutil/… ушли в `runtime`/`voice` |
 
 #### Inventory / целевая карта (1R)
@@ -354,10 +354,10 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 
 - [x] Inventory монолитов + целевая карта пакетов/имён.
 - [x] Главный оркестратор — `core/neyra.py`; полки — `core/agent/` *(chat / chat_stream / reply_pipeline / talk_messages / …)*.
-- [~] Аудит костылей *(seed deepcopy, caption_ok, overflow retry prefill; short re-ask → reply_pipeline)*.
+- [x] Аудит костылей *(seed deepcopy, caption_ok, overflow retry prefill; short re-ask → reply_pipeline)*.
 - [x] Финальная раскладка корня `core/`: только пакеты + один главный `.py` (`neyra.py`).
 - [x] Удалить дубли/flat shims в корне `core/`.
-- [~] `compileall` + memory smokes + healthcheck + Auto Review; Discord на стенде ещё.
+- [x] `compileall` + memory smokes + healthcheck + Auto Review; live MCP `/v1/chat` + WS `chat_stream` + Discord UX 2026-07-25.
 ## Этап 2 — Дополнительные улучшения (пакет мелких задач)
 
 *Бывший этап 1 — сдвинут после Memory Hub.*

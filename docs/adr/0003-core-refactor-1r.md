@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (in progress on `feat/core-refactor-1r` / PR #7).
+Accepted (PR #7 — phase 1R complete; merge after final acceptance 2026-07-25).
 
 ## Context
 
@@ -32,4 +32,4 @@ core/
 
 - Clear entry point for the agent brain.
 - Talk lanes live in `core/agent/chat.py` and `core/agent/chat_stream.py`; `neyra.py` stays thin wrappers + wiring.
-- Remaining: Discord stand acceptance; merge when Auto Review stays green.
+- Acceptance 2026-07-25: offline smokes, Auto Review, MCP `/v1/chat`, WS `chat_stream`, Discord UX smoke.
