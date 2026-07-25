@@ -244,7 +244,7 @@ def run_plugin(ctx: PluginContext) -> None:
     ...
 ```
 
-Поля `**PluginContext**` (`core/plugin_sdk.py`):
+Поля `**PluginContext**` (`core/plugins/sdk.py`):
 
 - `**root**` — `Path` корня репозитория (где лежит `main.py`).
 - `**config**` — полный словарь глобального `config.yaml` после подстановки секретов из `.env` (через `apply_env_secrets`).
@@ -256,7 +256,7 @@ def run_plugin(ctx: PluginContext) -> None:
 
 ## Модель процесса: ядро и консоль
 
-1. **`python main.py`** (или `--mode core`) запускает **`core.server.run_neyra_server`**: FastAPI, дашборд, один `NeyraAgent`, рефлексия, health monitor, **resident**-плагины (например Discord) в фоновых потоках.
+1. **`python main.py`** (или `--mode core`) запускает **`core.runtime.server.run_neyra_server`**: FastAPI, дашборд, один `NeyraAgent`, рефлексия, health monitor, **resident**-плагины (например Discord) в фоновых потоках.
 2. **`python main.py --mode console`** — только интерактивная консоль без HTTP.
 3. Глобальные CLI-режимы под отдельные плагины **не регистрируются**; в манифестах держите **`cli_modes: []`**, если не нужна зарезервированная метка. Для ручного запуска см. **`scripts/invoke_plugin.py`**.
 
@@ -266,7 +266,7 @@ def run_plugin(ctx: PluginContext) -> None:
 
 ## API загрузчика
 
-**Файл `core/plugin_loader.py`**, класс `**PluginLoader**` (создаётся с корнем проекта: `PluginLoader(Path.cwd())` или корень репозитория, как в `main.py`):
+**Файл `core/plugins/loader.py`**, класс `**PluginLoader**` (создаётся с корнем проекта: `PluginLoader(Path.cwd())` или корень репозитория, как в `main.py`):
 
 
 | Метод / использование             | Назначение                                                                                                        |
@@ -280,7 +280,7 @@ def run_plugin(ctx: PluginContext) -> None:
 | `set_enabled(plugin_id, enabled)` | Записать `enabled` обратно в `plugin.yaml` по id.                                                                 |
 
 
-**Файл `core/plugin_sdk.py`:**
+**Файл `core/plugins/sdk.py`:**
 
 
 | Имя                                  | Назначение                                              |

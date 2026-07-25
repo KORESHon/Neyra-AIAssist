@@ -17,5 +17,5 @@
   - `run_plugin(ctx: PluginContext) -> None`
 
 ## Вызов
-- Core lifecycle: через `core/server.py`.
+- Core lifecycle: через `core/runtime/server.py`.
 - On-demand: через `scripts/invoke_plugin.py` или API invoke.

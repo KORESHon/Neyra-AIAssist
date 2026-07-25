@@ -917,6 +917,7 @@ class NeyraAgent:
         mcp_catalog = prep.mcp_catalog
         brain_native_vis = prep.brain_native_vis
         attached_caption = prep.attached_caption
+        caption_ok = (attached_caption or "").strip()
         talk_vm = prep.talk_vm
         has_vis_prompt = prep.has_vis_prompt
         brain_sys = prep.brain_sys
@@ -1021,72 +1022,24 @@ class NeyraAgent:
         clean_text = await self._retry_short_reply_if_empty(final_messages_used, clean_text)
         clean_text = await self._de_repeat_reply(user_message, clean_text)
 
-        # 8. Обновляем краткосрочную память (та же подпись, что и в HumanMessage)
-        self.short_memory.add(
-            "user",
-            self._format_spoken_user_message(user_message, speaker_label),
-        )
-        self.short_memory.add("assistant", clean_text)
+        from .turn_finalize import finalize_successful_turn
 
-        # 9. Сохраняем в RAG и логах (chat_log — to_thread; LTM — отдельно)
-        metadata = {
-            "username": username or "unknown",
-            "discord_id": discord_user_id or "",
-            "user_id": internal_uid,
-        }
-        await self._append_turn_to_chat_log(
-            user_text=self._format_spoken_user_message(user_message, speaker_label),
-            assistant_text=clean_text,
-            internal_user_id=internal_uid,
-            display_name=username or speaker_label,
-            channel_id=channel_id,
-            source="chat",
-            meta=metadata,
-        )
-        await self._save_dialog_to_ltm_with_emotion(user_message, clean_text, metadata, speaker_label)
-
-        # 10. Логи
-        self._log_thought(thoughts, user_message)
-        self._log_chat(user_message, clean_text, metadata)
-        self._store_vision_note_if_needed(channel_id, vision_images, thoughts, clean_text)
-        self._schedule_async_reflection(
-            user_message=user_message,
-            assistant_text=clean_text,
-            username=username,
-            discord_user_id=discord_user_id,
-        )
-        self._schedule_working_memory_refresh(
-            internal_user_id=internal_uid,
-            user_message=user_message,
-            assistant_text=clean_text,
-            speaker_label=speaker_label,
-            stm_trimmed=False,
-        )
-        self._schedule_emotion_diary(
-            user_message=user_message,
-            assistant_text=clean_text,
-            speaker_label=speaker_label,
-            username=username,
-            discord_user_id=discord_user_id,
-        )
-        for s in saved_facts:
-            self.diary.add_entry(
-                text=f"Зафиксировала новый факт в досье: {s}",
-                source="memory_update",
-                meta={"username": username or "unknown"},
-            )
-
-        self._publish_memory_and_chat_events(
-            internal_user_id=internal_uid,
-            channel_id=channel_id,
-            username=username,
+        await finalize_successful_turn(
+            self,
             user_message=user_message,
             clean_text=clean_text,
+            thoughts=thoughts,
             sounds=sounds,
-            metadata=metadata,
+            username=username,
+            discord_user_id=discord_user_id,
+            channel_id=channel_id,
+            speaker_label=speaker_label,
+            internal_uid=internal_uid,
+            vision_images=vision_images,
+            saved_facts=saved_facts,
+            source="chat",
+            stm_trimmed=False,
         )
-
-        logger.debug(f"Ответ сгенерирован | sounds={sounds} | len={len(clean_text)}")
         if self.micro_planning_enabled:
             m = self._micro_plan_metrics
             logger.debug(
@@ -1155,6 +1108,7 @@ class NeyraAgent:
         mcp_catalog_s = prep.mcp_catalog
         brain_native_vis = prep.brain_native_vis
         attached_caption = prep.attached_caption
+        caption_ok = (attached_caption or "").strip()
         talk_vm = prep.talk_vm
         has_vis_prompt = prep.has_vis_prompt
         brain_sys = prep.brain_sys
@@ -1359,52 +1313,25 @@ class NeyraAgent:
 
         # 5. Память и логи
         if context_exceeded:
-            # После автосброса — помечаем что был рестарт (только в логе, не в память)
             logger.info("Успешный ответ после переполнения контекста.")
-            
-        self.short_memory.add(
-            "user",
-            self._format_spoken_user_message(user_message, speaker_label),
-        )
-        self.short_memory.add("assistant", clean_text)
 
-        metadata = {
-            "username": username or "unknown",
-            "discord_id": discord_user_id or "",
-            "user_id": internal_uid,
-        }
-        await self._append_turn_to_chat_log(
-            user_text=self._format_spoken_user_message(user_message, speaker_label),
-            assistant_text=clean_text,
-            internal_user_id=internal_uid,
-            display_name=username or speaker_label,
+        from .turn_finalize import finalize_successful_turn
+
+        await finalize_successful_turn(
+            self,
+            user_message=user_message,
+            clean_text=clean_text,
+            thoughts=thoughts,
+            sounds=sounds,
+            username=username,
+            discord_user_id=discord_user_id,
             channel_id=channel_id,
+            speaker_label=speaker_label,
+            internal_uid=internal_uid,
+            vision_images=vision_images,
+            saved_facts=saved_facts,
             source="chat_stream",
-            meta=metadata,
-        )
-        await self._save_dialog_to_ltm_with_emotion(user_message, clean_text, metadata, speaker_label)
-        self._log_thought(thoughts, user_message)
-        self._log_chat(user_message, clean_text, metadata)
-        self._store_vision_note_if_needed(channel_id, vision_images, thoughts, clean_text)
-        self._schedule_async_reflection(
-            user_message=user_message,
-            assistant_text=clean_text,
-            username=username,
-            discord_user_id=discord_user_id,
-        )
-        self._schedule_working_memory_refresh(
-            internal_user_id=internal_uid,
-            user_message=user_message,
-            assistant_text=clean_text,
-            speaker_label=speaker_label,
             stm_trimmed=context_exceeded,
-        )
-        self._schedule_emotion_diary(
-            user_message=user_message,
-            assistant_text=clean_text,
-            speaker_label=speaker_label,
-            username=username,
-            discord_user_id=discord_user_id,
         )
         if self.micro_planning_enabled:
             m = self._micro_plan_metrics
@@ -1415,24 +1342,7 @@ class NeyraAgent:
                 m["unclosed_blocks"],
                 m["leak_detected"],
             )
-        for s in saved_facts:
-            self.diary.add_entry(
-                text=f"Зафиксировала новый факт в досье: {s}",
-                source="memory_update",
-                meta={"username": username or "unknown"},
-            )
-
-        self._publish_memory_and_chat_events(
-            internal_user_id=internal_uid,
-            channel_id=channel_id,
-            username=username,
-            user_message=user_message,
-            clean_text=clean_text,
-            sounds=sounds,
-            metadata=metadata,
-        )
-
-        logger.debug(f"Стрим завершён | sounds={sounds} | len={len(clean_text)}")
+        logger.debug("Стрим завершён | sounds=%s | len=%s", sounds, len(clean_text))
 
         # 6. Финальный пакет с метаданными
         yield {

@@ -1745,7 +1745,7 @@ def build_app(
 
 
 def run_internal_api(config: dict) -> None:
-    """Точка входа плагина `api`: делегирует в ядро `core.server.run_neyra_server`."""
+    """Точка входа плагина `api`: делегирует в ядро `core.runtime.server.run_neyra_server`."""
     from core.runtime import run_neyra_server
 
     run_neyra_server(config)

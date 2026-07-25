@@ -12,4 +12,4 @@
 - Не храните токены в `config.yaml` плагина.
 
 ## Merge
-`core/plugin_config.py` подмешивает plugin config в общий runtime dict до подстановки env secrets.
+`core/plugins/config.py` подмешивает plugin config в общий runtime dict до подстановки env secrets.

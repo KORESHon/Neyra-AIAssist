@@ -227,7 +227,7 @@ async def refresh_working_memory_async(
                 bus.publish(
                     CoreEvent(
                         MEMORY_WORKING_MEMORY_UPDATED,
-                        "core.working_memory",
+                        "core.memory.working_memory",
                         {"path": str(path), "user_id": internal_user_id, "reason": reason},
                     )
                 )
