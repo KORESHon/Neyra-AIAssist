@@ -44,7 +44,7 @@
 | **Канон импорта** | `from core.neyra import NeyraAgent` (lazy re-export: `from core.agent import NeyraAgent`) |
 | **Интерфейсы** | Discord resident + Internal API (`:8787`) + dashboard; MCP debug-server |
 | **ADR** | [0001](docs/adr/0001-memory-hub-v2.md) Hub · [0002](docs/adr/0002-core-layout-1b.md) layout · [0003](docs/adr/0003-core-refactor-1r.md) refactor |
-| **Активный фокус** | **Этап 2** — фазы 2A–2F (план в [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10)) |
+| **Активный фокус** | **Этап 2** — 2A/2B + voice-конфиг готовы; дальше 2C→2D→2E→2F(код) · [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) |
 
 **Windows runtime:** `.venv_win` + `run_neyra.bat` → `scripts/neyra_win_launcher.ps1`.  
 **Linux/WSL:** `run_neyra.sh` (`*.sh` → LF via `.gitattributes`); venv `.venv` или `~/neyra-venv` на `/mnt`.
@@ -123,21 +123,43 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 
 ## Этап 2 — Дополнительные улучшения ▶
 
-**Трек:** ветка `feat/stage-2` / [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) (план + последующие slice-PR).  
+**Трек:** ветка `docs/stage-2-plan` / [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) (план + реализация slice’ами в том же PR или follow-up).  
 **Правила:** не ломать Hub / Event Bus без ADR; не раздувать scope до этапа 3 (полный WS UI) и этапа 4 (колонка / self-host voice stack). После каждого slice: `compileall` + memory smokes + healthcheck; при касании агента — Discord или MCP `/v1/chat`.
 
 Фазы **можно распараллелить** (разные PR), кроме случаев явной зависимости (отмечено ниже).
 
+### Статус задач (сводно)
+
+| ID | Задача | Статус | Комментарий |
+|----|--------|--------|-------------|
+| **2A** | Persona pack (`persona.md` / `appearance.md`) | ✅ код | Осталось: smoke Discord/MCP на обычный чат |
+| **2B** | Pre-context (diary + user-scoped WM) | ✅ код | `memory.pre_context.enabled` default **false**; semantic source — позже |
+| **Voice cfg** | Канон `voice.stt`/`voice.tts` × prefer/enable + soft ERROR | ✅ | Фундамент для 2F; Auto Review majors закрыты |
+| **2C** | Session archive (overflow / `/reset`) | ⬜ todo | Hub digest + STM policy + event bus |
+| **2D** | Security pass | ⬜ todo | Секреты, user-scope recall, docs |
+| **2E** | Fast-Path умного дома | ⬜ todo | Allowlist intents → `home.*`; user-scoped «ещё раз» |
+| **2F** | OpenRouter Whisper STT (код провайдера) | 🟡 частич. | Конфиг/резолвер готовы; **нет** реального `STTEngine` OpenRouter + smoke |
+| **Reg** | Регрессия этапа 2 (vision / Discord / MCP) | ⬜ todo | Прогон перед закрытием этапа |
+
+**Осталось сделать (порядок рекомендуемый):**
+
+1. **2C** — контролируемое архивирование сессии при overflow / `/reset`.
+2. **2D** — security pass (чеклист + доки).
+3. **2E** — Fast-Path home (серверный контур, не колонка).
+4. **2F** — дописать провайдер OpenRouter в `STTEngine` + smoke на клипе.
+5. **2A smoke** — Discord/MCP: обычный текст не деградирует.
+6. **Регрессия этапа 2** — полный чеклист ниже перед merge/закрытием.
+
 ### Карта фаз
 
-| Фаза | Фокус | Done when |
-|------|--------|-----------|
-| **2A — Persona pack** | база личности + визуал как отдельные редактируемые артефакты | два файла/ключа в промпт-пайплайне; example + local config sync |
-| **2B — Pre-context thoughts** | короткий «мысль/намёк» из Hub перед talk | блок в system/context; не дублирует полный diary dump; выкл. флагом |
-| **2C — Session archive** | политика при overflow STM/контекста | явный dump в Hub + опц. trim/clean start; событие на шине |
-| **2D — Security pass** | сверка секретов и границ людей | чеклист закрыт; нет утечек в логах/API; доки обновлены |
-| **2E — Fast-Path home** | короткие команды умного дома без полного brain+RAG | intent → tool/`home.*`; fallback в brain; конфиг + smoke |
-| **2F — Voice STT OpenRouter** | провайдер STT через OpenRouter Whisper | `openai/whisper-large-v3-turbo` в `core/voice`; переключение конфигом; smoke на клипе |
+| Фаза | Фокус | Статус | Done when |
+|------|--------|--------|-----------|
+| **2A — Persona pack** | база личности + визуал как отдельные редактируемые артефакты | ✅ код / ⬜ smoke | два файла/ключа в промпт-пайплайне; example + local; smoke чат |
+| **2B — Pre-context thoughts** | короткий «мысль/намёк» из Hub перед talk | ✅ | блок в system/context; выкл. флагом; WM только с `user_id` |
+| **2C — Session archive** | политика при overflow STM/контекста | ⬜ | dump в Hub + trim/clean start; событие на шине |
+| **2D — Security pass** | сверка секретов и границ людей | ⬜ | чеклист закрыт; нет утечек; доки |
+| **2E — Fast-Path home** | короткие команды дома без полного brain+RAG | ⬜ | intent → `home.*`; fallback brain; smoke 2 users |
+| **2F — Voice STT OpenRouter** | провайдер STT через OpenRouter Whisper | 🟡 cfg ✅ / код ⬜ | turbo clip smoke; soft ERROR; deepgram/groq/local OK |
 
 **Отложено:** live mic-stream (realtime WebSocket ASR). Nemotron Omni на chat/completions — file/clip audio для «послушай и ответь», не выделенный STT endpoint; для транскрипта в этапе 2 берём **OpenRouter `/audio/transcriptions`** (фаза 2F). Live колонка / Deepgram live → этап 4.
 
@@ -316,22 +338,23 @@ Legacy `voice.is_local` / flat `voice.stt` / `voice_cloud` ещё нормали
 
 Синхронизировать и привести к одной понятной схеме:
 
-| Файл | Что сделать |
-|------|-------------|
-| `config.example.yaml` / `config.yaml` | **`voice.stt` / `voice.tts`**: `prefer` + `local/cloud.enable`; без `voice_cloud` / без `is_local`. |
-| `.env.example` / `.env` | Комментарии под modality + `stt.cloud.provider`; секреты сохранить. |
-| `core/runtime/secrets.py` | Deepgram/Groq → `voice.stt.cloud.*.api_key` (только если modality уже в YAML); Yandex → `voice.tts.cloud`; OpenRouter → `openrouter.api_key`. Не создавать пустой `voice.cloud`. |
-| `core/voice/config.py` | Резолвер + soft ERROR + legacy normalize. |
+| Файл | Что сделать | Статус |
+|------|-------------|--------|
+| `config.example.yaml` / `config.yaml` | **`voice.stt` / `voice.tts`**: `prefer` + `local/cloud.enable`; без `voice_cloud` / без `is_local`. | ✅ |
+| `.env.example` / `.env` | Комментарии под modality + `stt.cloud.provider`; секреты сохранить. | ✅ |
+| `core/runtime/secrets.py` | Deepgram/Groq → `voice.stt.cloud.*.api_key` (только если modality уже в YAML); Yandex → `voice.tts.cloud`; OpenRouter → `openrouter.api_key`. Не создавать пустой `voice.cloud`. | ✅ |
+| `core/voice/config.py` | Резолвер + soft ERROR + legacy normalize. | ✅ |
+| `STTEngine` OpenRouter provider | Реальный вызов `/audio/transcriptions` + fallback local | ⬜ |
 
 **Приёмка:**
 
 - [ ] `stt.cloud.enable` + `provider=openrouter` + turbo → короткий клип; лог `STT(OpenRouter): …`.
 - [ ] Ключ только из `OPENROUTER_API_KEY` / `openrouter.api_key`.
 - [ ] `provider=deepgram|groq` и `stt.local.enable` (faster-whisper) без регрессий.
-- [ ] Оба `enable=false` / нет ключей → soft ERROR, ядро стартует.
-- [ ] Нет отдельного `voice_cloud` в example/local; `STTEngine` читает через `resolve_stt_runtime`.
-- [ ] `.env*` структурированы; в логах нет API key.
-- [ ] Дока: https://openrouter.ai/docs/guides/overview/multimodal/stt
+- [x] Оба `enable=false` / нет ключей → soft ERROR, ядро стартует.
+- [x] Нет отдельного `voice_cloud` в example/local; `STTEngine` читает через `resolve_stt_runtime`.
+- [x] `.env*` структурированы; в логах нет API key.
+- [ ] Дока: https://openrouter.ai/docs/guides/overview/multimodal/stt (+ краткая заметка в config-reference).
 
 ---
 
