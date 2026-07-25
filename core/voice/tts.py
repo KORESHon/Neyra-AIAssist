@@ -1,11 +1,7 @@
-"""
-Совместимость с новой структурой Neyra 2.0.
+"""Compat re-export — prefer ``from core.voice.yandex_tts import synthesize_to_wav_bytes``."""
 
-Активный runtime текстового бота не использует TTS напрямую, но модуль
-оставлен в core/voice для облачных сценариев/будущих интерфейсов.
-"""
+from __future__ import annotations
 
-from core.yandex_tts import YandexTTS  # re-export
+from core.voice.yandex_tts import synthesize_to_wav_bytes
 
-__all__ = ["YandexTTS"]
-
+__all__ = ["synthesize_to_wav_bytes"]

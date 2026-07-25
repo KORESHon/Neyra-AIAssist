@@ -24,7 +24,7 @@ class SemanticIndex(Protocol):
 
 
 class ChromaSemanticIndex:
-    """Thin adapter over legacy LongTermMemory (Chroma)."""
+    """Thin adapter over LongTermMemory (Chroma)."""
 
     def __init__(self, long_memory: Any):
         self._ltm = long_memory

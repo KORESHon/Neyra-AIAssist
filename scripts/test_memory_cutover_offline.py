@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.memory import MemoryHub
-from core.memory.legacy import NeyraDiary, PeopleDB
+from core.memory.stores import NeyraDiary, PeopleDB
 from core.reflection import ReflectionEngine
 from core.timeutil import now_local
 

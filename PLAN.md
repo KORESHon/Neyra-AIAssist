@@ -268,9 +268,9 @@ Cutover-флаги (`hub_legacy_import`, `hub_legacy_fallback`, `hub_dual_write_
 | 2 | **Shim-слой плагинов:** `core/plugin_*.py` → re-export из `core.plugins` | старые `from core.plugin_loader import …` не ломаются | `[x]` |
 | 3 | **`core/llm/`:** перенести profile/retry/openrouter_balance (+ при необходимости тонкий `__init__`) | все callers обновлены или через shim; resolve_* / backoff без регрессии | `[x]` |
 | 4 | **`core/runtime/`:** server / health / win_runtime / secrets | `main.py` / `run_neyra_server` / healthcheck зелёные | `[x]` |
-| 5 | **`core/voice/` унификация:** свести root `stt.py` / `yandex_tts.py` с пакетом `voice/`; убрать дубли импортов | один канонический путь импорта; Discord/voice callers ок | `[ ]` |
-| 6 | **Memory naming cleanup:** переименовать `core/memory/legacy.py` в нейтральное имя; обновить `__init__` + shims | нет «legacy» в имени модуля при полностью abandoned file-store; smokes зелёные | `[ ]` |
-| 7 | **Чистка дублей / мёртвого кода** после cutover: unused imports, устаревшие комментарии «dual-write/fallback», мёртвые пути | `rg` по `hub_legacy`/`dual_write`/`import-legacy` в коде = только docs/history; compileall чистый | `[ ]` |
+| 5 | **`core/voice/` унификация:** свести root `stt.py` / `yandex_tts.py` с пакетом `voice/`; убрать дубли импортов | один канонический путь импорта; Discord/voice callers ок | `[x]` |
+| 6 | **Memory naming cleanup:** переименовать `core/memory/legacy.py` в нейтральное имя; обновить `__init__` + shims | нет «legacy» в имени модуля при полностью abandoned file-store; smokes зелёные | `[x]` |
+| 7 | **Чистка дублей / мёртвого кода** после cutover: unused imports, устаревшие комментарии «dual-write/fallback», мёртвые пути | `rg` по `hub_legacy`/`dual_write`/`import-legacy` в коде = только docs/history; compileall чистый | `[~]` docstring/naming cleanup в memory; полный sweep comments — по ходу |
 | 8 | **`agent.py` раскладка (осторожно):** вынести крупные куски (chat turn / prompt build / tools wiring) в `core/agent/` *без* смены поведения | `NeyraAgent` публичный API стабилен; smoke chat path / compileall | `[ ]` *можно вторым коммитом/под-PR если слишком жирно* |
 | 9 | **Обновить импорты потребителей:** `main.py`, Internal API, Discord, scripts, MCP, docs/examples | нет «сломанных» абсолютных импортов на старые модули без shim | `[ ]` |
 | 10 | **Доки:** короткий ADR или раздел в PLAN «Core layout 1B» + обновить setup-доки при смене канонических импортов плагинов | ревьюер понимает канон vs shim | `[ ]` |
