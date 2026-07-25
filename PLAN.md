@@ -60,7 +60,7 @@
 
 **Цель:** пересобрать базу памяти и структуру ядра: один Memory API, SQLite как source of truth для основного контента, Chroma только как семантический индекс «что вспомнить», полный chat log в БД; затем — чистка дублей и раскладка `core/` по папкам. Фундамент должен быть жёстким: без полуlegacy-путей и без «файлов-призраков» рядом с Hub.
 
-**Статус:** **1A принято в `main`**. **1B** (layout packages) — [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6), offline-приёмка зелёная → merge. Дальше — фаза **1R** (глубокий рефакторинг / split монолитов / раскладка остатков `core/`).
+**Статус:** **1A** и **1B** приняты в `main` ([PR #1](https://github.com/KORESHon/Neyra-AIAssist/pull/1), [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6) merged `1d61ed5`). Дальше — фаза **1R** (глубокий рефакторинг / split монолитов / раскладка остатков `core/`).
 
 ### Прогресс фазы 1A (факт в main)
 
@@ -289,7 +289,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 
 ### Фаза 1R — глубокий рефакторинг `core/` (после merge 1B)
 
-**Трек:** отдельный PR / ветка `feat/core-refactor-1r` (создаётся после merge 1B).
+**Трек:** ветка `feat/core-refactor-1r` / отдельный PR после merge 1B.
 
 **Суть (простыми словами):** да, «расфасовать по полкам» — большие файлы режем на логические модули, даём файлам понятные имена, раскладываем по подпапкам `core/`, попутно вычищаем костыли и баги. Это уже не package-move 1B, а полный рефакторинг кода.
 
@@ -330,7 +330,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 - [x] Fast-Path умного дома — **отложено в этап 2** (решение зафиксировано: не блокирует cutover 1A; edge — с колонкой на этапе 4).
 - [x] Финал 1A: legacy-импорт полностью абандонен (`core/memory/legacy_import.py` удалён, `run_hub_legacy_import`/`POST /v1/memory/import-legacy`/marker-gated авто-импорт убраны); при подключённом Hub file PeopleDB/Diary/journal/WM больше не пишутся (SQLite only); без Hub `PeopleDB`/`NeyraDiary` — чисто in-memory (без файлового I/O вообще); `ReflectionEngine` без Hub читает diary из `agent.diary` (RAM), а не JSONL, и не пишет `journal.json`. **Merged в main 2026-07-24.**
 
-**Фаза 1B** *(трек: [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6))*
+**Фаза 1B** *(принято в `main` через [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6), `1d61ed5`)*
 
 - [x] `core/plugins/` (plugin_manager): loader/config/sdk/builder + path jail / reload / rollback; shims; lazy builder.
 - [x] `core/llm/` + `core/runtime/` + унификация `core/voice/`; lazy heavy exports; импорты зелёные (канон или shim).
