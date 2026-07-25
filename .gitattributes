@@ -1,1 +1,4 @@
 *.jar filter=lfs diff=lfs merge=lfs -text
+
+# Keep shell launchers LF so bash/WSL does not choke on CRLF.
+*.sh text eol=lf

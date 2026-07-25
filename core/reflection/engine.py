@@ -105,7 +105,7 @@ class ReflectionEngine:
         if hub is None:
             # No Hub: keep in-memory only (legacy journal.json store abandoned).
             if bus is not None:
-                from core.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
+                from core.runtime.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
 
                 bus.publish(
                     CoreEvent(
@@ -143,7 +143,7 @@ class ReflectionEngine:
                 )
             return False
         if bus is not None:
-            from core.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
+            from core.runtime.event_bus import MEMORY_JOURNAL_UPDATED, CoreEvent
 
             bus.publish(
                 CoreEvent(
@@ -217,7 +217,7 @@ class ReflectionEngine:
         if not sync_after:
             return
         try:
-            from core.backup_manager import BackupManager
+            from core.runtime.backup import BackupManager
 
             mgr = BackupManager(self.config)
             res = await asyncio.to_thread(mgr.run_backup, "post_big_reflection")
@@ -391,7 +391,7 @@ class ReflectionEngine:
             llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
                 self.agent, "llm_reflection", self.agent.llm
             )
-            from core.llm_retry import ainvoke_with_rate_limit_backoff
+            from core.llm.retry import ainvoke_with_rate_limit_backoff
 
             response = await ainvoke_with_rate_limit_backoff(
                 llm_reflect, [HumanMessage(content=prompt)], lane="memory_model"
@@ -416,12 +416,12 @@ class ReflectionEngine:
             return ""
 
     def _parse_iso_ts(self, raw: str) -> Optional[datetime]:
-        from core.timeutil import parse_ts
+        from core.runtime.timeutil import parse_ts
 
         return parse_ts(raw)
 
     def _diary_lines_from_hub(self, hub, cutoff: datetime) -> str:
-        from core.timeutil import to_local
+        from core.runtime.timeutil import to_local
 
         rows: list[tuple[datetime, str]] = []
         try:
@@ -449,7 +449,7 @@ class ReflectionEngine:
 
     def _diary_lines_from_agent(self, cutoff: datetime) -> str:
         """No-Hub path: read agent.diary in-memory (_local via recent()), never JSONL files."""
-        from core.timeutil import to_local
+        from core.runtime.timeutil import to_local
 
         agent = getattr(self, "agent", None)
         diary = getattr(agent, "diary", None) if agent is not None else None
@@ -482,7 +482,7 @@ class ReflectionEngine:
 
     def _get_diary_last_24h(self) -> str:
         """Diary for nightly reflect: Hub SQLite when attached, else agent.diary RAM."""
-        from core.timeutil import cutoff_hours
+        from core.runtime.timeutil import cutoff_hours
 
         cutoff = cutoff_hours(24)
         hub = self._memory_hub()
@@ -491,7 +491,7 @@ class ReflectionEngine:
         return self._diary_lines_from_agent(cutoff)
 
     def _chat_lines_from_hub(self, *, cutoff: Optional[datetime] = None, date_str: Optional[str] = None) -> str:
-        from core.timeutil import to_local
+        from core.runtime.timeutil import to_local
 
         hub = self._memory_hub()
         if hub is None:
@@ -546,7 +546,7 @@ class ReflectionEngine:
 
     def _get_logs_for_last_hours(self, hours: int) -> str:
         """Читает строки чата за последние N часов (Hub SQLite при наличии, иначе chat.log)."""
-        from core.timeutil import cutoff_hours
+        from core.runtime.timeutil import cutoff_hours
 
         cutoff = cutoff_hours(max(1, int(hours)))
         if self._memory_hub() is not None:
@@ -564,7 +564,7 @@ class ReflectionEngine:
                 except Exception:
                     continue
                 # chat.log lines are naive local wall time — compare in host local
-                from core.timeutil import to_local
+                from core.runtime.timeutil import to_local
 
                 if to_local(ts) >= cutoff:
                     lines.append(line)
@@ -620,7 +620,7 @@ class ReflectionEngine:
             llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
                 self.agent, "llm_reflection", self.agent.llm
             )
-            from core.llm_retry import ainvoke_with_rate_limit_backoff
+            from core.llm.retry import ainvoke_with_rate_limit_backoff
 
             response = await ainvoke_with_rate_limit_backoff(
                 llm_reflect, [HumanMessage(content=prompt)], lane="memory_model"
@@ -670,7 +670,7 @@ class ReflectionEngine:
             llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
                 self.agent, "llm_reflection", self.agent.llm
             )
-            from core.llm_retry import ainvoke_with_rate_limit_backoff
+            from core.llm.retry import ainvoke_with_rate_limit_backoff
 
             response = await ainvoke_with_rate_limit_backoff(
                 llm_reflect, [HumanMessage(content=prompt)], lane="memory_model"
@@ -693,14 +693,14 @@ class ReflectionEngine:
             return ""
 
     def _ltm_scheduled_prune_job(self) -> None:
-        from core.ltm_maintenance import run_scheduled_prune
+        from core.memory.ltm_maintenance import run_scheduled_prune
 
         if self.agent is None:
             return
         run_scheduled_prune(self.agent, self.config)
 
     async def _ltm_scheduled_summarize_job(self) -> None:
-        from core.ltm_maintenance import run_scheduled_summarize
+        from core.memory.ltm_maintenance import run_scheduled_summarize
 
         if self.agent is None:
             return

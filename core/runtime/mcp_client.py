@@ -1,5 +1,5 @@
 """
-core/mcp_client.py — MCP-клиент для динамического подключения внешних MCP-серверов (stdio / SSE).
+core.runtime.mcp_client — MCP-клиент для внешних MCP-серверов (stdio / SSE).
 
 Конфигурация: config.yaml → mcp_client.servers — см. config.example.yaml.
 """

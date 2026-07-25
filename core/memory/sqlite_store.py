@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.memory.migrations import MIGRATIONS
-from core.timeutil import now_storage_iso, to_utc_iso
+from core.runtime.timeutil import now_storage_iso, to_utc_iso
 
 logger = logging.getLogger("neyra.memory.sqlite")
 

@@ -22,7 +22,7 @@ logger = logging.getLogger("neyra.ltm")
 
 
 def project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def resolve_ltm_archive_dir(config: dict, root: Optional[Path] = None) -> Path:

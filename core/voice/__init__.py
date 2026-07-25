@@ -2,8 +2,8 @@
 Cloud voice adapters (STT/TTS) for Neyra.
 
 Canonical: ``from core.voice.stt import STTEngine``,
-``from core.voice.yandex_tts import synthesize_to_wav_bytes``.
-Root ``core.stt`` / ``core.yandex_tts`` remain as compat shims.
+``from core.voice.yandex_tts import synthesize_to_wav_bytes``,
+``from core.voice.vision_util import prepare_image_for_vision``.
 """
 
 from __future__ import annotations

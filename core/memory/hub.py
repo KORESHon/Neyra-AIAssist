@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from core.event_bus import (
+from core.runtime.event_bus import (
     MEMORY_CHAT_LOG_APPEND,
     MEMORY_JOURNAL_UPDATED,
     MEMORY_LONG_TERM_WRITE,
@@ -17,7 +17,7 @@ from core.event_bus import (
 )
 from core.memory.semantic_index import ChromaSemanticIndex, SemanticIndex
 from core.memory.sqlite_store import SqliteStore
-from core.timeutil import configure_timezone, now_storage_iso, to_utc_iso
+from core.runtime.timeutil import configure_timezone, now_storage_iso, to_utc_iso
 
 logger = logging.getLogger("neyra.memory.hub")
 
@@ -498,7 +498,7 @@ class MemoryHub:
         self, internal_user_id: str, *, root: Any = None
     ) -> str:
         """WM snippet for prompt: latest SQLite snapshot only (Hub is the sole WM store)."""
-        from core import working_memory as wm
+        from core.memory import working_memory as wm
 
         snap = self.sqlite.latest_wm_snapshot(user_id=internal_user_id)
         if snap and str(snap.get("content") or "").strip():

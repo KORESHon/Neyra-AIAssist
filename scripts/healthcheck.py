@@ -30,8 +30,8 @@ def load_dotenv(root: Path) -> None:
 def load_config(root: Path) -> dict:
     import yaml
 
-    from core.plugin_config import merge_plugin_configs
-    from core.secrets_loader import apply_env_secrets
+    from core.plugins.config import merge_plugin_configs
+    from core.runtime.secrets import apply_env_secrets
 
     cfg_path = root / "config.yaml"
     if not cfg_path.is_file():
@@ -62,7 +62,7 @@ def check_files(root: Path) -> list[str]:
 
 
 def check_llm_config_and_env(cfg: dict) -> list[str]:
-    from core.llm_profile import resolve_openai_compatible_connection
+    from core.llm.profile import resolve_openai_compatible_connection
 
     errs: list[str] = []
     try:
@@ -86,7 +86,7 @@ def check_discord_token(mode: str, cfg: dict, root: Path) -> list[str]:
     """Для core: если плагин discord включён в plugin.yaml — нужен DISCORD_TOKEN в .env."""
     if mode != "core":
         return []
-    from core.plugin_loader import PluginLoader
+    from core.plugins.loader import PluginLoader
 
     for m in PluginLoader(root).discover_manifests():
         if m.id == "discord" and m.enabled and m.lifecycle == "resident":
@@ -103,7 +103,7 @@ def check_discord_token(mode: str, cfg: dict, root: Path) -> list[str]:
 
 
 def check_llm_models_probe(cfg: dict) -> list[str]:
-    from core.llm_profile import resolve_openai_compatible_connection
+    from core.llm.profile import resolve_openai_compatible_connection
 
     errs: list[str] = []
     try:

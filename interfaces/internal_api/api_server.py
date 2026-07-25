@@ -31,10 +31,10 @@ from core.runtime.win_runtime import apply_runtime_patches
 
 apply_runtime_patches()
 
-from core.agent import NeyraAgent
-from core.backup_manager import BackupManager
-from core.event_bus import CoreEvent
-from core.ltm_maintenance import execute_ltm_summarize
+from core.neyra import NeyraAgent
+from core.runtime.backup import BackupManager
+from core.runtime.event_bus import CoreEvent
+from core.memory.ltm_maintenance import execute_ltm_summarize
 from core.plugins import PluginContext, PluginLoader, run_plugin_entrypoint
 from core.reflection import ReflectionEngine
 from core.runtime import HealthMonitor
@@ -1745,7 +1745,7 @@ def build_app(
 
 
 def run_internal_api(config: dict) -> None:
-    """Точка входа плагина `api`: делегирует в ядро `core.server.run_neyra_server`."""
+    """Точка входа плагина `api`: делегирует в ядро `core.runtime.server.run_neyra_server`."""
     from core.runtime import run_neyra_server
 
     run_neyra_server(config)

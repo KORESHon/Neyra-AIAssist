@@ -60,7 +60,7 @@
 
 **Цель:** пересобрать базу памяти и структуру ядра: один Memory API, SQLite как source of truth для основного контента, Chroma только как семантический индекс «что вспомнить», полный chat log в БД; затем — чистка дублей и раскладка `core/` по папкам. Фундамент должен быть жёстким: без полуlegacy-путей и без «файлов-призраков» рядом с Hub.
 
-**Статус:** **1A принято в `main`**. **1B** (layout packages) — [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6), offline-приёмка зелёная → merge. Дальше — фаза **1R** (глубокий рефакторинг / split монолитов / раскладка остатков `core/`).
+**Статус:** **1A** и **1B** приняты в `main` ([PR #1](https://github.com/KORESHon/Neyra-AIAssist/pull/1), [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6) merged `1d61ed5`). Дальше — фаза **1R** (глубокий рефакторинг / split монолитов / раскладка остатков `core/`).
 
 ### Прогресс фазы 1A (факт в main)
 
@@ -243,7 +243,7 @@ Cutover-флаги (`hub_legacy_import`, `hub_legacy_fallback`, `hub_dual_write_
 **Трек:** ветка `feat/core-layout-1b` / [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6). **Не трогать контракты Memory Hub** без нужды — 1A уже в `main`. Цель 1B: читаемая раскладка пакетов + единый plugin surface, без поведенческих регрессий.
 
 **Правила фазы:**
-- Совместимость импортов: старые пути (`core.plugin_loader`, `core.llm_profile`, …) остаются как **тонкие re-export shim** минимум на один релиз после раскладки; канон — новые пакеты.
+- Совместимость импортов: flat shims 1B сняты в фазе **1R (задача 7)** — канон только `core.plugins.*` / `core.llm.*` / `core.runtime.*` / `core.memory.*` / `core.voice.*`.
 - Не менять External API / Event Bus имена событий.
 - Не раздувать scope: Fast-Path / этап 2 / sqlite-vss — **вне** 1B.
 - После каждого логического шага: `python -m compileall -q core interfaces scripts main.py` + memory smokes + `scripts/healthcheck.py`.
@@ -289,7 +289,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 
 ### Фаза 1R — глубокий рефакторинг `core/` (после merge 1B)
 
-**Трек:** отдельный PR / ветка `feat/core-refactor-1r` (создаётся после merge 1B).
+**Трек:** ветка `feat/core-refactor-1r` / [PR #7](https://github.com/KORESHon/Neyra-AIAssist/pull/7).
 
 **Суть (простыми словами):** да, «расфасовать по полкам» — большие файлы режем на логические модули, даём файлам понятные имена, раскладываем по подпапкам `core/`, попутно вычищаем костыли и баги. Это уже не package-move 1B, а полный рефакторинг кода.
 
@@ -303,12 +303,24 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 
 | # | Задача | Done when | Статус |
 |---|--------|-----------|--------|
-| 1 | Inventory: монолиты и «корень `core/`» (`agent.py`, `tools.py`, `reflection.py`, …) | список файлов + целевые пакеты/имена в PLAN/PR | `[ ]` |
-| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[ ]` |
-| 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[ ]` |
-| 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[ ]` |
-| 5 | Финальная раскладка по подпапкам `core/` + сужение/снятие shims 1B | канонические импорты везде критичных callers | `[ ]` |
-| 6 | Доки (ADR-0003 или раздел PLAN) + приёмка | compileall + smokes + healthcheck + Auto Review; Discord на стенде | `[ ]` |
+| 1 | Inventory: монолиты и «корень `core/`» (`agent.py`, `tools.py`, `reflection.py`, …) | список файлов + целевые пакеты/имена в PLAN/PR | `[x]` см. карту ниже |
+| 2 | Split `agent.py` → shelves + главный `core/neyra.py` | `NeyraAgent` API стабилен; smokes зелёные | `[x]` оркестратор в `core/neyra.py`; полки в `core/agent/` |
+| 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[x]` `agent/` `reflection/` `tools/` `memory/*` `runtime/*` `voice/*` |
+| 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[x]` seed deepcopy; caption_ok; overflow prefill; short re-ask → reply_pipeline |
+| 5 | Финальная раскладка: в корне `core/` только пакеты + один главный `.py` | канон `from core.neyra import NeyraAgent`; helpers в пакетах | `[x]` корень: `__init__.py` + `neyra.py` + пакеты |
+| 6 | Доки (ADR-0003 или раздел PLAN) + приёмка | compileall + smokes + healthcheck + Auto Review; Discord на стенде | `[x]` offline + MCP chat/WS stream + Discord UX 2026-07-25; Auto Review green |
+| 7 | Удалить дубли/flat shims в корне `core/` | нет теневых shim-файлов; импорты только канонические | `[x]` shims удалены; event_bus/timeutil/… ушли в `runtime`/`voice` |
+
+#### Inventory / целевая карта (1R)
+
+| Сейчас (корень `core/`) | ~строк | Цель |
+|-------------------------|--------|------|
+| **`core/neyra.py`** (главный оркестратор) | ~700 | ✅ канон `from core.neyra import NeyraAgent`; тонкие обёртки; chat/stream → полки |
+| helpers → **`core/agent/`** | полки | ✅ + `chat` / `chat_stream` / reply_pipeline / talk_messages / bootstrap / … |
+| `reflection/` `tools/` `memory/` `llm/` `plugins/` | — | ✅ пакеты |
+| `runtime/` | — | ✅ server/health/secrets + event_bus/identity/timeutil/external_storage/mcp/backup |
+| `voice/` | — | ✅ stt/tts + vision_util |
+| flat shims 1B/1R | — | ✅ удалены |
 
 ---
 
@@ -330,7 +342,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 - [x] Fast-Path умного дома — **отложено в этап 2** (решение зафиксировано: не блокирует cutover 1A; edge — с колонкой на этапе 4).
 - [x] Финал 1A: legacy-импорт полностью абандонен (`core/memory/legacy_import.py` удалён, `run_hub_legacy_import`/`POST /v1/memory/import-legacy`/marker-gated авто-импорт убраны); при подключённом Hub file PeopleDB/Diary/journal/WM больше не пишутся (SQLite only); без Hub `PeopleDB`/`NeyraDiary` — чисто in-memory (без файлового I/O вообще); `ReflectionEngine` без Hub читает diary из `agent.diary` (RAM), а не JSONL, и не пишет `journal.json`. **Merged в main 2026-07-24.**
 
-**Фаза 1B** *(трек: [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6))*
+**Фаза 1B** *(принято в `main` через [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6), `1d61ed5`)*
 
 - [x] `core/plugins/` (plugin_manager): loader/config/sdk/builder + path jail / reload / rollback; shims; lazy builder.
 - [x] `core/llm/` + `core/runtime/` + унификация `core/voice/`; lazy heavy exports; импорты зелёные (канон или shim).
@@ -338,13 +350,14 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 - [x] Offline приёмка: `compileall` + memory smokes + `healthcheck` + Auto Review SUCCESS.
 - [x] Split `agent.py` / глубокий рефакторинг — **вынесены в фазу 1R** (не блокер 1B).
 
-**Фаза 1R** *(после merge 1B)*
+**Фаза 1R** *(трек: [PR #7](https://github.com/KORESHon/Neyra-AIAssist/pull/7))*
 
-- [ ] Inventory монолитов + целевая карта пакетов/имён.
-- [ ] Split `agent.py` и других крупных модулей «по полкам».
-- [ ] Переименования по логическому назначению; аудит костылей/багов.
-- [ ] Финальная раскладка в подпапки `core/`; сужение shims 1B.
-- [ ] `compileall` + memory smokes + healthcheck + Auto Review; Discord на стенде.
+- [x] Inventory монолитов + целевая карта пакетов/имён.
+- [x] Главный оркестратор — `core/neyra.py`; полки — `core/agent/` *(chat / chat_stream / reply_pipeline / talk_messages / …)*.
+- [x] Аудит костылей *(seed deepcopy, caption_ok, overflow retry prefill; short re-ask → reply_pipeline)*.
+- [x] Финальная раскладка корня `core/`: только пакеты + один главный `.py` (`neyra.py`).
+- [x] Удалить дубли/flat shims в корне `core/`.
+- [x] `compileall` + memory smokes + healthcheck + Auto Review; live MCP `/v1/chat` + WS `chat_stream` + Discord UX 2026-07-25.
 ## Этап 2 — Дополнительные улучшения (пакет мелких задач)
 
 *Бывший этап 1 — сдвинут после Memory Hub.*

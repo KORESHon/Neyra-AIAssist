@@ -1,10 +1,10 @@
 """
-core/tools.py — Инструменты (Tools) для агента Нейры
-──────────────────────────────────────────────────────
+core/tools/builtins.py — Инструменты (Tools) для агента Нейры
+──────────────────────────────────────────────────────────────
 LLM может вызывать эти функции сама через Function Calling.
 
-Динамические MCP-инструменты подмешиваются в рантайме (core/mcp_client.py + NeyraAgent._ensure_mcp),
-их имена вида mcp_<server>_<tool>.
+Динамические MCP-инструменты подмешиваются в рантайме
+(core.runtime.mcp_client + NeyraAgent._ensure_mcp), имена вида mcp_<server>_<tool>.
 
 Текущие инструменты:
   • TimeContextTool   — текущее время и дата
@@ -390,7 +390,7 @@ async def delegate_to_deep_logic(detailed_prompt: str) -> str:
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_openai import ChatOpenAI
 
-    from core.llm_profile import (
+    from core.llm.profile import (
         merge_llm_tuning_options,
         resolve_openai_compatible_connection,
         resolved_brain_model_deep,
@@ -461,7 +461,7 @@ def create_or_edit_plugin(plugin_id: str, task: str, api_key: str = "") -> str:
     """
     try:
         logger.info("Tool create_or_edit_plugin: start | plugin_id=%s", (plugin_id or "").strip())
-        from core.plugin_builder_tool import create_or_edit_plugin_impl
+        from core.plugins.builder import create_or_edit_plugin_impl
 
         out = create_or_edit_plugin_impl(plugin_id=plugin_id, task=task, api_key=api_key or None)
         # Возвращаем строку (для tool-calls), но в JSON-формате для наглядности.

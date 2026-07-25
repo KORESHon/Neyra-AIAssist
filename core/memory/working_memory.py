@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from core.timeutil import now_local
+from core.runtime.timeutil import now_local
 
 logger = logging.getLogger("neyra.working_memory")
 
@@ -19,7 +19,7 @@ _LOCK = threading.RLock()
 
 
 def project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def wm_config(config: dict) -> dict[str, Any]:
@@ -178,7 +178,7 @@ async def refresh_working_memory_async(
         )
     )
     try:
-        from core.llm_retry import ainvoke_with_rate_limit_backoff
+        from core.llm.retry import ainvoke_with_rate_limit_backoff
 
         llm = getattr(agent, "llm_memory", None) or getattr(agent, "llm_reflection", None) or agent.llm_talk
         call = llm.bind(max_tokens=max_out) if hasattr(llm, "bind") else llm
@@ -222,12 +222,12 @@ async def refresh_working_memory_async(
         bus = getattr(agent, "event_bus", None)
         if bus is not None and (hub is None or hub_ok):
             try:
-                from core.event_bus import MEMORY_WORKING_MEMORY_UPDATED, CoreEvent
+                from core.runtime.event_bus import MEMORY_WORKING_MEMORY_UPDATED, CoreEvent
 
                 bus.publish(
                     CoreEvent(
                         MEMORY_WORKING_MEMORY_UPDATED,
-                        "core.working_memory",
+                        "core.memory.working_memory",
                         {"path": str(path), "user_id": internal_user_id, "reason": reason},
                     )
                 )

@@ -15,7 +15,7 @@ try:
 except Exception:  # pragma: no cover
     discord = None
 
-from core.event_bus import (
+from core.runtime.event_bus import (
     MUSIC_CLEAR,
     MUSIC_PAUSE,
     MUSIC_PLAY,

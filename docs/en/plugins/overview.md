@@ -13,5 +13,5 @@
 - `config.example.yaml` — шаблон параметров.
 - `config.yaml` — локальный runtime (не в git).
 
-Загрузка и реестр: `core/plugin_loader.py`.
-Контекст запуска: `core/plugin_sdk.py`.
+Загрузка и реестр: `core/plugins/loader.py`.
+Контекст запуска: `core/plugins/sdk.py`.

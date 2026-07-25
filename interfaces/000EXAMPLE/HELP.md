@@ -94,7 +94,7 @@ from pathlib import Path
 
 import yaml
 
-from core.plugin_sdk import PluginContext
+from core.plugins.sdk import PluginContext
 
 
 def _plugin_dir() -> Path:
@@ -185,7 +185,7 @@ from __future__ import annotations
 import asyncio
 
 from core.agent import NeyraAgent
-from core.plugin_sdk import PluginContext
+from core.plugins.sdk import PluginContext
 
 
 def run_plugin(ctx: PluginContext) -> None:
@@ -261,7 +261,7 @@ def run_plugin(ctx: PluginContext) -> None:
 
 ## Process model: core vs console
 
-1. **`python main.py`** (or `--mode core`) starts **`core.server.run_neyra_server`**: one FastAPI app, dashboard static files, one `NeyraAgent`, reflection scheduler, health monitor, and **resident** plugins (e.g. Discord) in background threads.
+1. **`python main.py`** (or `--mode core`) starts **`core.runtime.server.run_neyra_server`**: one FastAPI app, dashboard static files, one `NeyraAgent`, reflection scheduler, health monitor, and **resident** plugins (e.g. Discord) in background threads.
 2. **`python main.py --mode console`** runs the **terminal chat** only — no HTTP stack; use it to iterate on prompts.
 3. Plugins do **not** register separate global CLI modes. Keep **`cli_modes: []`** unless you need a reserved string for a future invoke API. For ad-hoc runs, use **`scripts/invoke_plugin.py <plugin_id>`**.
 
@@ -271,7 +271,7 @@ Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for 
 
 ## Loader API
 
-`**core/plugin_loader.py`** — class `**PluginLoader`** (construct with project root, same as `main.py`: `PluginLoader(project_root)`).
+`**core/plugins/loader.py`** — class `**PluginLoader`** (construct with project root, same as `main.py`: `PluginLoader(project_root)`).
 
 
 | Method                            | Purpose                                                                                              |
@@ -285,7 +285,7 @@ Chain for production: core process → `PluginLoader` → `run_plugin(ctx)` for 
 | `set_enabled(plugin_id, enabled)` | Persist `enabled` in the matching `plugin.yaml`.                                                     |
 
 
-`**core/plugin_sdk.py`:**
+`**core/plugins/sdk.py`:**
 
 
 | Name                                 | Purpose                                               |
