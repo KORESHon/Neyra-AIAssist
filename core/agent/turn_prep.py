@@ -30,6 +30,7 @@ class TurnPrep:
     attached_caption: str
     talk_vm: Optional[list[tuple[str, str]]]
     has_vis_prompt: bool
+    include_appearance: bool
     brain_sys: str
 
 
@@ -100,6 +101,14 @@ async def prepare_turn(
         talk_vm = None if (vision_images and agent.llm_vision) else vision_images
         has_vis_prompt = bool(vision_images) and not caption_ok and agent.llm_vision is None
 
+    from core.agent.persona import should_inject_appearance
+
+    include_appearance = should_inject_appearance(
+        agent.config,
+        user_message=user_message,
+        has_vision_images=bool(vision_images),
+    )
+
     brain_sys = agent._build_brain_system_prompt(
         extra_memories=memories,
         people_context_active=people_active,
@@ -133,5 +142,6 @@ async def prepare_turn(
         attached_caption=attached_caption,
         talk_vm=talk_vm,
         has_vis_prompt=has_vis_prompt,
+        include_appearance=include_appearance,
         brain_sys=brain_sys,
     )

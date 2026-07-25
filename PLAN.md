@@ -160,9 +160,9 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 
 **Приёмка:**
 
-- [ ] Два артефакта на диске + ключи в example/local config.
+- [x] Два артефакта на диске + ключи в example/local config (`prompts/*.example.md`, local `*.md` gitignored).
 - [ ] Обычный текстовый чат не деградирует (smoke Discord/MCP).
-- [ ] Запрос про внешность / картинка — appearance реально участвует в контексте.
+- [x] Запрос про внешность / картинка — appearance подмешивается в talk (`include_appearance`).
 
 ---
 

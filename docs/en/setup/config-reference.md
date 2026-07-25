@@ -10,7 +10,7 @@
 `config.yaml` содержит только базовый runtime-конфиг ядра.
 
 ## Key sections
-- `assistant`
+- `assistant` — `name`, `persona_path` / `appearance_path` (Stage 2A), `system_prompt` fallback
 - `BACKEND`, `openrouter`, `llm` — per-role nested blocks: **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** (VL + vision pipeline; no top-level **`vision:`**).
 - `memory`
 - `voice` — per modality: `stt` / `tts` each with `prefer` + `local`/`cloud`.`enable` (soft ERROR if unset; legacy `voice_cloud` / `is_local` still normalized)

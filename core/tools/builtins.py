@@ -364,15 +364,21 @@ def get_character_profile() -> str:
     Возвращает краткий профиль характера Нейры и базовые правила стиля.
     Используй, если нужно свериться с тоном, манерой речи и ограничениями.
     """
+    from pathlib import Path
+
+    from core.agent.persona import load_persona_text
+
     cfg = _assistant_cfg or {}
     name = str(cfg.get("name") or "Нейра")
-    prompt = str(cfg.get("system_prompt") or "")
+    root = Path(__file__).resolve().parents[2]
+    full_cfg = _neyra_config if isinstance(_neyra_config, dict) and _neyra_config else {"assistant": cfg}
+    prompt = load_persona_text(full_cfg, root)
     # Короткая выжимка, чтобы не раздувать контекст при tool-call.
     return (
         f"Профиль: {name}. Тон: живой разговорный, с иронией по ситуации; русский язык; "
         "короткие ответы 1-3 предложения; без markdown/служебных тегов; "
         "без инструкций для реального вреда."
-        + (f" В системном промпте настроено: {prompt[:220]}..." if prompt else "")
+        + (f" В persona настроено: {prompt[:220]}..." if prompt else "")
     )
 
 

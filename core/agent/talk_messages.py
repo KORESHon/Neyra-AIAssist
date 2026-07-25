@@ -42,6 +42,7 @@ def build_talk_system_prompt(
         brain_router_context=brain_context or "",
         attached_image_caption=caption_ok,
         working_memory_context=prep.wm_snip,
+        include_appearance=bool(getattr(prep, "include_appearance", False)),
     )
 
 

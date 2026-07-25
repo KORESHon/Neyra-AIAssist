@@ -40,10 +40,23 @@ assistant:
   # RU: Публичное имя ассистента для логов и интерфейса.
   name: "Neyra"
 
-  # EN: Base system prompt injected by the agent on every turn.
-  # RU: Базовый системный промпт, подмешивается агентом в каждый ход.
-  # EN: Keep this version generic in public repos; put private persona locally.
-  # RU: В публичном репо держи здесь нейтральный текст; приватную персону храни локально.
+  # EN: Stage 2A — persona / appearance as editable files (copy *.example.md → *.md).
+  # RU: Этап 2A — личность и визуал отдельными файлами (скопируй *.example.md → *.md).
+  persona_path: "prompts/persona.md"
+  appearance_path: "prompts/appearance.md"
+  # EN: false = inject appearance only for vision / «how do you look» turns.
+  # RU: false = подмешивать внешность только при vision / вопросах про вид.
+  appearance_always: false
+  # EN: When appearance_always=true, cap injected chars (0 = no cap).
+  # RU: При appearance_always=true — лимит символов (0 = без лимита).
+  appearance_max_chars: 400
+  # EN: Compact identity snippet for brain lane (not full talk style).
+  # RU: Компактная выжимка личности для brain (не полный talk-стиль).
+  persona_in_brain: true
+  persona_brain_max_chars: 600
+
+  # EN: Fallback if persona.md is missing. Prefer editing prompts/persona.md.
+  # RU: Fallback, если нет persona.md. Лучше править prompts/persona.md.
   system_prompt: |
     You are Neyra, a conversational AI assistant.
     Reply in concise, natural language and be helpful.

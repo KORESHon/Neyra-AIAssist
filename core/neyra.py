@@ -174,12 +174,19 @@ class NeyraAgent:
         brain_router_context: str = "",
         attached_image_caption: str = "",
         working_memory_context: str = "",
+        include_appearance: bool = False,
     ) -> str:
         """Собирает системный промпт. Порядок (B2): роль → активный → упомянутые → правила → RAG → остальное."""
+        from core.agent.persona import build_talk_base_prompt
         from core.agent.prompts import build_talk_system_prompt
 
+        base_prompt = build_talk_base_prompt(
+            self.config,
+            self._project_root,
+            include_appearance=include_appearance,
+        )
         return build_talk_system_prompt(
-            base_prompt=self.config["assistant"]["system_prompt"],
+            base_prompt=base_prompt,
             backend=self.backend,
             micro_plan=self._micro_plan_settings(),
             extra_memories=extra_memories,
@@ -212,10 +219,12 @@ class NeyraAgent:
         last_image_context: Optional[str] = None,
         working_memory_context: str = "",
     ) -> str:
-        """Компактный системный промпт для brain: инструменты и факты, без личности talk-модели."""
+        """Компактный системный промпт для brain: инструменты/факты + короткий identity snippet."""
+        from core.agent.persona import persona_brain_snippet
         from core.agent.prompts import build_brain_system_prompt
 
         return build_brain_system_prompt(
+            identity_snippet=persona_brain_snippet(self.config, self._project_root),
             extra_memories=extra_memories,
             people_context_active=people_context_active,
             people_context_mentioned=people_context_mentioned,

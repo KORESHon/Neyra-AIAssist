@@ -187,6 +187,7 @@ def build_talk_system_prompt(
 
 def build_brain_system_prompt(
     *,
+    identity_snippet: str = "",
     extra_memories: Optional[list[str]] = None,
     people_context_active: str = "",
     people_context_mentioned: str = "",
@@ -198,14 +199,16 @@ def build_brain_system_prompt(
     last_image_context: Optional[str] = None,
     working_memory_context: str = "",
 ) -> str:
-    """Compact brain-lane system prompt: tools/facts, no talk personality."""
+    """Compact brain-lane system prompt: tools/facts + optional identity snippet."""
     lines: list[str] = [
         "Ты служебный маршрутизатор (brain) ассистента Нейра.",
-        "Не имитируй финальный ответ пользователю и не включай личность Нейры.",
+        "Не имитируй финальный ответ пользователю и не копируй разговорный стиль talk-модели.",
         "Если доступны инструменты — вызывай их через tool_calls, когда это нужно для фактов.",
         "Когда данных достаточно или инструменты не нужны — выдай сжатое резюме для следующей модели (talk): "
         "факты, результаты инструментов, намерение пользователя; по-русски; без приветствий и без тегов мышления.",
     ]
+    if (identity_snippet or "").strip():
+        lines.append(identity_snippet.strip())
     if username:
         lines.append(f"Текущий собеседник в подписи сообщений: {username}.")
     if people_context_active:
