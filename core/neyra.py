@@ -89,38 +89,10 @@ class NeyraAgent:
 
     def _setup_memory(self):
         """Инициализирует все модули памяти."""
-        from core.memory import LongTermMemory, MemoryHub, NeyraDiary, PeopleDB, ShortTermMemory
+        from core.agent.bootstrap import setup_memory
 
-        mem_cfg = self.config.get("memory", {}) or {}
-        stm_max = int(mem_cfg.get("stm_max_messages") or 10)
-        self.short_memory = ShortTermMemory(max_messages=max(2, stm_max))
-        self.long_memory = LongTermMemory(self.config)
-        self.people_db = PeopleDB(self.config)
-        self.diary = NeyraDiary(self.config)
-        self.memory_hub = MemoryHub(
-            self.config,
-            long_memory=self.long_memory,
-            event_bus=self.event_bus,
-        )
-        self.people_db.memory_hub = self.memory_hub
-        self.diary.memory_hub = self.memory_hub
-        # Hub SQLite is the source of truth for PeopleDB — always hydrate in-memory cache from it.
-        try:
-            self.people_db.hydrate_from_hub(self.memory_hub)
-        except Exception as e:
-            logger.warning("PeopleDB hydrate_from_hub failed: %s", e)
+        setup_memory(self)
 
-        # Не блокируем старт бота тяжёлой загрузкой embedder'а:
-        # RAG поднимется в фоне, а при первом запросе есть ленивый fallback.
-        if bool(mem_cfg.get("rag_init_in_background", True)):
-            logger.info("Инициализирую долгосрочную память в фоне...")
-            self.long_memory.initialize_async()
-        else:
-            logger.info("Инициализирую долгосрочную память...")
-            self.long_memory.initialize()
-
-        # Создаём начальные досье если их нет
-        self._init_people_db()
 
     async def _append_turn_to_chat_log(
         self,
@@ -154,63 +126,33 @@ class NeyraAgent:
 
     def _setup_tools(self):
         """Инициализирует инструменты (вызываются вручную, не через bind_tools)."""
-        from core.tools import ALL_TOOLS, init_tools
+        from core.agent.bootstrap import setup_tools
 
-        init_tools(
-            self.long_memory,
-            self.people_db,
-            self.config.get("assistant") or {},
-            neyra_config=self.config,
-            memory_hub=self.memory_hub,
-        )
-        self.tools = {t.name: t for t in ALL_TOOLS}
-        self.mcp_manager = None
-        self._mcp_merge_done = False
-        mc = self.config.get("mcp_client") if isinstance(self.config.get("mcp_client"), dict) else {}
-        if mc.get("enabled"):
-            from core.runtime.mcp_client import MCPClientManager
+        setup_tools(self)
 
-            self.mcp_manager = MCPClientManager(self.config)
-        logger.info(f"Tools готовы: {list(self.tools.keys())}")
 
     async def start_mcp_clients(self) -> None:
         """Подключить MCP-серверы и добавить динамические tools (идемпотентно)."""
         await self._ensure_mcp()
 
     async def stop_mcp_clients(self) -> None:
-        if not self.mcp_manager:
-            return
-        try:
-            await self.mcp_manager.stop()
-        except Exception as e:
-            logger.debug("MCP stop: %s", e)
-        self._mcp_merge_done = False
+        from core.agent.bootstrap import stop_mcp
+
+        await stop_mcp(self)
+
 
     async def _ensure_mcp(self) -> None:
-        if self._mcp_merge_done or not self.mcp_manager:
-            return
-        try:
-            await self.mcp_manager.start()
-        except Exception as e:
-            logger.exception("MCP: не удалось запустить клиенты: %s", e)
-        try:
-            for t in self.mcp_manager.get_langchain_tools():
-                self.tools[t.name] = t
-        except Exception as e:
-            logger.warning("MCP: список инструментов недоступен: %s", e)
-        self._mcp_merge_done = True
-        logger.info("MCP: после merge доступно tools=%s", len(self.tools))
+        from core.agent.bootstrap import ensure_mcp
+
+        await ensure_mcp(self)
+
 
     def _setup_logs(self):
         """Создаёт директории и файлы для логов."""
-        mem_cfg = self.config.get("memory", {})
-        log_cfg = self.config.get("logging", {})
+        from core.agent.bootstrap import setup_logs
 
-        self.thoughts_log_path = Path(mem_cfg.get("thoughts_log", "./memory/thoughts.log"))
-        self.chat_log_path = Path(log_cfg.get("chat_log", "./logs/chat.log"))
+        setup_logs(self)
 
-        self.thoughts_log_path.parent.mkdir(parents=True, exist_ok=True)
-        self.chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _init_people_db(self):
         """Засеивает базовые досье, только если Hub/PeopleDB ещё пусты (никакого JSON-импорта)."""
@@ -432,28 +374,15 @@ class NeyraAgent:
         return self.llm
 
     def _extract_model_name(self, payload: Any) -> Optional[str]:
-        """Пытается достать model name из response_metadata/metadata LangChain объекта."""
-        md = getattr(payload, "response_metadata", None) or {}
-        if isinstance(md, dict):
-            model = md.get("model_name") or md.get("model")
-            if model:
-                return str(model)
-        md2 = getattr(payload, "metadata", None) or {}
-        if isinstance(md2, dict):
-            model = md2.get("model_name") or md2.get("model")
-            if model:
-                return str(model)
-        return None
+        from core.agent.llm_stream import extract_model_name
+
+        return extract_model_name(payload)
 
     def _log_model_route(self, used_model: Optional[str], *, lane: str = "talk") -> None:
-        if not used_model:
-            return
-        primary = str(getattr(self, "llm_primary_model", "") or "")
-        fallback = str(getattr(self, "llm_fallback_model", "") or "")
-        route = "primary"
-        if fallback and fallback in used_model:
-            route = "fallback"
-        logger.info("LLM route | lane=%s | route=%s | model=%s", lane, route, used_model)
+        from core.agent.llm_stream import log_model_route
+
+        log_model_route(self, used_model, lane=lane)
+
 
     async def _run_async_reflection(
         self,
@@ -571,45 +500,11 @@ class NeyraAgent:
 
     async def _astream_text_with_fallback(self, messages: list[Any], *, llm=None):
         """Стриминговый вызов live-модели с guard по first-token timeout и 1 ретраем."""
-        model = llm or self.llm_talk
-        first_timeout = max(0.1, float(getattr(self, "primary_first_token_timeout", 8.0)))
-        attempts = 2
-        last_err: Optional[Exception] = None
+        from core.agent.llm_stream import astream_text_with_fallback
 
-        for attempt in range(1, attempts + 1):
-            started = time.monotonic()
-            stream = model.astream(messages)
-            it = stream.__aiter__()
-            try:
-                first_chunk = await asyncio.wait_for(it.__anext__(), timeout=first_timeout)
-                first_token = first_chunk.content if hasattr(first_chunk, "content") else str(first_chunk)
-                if first_token:
-                    route = "primary" if attempt == 1 else "primary_retry"
-                    logger.info("LLM first token | route=%s | delay=%.3fs", route, time.monotonic() - started)
-                yield first_chunk
-                async for ch in it:
-                    yield ch
-                return
-            except asyncio.TimeoutError as e:
-                last_err = e
-                logger.warning(
-                    "LLM first-token timeout | attempt=%s/%s | timeout=%.1fs",
-                    attempt,
-                    attempts,
-                    first_timeout,
-                )
-                continue
-            except StopAsyncIteration:
-                return
-            except Exception as e:
-                last_err = e
-                if attempt >= attempts:
-                    raise
-                logger.warning("LLM stream attempt failed, retrying same model: %s", e)
-                continue
+        async for chunk in astream_text_with_fallback(self, messages, llm=llm):
+            yield chunk
 
-        if last_err:
-            raise last_err
 
     # ─── Вспомогательные методы ────────────────────────────────────────────
 
@@ -885,8 +780,13 @@ class NeyraAgent:
             "raw": str,           — полный сырой ответ модели
         }
         """
-        from langchain_core.messages import HumanMessage, SystemMessage
-
+        from core.agent.reply_pipeline import (
+            log_micro_plan_metrics,
+            polish_clean_reply,
+            sanitize_raw_reply,
+        )
+        from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
+        from core.agent.turn_finalize import finalize_successful_turn
         from core.agent.turn_prep import prepare_turn
 
         prep = await prepare_turn(
@@ -900,93 +800,39 @@ class NeyraAgent:
             lyrics_marker=LYRICS_REQUEST_MARKER,
             log_lane="chat",
         )
-        internal_uid = prep.internal_uid
-        memories = prep.memories
-        mentioned = prep.mentioned
-        saved_facts = prep.saved_facts
-        people_active = prep.people_active
-        people_others = prep.people_others
-        diary_ctx = prep.diary_ctx
-        web_ctx = prep.web_ctx
-        tool_ctx = prep.tool_ctx
-        speaker_label = prep.speaker_label
-        wm_snip = prep.wm_snip
-        has_vis = prep.has_vis
-        last_img_ctx = prep.last_img_ctx
-        lyrics_mode = prep.lyrics_mode
-        mcp_catalog = prep.mcp_catalog
-        brain_native_vis = prep.brain_native_vis
-        attached_caption = prep.attached_caption
-        caption_ok = (attached_caption or "").strip()
-        talk_vm = prep.talk_vm
-        has_vis_prompt = prep.has_vis_prompt
-        brain_sys = prep.brain_sys
+        caption_ok = (prep.attached_caption or "").strip()
         brain_context = ""
         try:
             brain_context = await self._run_brain_tool_phase(
                 user_message=user_message,
-                speaker_label=speaker_label,
+                speaker_label=prep.speaker_label,
                 vision_caption=caption_ok or None,
-                vision_images=vision_images if brain_native_vis else None,
-                brain_system=brain_sys,
-                lyrics_mode=lyrics_mode,
+                vision_images=vision_images if prep.brain_native_vis else None,
+                brain_system=prep.brain_sys,
+                lyrics_mode=prep.lyrics_mode,
             )
         except Exception as e:
             logger.warning("Brain phase: пропуск сводки — %s", e)
 
-        # 3. Системный промпт (talk)
-        system_prompt = self._build_system_prompt(
-            extra_memories=memories,
-            people_context_active=people_active,
-            people_context_mentioned=people_others,
-            diary_context=diary_ctx,
-            username=speaker_label,
-            web_context=web_ctx,
-            tool_context=tool_ctx,
-            has_vision_images=has_vis_prompt,
-            last_image_context=last_img_ctx,
-            lyrics_mode=lyrics_mode,
-            mcp_tools_catalog=mcp_catalog,
-            brain_router_context=brain_context or "",
-            attached_image_caption=caption_ok,
-            working_memory_context=wm_snip,
-        )
-
-        # 4. Строим список сообщений
-        messages = [SystemMessage(content=system_prompt)]
-
-        # Добавляем историю диалога
-        for msg in self.short_memory.get_history():
-            if msg["role"] == "user":
-                messages.append(HumanMessage(content=msg["content"]))
-            else:
-                from langchain_core.messages import AIMessage
-                messages.append(AIMessage(content=msg["content"]))
-
-        # Текущее сообщение
-        messages.append(
-            self._make_human_turn(user_message, talk_vm, speaker_label=speaker_label)
-        )
-        messages = self._maybe_append_micro_plan_prefill(
-            messages,
-            has_vision_images=bool(vision_images) and not brain_native_vis and self.llm_vision is None,
+        system_prompt = build_talk_system_prompt(self, prep, brain_context=brain_context)
+        messages = build_talk_messages(
+            self, prep, system_prompt, user_message=user_message, vision_images=vision_images
         )
         final_messages_used = messages
 
-        # 5. Вызов LLM (talk only)
         try:
             cap_llm = (
                 self.llm_talk.bind(max_tokens=max(self.reply_max_tokens, self.lyrics_reply_max_tokens))
-                if lyrics_mode
+                if prep.lyrics_mode
                 else self.llm_talk
             )
             response = await self._ainvoke_text_with_fallback(messages, llm=cap_llm)
             self._log_model_route(self._extract_model_name(response), lane="talk")
             raw_response = response.content if hasattr(response, "content") else str(response)
         except Exception as e:
-            logger.error(f"Ошибка вызова LLM: {e}")
+            logger.error("Ошибка вызова LLM: %s", e)
             self._publish_chat_turn_failed(
-                internal_user_id=internal_uid,
+                internal_user_id=prep.internal_uid,
                 channel_id=channel_id,
                 error=str(e),
             )
@@ -997,32 +843,15 @@ class NeyraAgent:
                 "raw": "",
             }
 
-        # 6. Парсим CoT (<think> блоки)
-        text_no_think, thoughts = self._extract_think_blocks(raw_response)
-        text_no_think, micro_plan = self._strip_leading_micro_plan(text_no_think)
-        if micro_plan:
-            logger.debug("Micro-plan captured | mode=chat | chars=%s", len(micro_plan))
-        text_no_think, hidden_final, unclosed_final = self._strip_micro_plan_blocks(text_no_think)
-        if hidden_final > 0:
-            self._micro_plan_metrics["filtered_final_chars"] += hidden_final
-            self._micro_plan_metrics["leak_detected"] += 1
-            logger.warning(
-                "Micro-plan leak sanitized | mode=chat | hidden_chars=%s | unclosed=%s",
-                hidden_final,
-                unclosed_final,
-            )
-        if unclosed_final:
-            self._micro_plan_metrics["unclosed_blocks"] += 1
-
-        # 7. Парсим [SOUND: tag]
-        clean_text, sounds = self._extract_sound_tags(text_no_think, preserve_line_breaks=lyrics_mode)
-        clean_text = self._ensure_nonempty_reply(
-            text_no_think, clean_text, preserve_line_breaks=lyrics_mode
+        clean_text, thoughts, sounds = sanitize_raw_reply(
+            self, raw_response, lyrics_mode=prep.lyrics_mode, mode_label="chat"
         )
-        clean_text = await self._retry_short_reply_if_empty(final_messages_used, clean_text)
-        clean_text = await self._de_repeat_reply(user_message, clean_text)
-
-        from core.agent.turn_finalize import finalize_successful_turn
+        clean_text = await polish_clean_reply(
+            self,
+            user_message=user_message,
+            clean_text=clean_text,
+            messages=final_messages_used,
+        )
 
         await finalize_successful_turn(
             self,
@@ -1033,23 +862,14 @@ class NeyraAgent:
             username=username,
             discord_user_id=discord_user_id,
             channel_id=channel_id,
-            speaker_label=speaker_label,
-            internal_uid=internal_uid,
+            speaker_label=prep.speaker_label,
+            internal_uid=prep.internal_uid,
             vision_images=vision_images,
-            saved_facts=saved_facts,
+            saved_facts=prep.saved_facts,
             source="chat",
             stm_trimmed=False,
         )
-        if self.micro_planning_enabled:
-            m = self._micro_plan_metrics
-            logger.debug(
-                "Micro-plan metrics | stream_hidden=%s | final_hidden=%s | unclosed=%s | leaks=%s",
-                m["filtered_stream_chars"],
-                m["filtered_final_chars"],
-                m["unclosed_blocks"],
-                m["leak_detected"],
-            )
-
+        log_micro_plan_metrics(self)
         return {
             "text": clean_text,
             "sounds": sounds,
@@ -1076,8 +896,13 @@ class NeyraAgent:
                 elif chunk["type"] == "done":
                     sounds = chunk["sounds"]
         """
-        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-
+        from core.agent.reply_pipeline import (
+            log_micro_plan_metrics,
+            polish_clean_reply,
+            sanitize_raw_reply,
+        )
+        from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
+        from core.agent.turn_finalize import finalize_successful_turn
         from core.agent.turn_prep import prepare_turn
 
         prep = await prepare_turn(
@@ -1091,64 +916,28 @@ class NeyraAgent:
             lyrics_marker=LYRICS_REQUEST_MARKER,
             log_lane="stream",
         )
-        internal_uid = prep.internal_uid
-        memories = prep.memories
-        mentioned = prep.mentioned
-        saved_facts = prep.saved_facts
-        people_active = prep.people_active
-        people_others = prep.people_others
-        diary_ctx = prep.diary_ctx
-        web_ctx = prep.web_ctx
-        tool_ctx = prep.tool_ctx
-        speaker_label = prep.speaker_label
-        wm_snip = prep.wm_snip
-        has_vis = prep.has_vis
-        last_img_ctx = prep.last_img_ctx
-        lyrics_mode = prep.lyrics_mode
-        mcp_catalog_s = prep.mcp_catalog
-        brain_native_vis = prep.brain_native_vis
-        attached_caption = prep.attached_caption
-        caption_ok = (attached_caption or "").strip()
-        talk_vm = prep.talk_vm
-        has_vis_prompt = prep.has_vis_prompt
-        brain_sys = prep.brain_sys
+        caption_ok = (prep.attached_caption or "").strip()
         brain_context = ""
         try:
             brain_context = await self._run_brain_tool_phase(
                 user_message=user_message,
-                speaker_label=speaker_label,
+                speaker_label=prep.speaker_label,
                 vision_caption=caption_ok or None,
-                vision_images=vision_images if brain_native_vis else None,
-                brain_system=brain_sys,
-                lyrics_mode=lyrics_mode,
+                vision_images=vision_images if prep.brain_native_vis else None,
+                brain_system=prep.brain_sys,
+                lyrics_mode=prep.lyrics_mode,
             )
         except Exception as e:
             logger.warning("Brain phase (stream): пропуск сводки — %s", e)
 
-        system_prompt = self._build_system_prompt(
-            extra_memories=memories,
-            people_context_active=people_active,
-            people_context_mentioned=people_others,
-            diary_context=diary_ctx,
-            username=speaker_label,
-            web_context=web_ctx,
-            tool_context=tool_ctx,
-            has_vision_images=has_vis_prompt,
-            last_image_context=last_img_ctx,
-            lyrics_mode=lyrics_mode,
-            mcp_tools_catalog=mcp_catalog_s,
-            brain_router_context=brain_context or "",
-            attached_image_caption=caption_ok,
-            working_memory_context=wm_snip,
-        )
-
+        system_prompt = build_talk_system_prompt(self, prep, brain_context=brain_context)
         stream_llm = self.llm_talk
-        if lyrics_mode:
+        if prep.lyrics_mode:
             stream_llm = self.llm_talk.bind(
                 max_tokens=max(self.reply_max_tokens, self.lyrics_reply_max_tokens)
             )
         if vision_images:
-            mode = "brain-native" if brain_native_vis else "caption→brain→talk"
+            mode = "brain-native" if prep.brain_native_vis else "caption→brain→talk"
             logger.info(
                 "Зрение: %s, изображений=%s | talk_model=%s",
                 mode,
@@ -1156,19 +945,8 @@ class NeyraAgent:
                 getattr(self, "llm_talk_model", self.llm_model),
             )
 
-        # 2. Сообщения
-        messages = [SystemMessage(content=system_prompt)]
-        for msg in self.short_memory.get_history():
-            if msg["role"] == "user":
-                messages.append(HumanMessage(content=msg["content"]))
-            else:
-                messages.append(AIMessage(content=msg["content"]))
-        messages.append(
-            self._make_human_turn(user_message, talk_vm, speaker_label=speaker_label)
-        )
-        messages = self._maybe_append_micro_plan_prefill(
-            messages,
-            has_vision_images=bool(vision_images) and not brain_native_vis and self.llm_vision is None,
+        messages = build_talk_messages(
+            self, prep, system_prompt, user_message=user_message, vision_images=vision_images
         )
         final_messages_used = messages
 
@@ -1216,32 +994,13 @@ class NeyraAgent:
                 self.short_memory.trim_to_half()
                 
                 # Урезаем системный промпт (убираем веб и память, оставляем только базу)
-                pa, pm = self._shrink_people_sections(people_active, people_others, 500)
-                system_prompt = self._build_system_prompt(
-                    extra_memories=[],
-                    people_context_active=pa,
-                    people_context_mentioned=pm,
-                    username=speaker_label,
-                    web_context="",
-                    tool_context="",
-                    has_vision_images=has_vis_prompt,
-                    last_image_context=last_img_ctx,
-                    lyrics_mode=lyrics_mode,
-                    mcp_tools_catalog="",
-                    brain_router_context=brain_context or "",
-                    attached_image_caption=caption_ok,
-                    working_memory_context=wm_snip,
+                system_prompt = build_talk_system_prompt(
+                    self, prep, brain_context=brain_context,
+                    shrink_people=True, drop_extra_context=True,
                 )
-
-                # Повторный запрос
-                messages_retry = [SystemMessage(content=system_prompt)]
-                for msg in self.short_memory.get_history():
-                    if msg["role"] == "user":
-                        messages_retry.append(HumanMessage(content=msg["content"]))
-                    else:
-                        messages_retry.append(AIMessage(content=msg["content"]))
-                messages_retry.append(
-                    self._make_human_turn(user_message, talk_vm, speaker_label=speaker_label)
+                messages_retry = build_talk_messages(
+                    self, prep, system_prompt,
+                    user_message=user_message, vision_images=vision_images,
                 )
                 final_messages_used = messages_retry
 
@@ -1272,7 +1031,7 @@ class NeyraAgent:
                 except Exception as e2:
                     logger.error(f"Ошибка повторного запроса (даже с урезанным контекстом): {e2}")
                     self._publish_chat_turn_failed(
-                        internal_user_id=internal_uid,
+                        internal_user_id=prep.internal_uid,
                         channel_id=channel_id,
                         error=str(e2),
                     )
@@ -1281,7 +1040,7 @@ class NeyraAgent:
             else:
                 logger.error(f"Ошибка стриминга LLM: {e}")
                 self._publish_chat_turn_failed(
-                    internal_user_id=internal_uid,
+                    internal_user_id=prep.internal_uid,
                     channel_id=channel_id,
                     error=err_str,
                 )
@@ -1289,33 +1048,18 @@ class NeyraAgent:
                 return
 
         # 4. Постобработка после завершения стрима
-        text_no_think, thoughts = self._extract_think_blocks(raw_response)
-        text_no_think, micro_plan = self._strip_leading_micro_plan(text_no_think)
-        if micro_plan:
-            logger.debug("Micro-plan captured | mode=stream | chars=%s", len(micro_plan))
-        text_no_think, hidden_final, unclosed_final = self._strip_micro_plan_blocks(text_no_think)
-        if hidden_final > 0:
-            self._micro_plan_metrics["filtered_final_chars"] += hidden_final
-            self._micro_plan_metrics["leak_detected"] += 1
-            logger.warning(
-                "Micro-plan leak sanitized | mode=stream | hidden_chars=%s | unclosed=%s",
-                hidden_final,
-                unclosed_final,
-            )
-        if unclosed_final:
-            self._micro_plan_metrics["unclosed_blocks"] += 1
-        clean_text, sounds = self._extract_sound_tags(text_no_think, preserve_line_breaks=lyrics_mode)
-        clean_text = self._ensure_nonempty_reply(
-            text_no_think, clean_text, preserve_line_breaks=lyrics_mode
+        clean_text, thoughts, sounds = sanitize_raw_reply(
+            self, raw_response, lyrics_mode=prep.lyrics_mode, mode_label="stream"
         )
-        clean_text = await self._retry_short_reply_if_empty(final_messages_used, clean_text)
-        clean_text = await self._de_repeat_reply(user_message, clean_text)
+        clean_text = await polish_clean_reply(
+            self,
+            user_message=user_message,
+            clean_text=clean_text,
+            messages=final_messages_used,
+        )
 
-        # 5. Память и логи
         if context_exceeded:
             logger.info("Успешный ответ после переполнения контекста.")
-
-        from core.agent.turn_finalize import finalize_successful_turn
 
         await finalize_successful_turn(
             self,
@@ -1326,25 +1070,16 @@ class NeyraAgent:
             username=username,
             discord_user_id=discord_user_id,
             channel_id=channel_id,
-            speaker_label=speaker_label,
-            internal_uid=internal_uid,
+            speaker_label=prep.speaker_label,
+            internal_uid=prep.internal_uid,
             vision_images=vision_images,
-            saved_facts=saved_facts,
+            saved_facts=prep.saved_facts,
             source="chat_stream",
             stm_trimmed=context_exceeded,
         )
-        if self.micro_planning_enabled:
-            m = self._micro_plan_metrics
-            logger.debug(
-                "Micro-plan metrics | stream_hidden=%s | final_hidden=%s | unclosed=%s | leaks=%s",
-                m["filtered_stream_chars"],
-                m["filtered_final_chars"],
-                m["unclosed_blocks"],
-                m["leak_detected"],
-            )
+        log_micro_plan_metrics(self)
         logger.debug("Стрим завершён | sounds=%s | len=%s", sounds, len(clean_text))
 
-        # 6. Финальный пакет с метаданными
         yield {
             "type": "done",
             "text": clean_text,

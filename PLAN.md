@@ -315,8 +315,8 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 
 | Сейчас (корень `core/`) | ~строк | Цель |
 |-------------------------|--------|------|
-| **`core/neyra.py`** (главный оркестратор) | ~1.4k | ✅ единственный top-level модуль ядра; канон `from core.neyra import NeyraAgent` |
-| helpers → **`core/agent/`** | полки | ✅ prompts / turn_* / brain / memory_jobs / … (без `neyra.py`) |
+| **`core/neyra.py`** (главный оркестратор) | ~1.2k | ✅ канон `from core.neyra import NeyraAgent`; тела chat/stream через talk_messages/reply_pipeline |
+| helpers → **`core/agent/`** | полки | ✅ + bootstrap / llm_stream / reply_pipeline / talk_messages |
 | `reflection/` `tools/` `memory/` `llm/` `plugins/` | — | ✅ пакеты |
 | `runtime/` | — | ✅ server/health/secrets + event_bus/identity/timeutil/external_storage/mcp/backup |
 | `voice/` | — | ✅ stt/tts + vision_util |
@@ -353,7 +353,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 **Фаза 1R** *(трек: [PR #7](https://github.com/KORESHon/Neyra-AIAssist/pull/7))*
 
 - [x] Inventory монолитов + целевая карта пакетов/имён.
-- [x] Главный оркестратор — `core/neyra.py`; полки — `core/agent/`; остальные модули — в пакетах.
+- [x] Главный оркестратор — `core/neyra.py`; полки — `core/agent/` *(bootstrap / talk_messages / reply_pipeline / …)*.
 - [~] Аудит костылей *(seed deepcopy, caption_ok)*.
 - [x] Финальная раскладка корня `core/`: только пакеты + один главный `.py` (`neyra.py`).
 - [x] Удалить дубли/flat shims в корне `core/`.
