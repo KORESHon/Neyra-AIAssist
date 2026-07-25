@@ -52,6 +52,7 @@ def build_talk_messages(
     *,
     user_message: str,
     vision_images: Optional[list],
+    with_micro_plan_prefill: bool = True,
 ) -> list[Any]:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -66,6 +67,8 @@ def build_talk_messages(
             user_message, prep.talk_vm, speaker_label=prep.speaker_label
         )
     )
+    if not with_micro_plan_prefill:
+        return messages
     return agent._maybe_append_micro_plan_prefill(
         messages,
         has_vision_images=bool(vision_images)

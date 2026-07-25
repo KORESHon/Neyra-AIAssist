@@ -8,11 +8,7 @@ core.neyra — главный оркестратор агента Нейры (е
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import re
-import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -240,27 +236,11 @@ class NeyraAgent:
         speaker_label: str,
     ) -> str:
         """Краткий текстовый конспект изображений через VL-модель (до brain/talk)."""
-        from langchain_core.messages import HumanMessage, SystemMessage
+        from core.agent.vision_context import caption_vision_images
 
-        if not vision_images or not self.llm_vision:
-            return ""
-        sys = SystemMessage(
-            content=(
-                "Ты модуль зрения. Кратко по-русски опиши, что на изображении (1–8 предложений). "
-                "Несколько картинок — перечисли по порядку. Текст на экране — по возможности дословно. "
-                "Без личности ассистента, без markdown-заголовков."
-            )
+        return await caption_vision_images(
+            self, user_message, vision_images, speaker_label=speaker_label
         )
-        human = self._make_human_turn(
-            (user_message or "").strip() or "Что на изображении?",
-            vision_images,
-            speaker_label=speaker_label,
-        )
-        resp = await self.llm_vision.ainvoke([sys, human])
-        raw = resp.content if hasattr(resp, "content") else str(resp)
-        caption = (raw or "").strip()
-        self._log_model_route(self._extract_model_name(resp), lane="vision")
-        return caption
 
     async def _run_brain_tool_phase(
         self,
@@ -622,19 +602,15 @@ class NeyraAgent:
 
     def _log_thought(self, thought: str, user_msg: str):
         """Пишет внутренний монолог в thoughts.log."""
-        if not thought:
-            return
-        with open(self.thoughts_log_path, "a", encoding="utf-8") as f:
-            f.write(f"\n[{datetime.now().isoformat()}] Запрос: {user_msg[:80]}\n")
-            f.write(f"<think>\n{thought}\n</think>\n")
+        from core.agent.file_log import log_thought
+
+        log_thought(self, thought, user_msg)
 
     def _log_chat(self, user: str, assistant: str, metadata: dict = None):
         """Пишет диалог в chat.log."""
-        with open(self.chat_log_path, "a", encoding="utf-8") as f:
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            who = metadata.get("username", "User") if metadata else "User"
-            f.write(f"\n[{ts}] {who}: {user}\n")
-            f.write(f"[{ts}] Нейра: {assistant}\n")
+        from core.agent.file_log import log_chat
+
+        log_chat(self, user, assistant, metadata)
 
     def _detect_mentioned_names(self, text: str) -> list[str]:
         """Определение известных имён/ников с учетом русских окончаний (падежей)."""
@@ -999,8 +975,12 @@ class NeyraAgent:
                     shrink_people=True, drop_extra_context=True,
                 )
                 messages_retry = build_talk_messages(
-                    self, prep, system_prompt,
-                    user_message=user_message, vision_images=vision_images,
+                    self,
+                    prep,
+                    system_prompt,
+                    user_message=user_message,
+                    vision_images=vision_images,
+                    with_micro_plan_prefill=False,
                 )
                 final_messages_used = messages_retry
 
@@ -1094,45 +1074,11 @@ class NeyraAgent:
         Использует reflection-модель с умеренным лимитом токенов (обслуживание памяти, не чат).
         consolidation=True — режим ночной консолидации: слияние дублей, отсечение шума.
         """
-        from langchain_core.messages import HumanMessage
+        from core.agent.ltm_summarize import summarize_ltm_corpus
 
-        raw = (combined_dialog_text or "").strip()
-        if not raw:
-            return ""
-        cap = 120_000
-        if len(raw) > cap:
-            raw = raw[: cap - 100] + "\n… [truncated for summarization]"
-
-        mem_cfg = self.config.get("memory") if isinstance(self.config.get("memory"), dict) else {}
-        if self.reflection_max_tokens is not None:
-            default_summarize = min(self.reflection_max_tokens * 2, 4096)
-        else:
-            default_summarize = 4096
-        max_out = int(mem_cfg.get("ltm_summarize_max_tokens", default_summarize))
-        if consolidation:
-            prompt = (
-                "Ниже — близкие по смыслу фрагменты долговременной памяти (один кластер). "
-                "Объедини явные дубли и повторы одной мысли; убери шум и пустяки без потери фактов. "
-                "Если темы разные — структурируй короткими подзаголовками (markdown ##). "
-                "Только русский; не выдумывай факты; если мало сигнала — 2–4 предложения.\n\n---\n\n"
-                f"{raw}"
-            )
-        else:
-            prompt = (
-                "Ниже — фрагменты старых диалогов из долговременной памяти. "
-                "Сожми их в один связный markdown-текст на русском: темы, имена, факты, без воды и без выдумок. "
-                "Если данных мало — дай 2–4 предложения.\n\n---\n\n"
-                f"{raw}"
-            )
-        llm = getattr(self, "llm_memory", None) or getattr(self, "llm_reflection", None) or self.llm_talk
-        from core.llm.retry import ainvoke_with_rate_limit_backoff
-
-        call = llm.bind(max_tokens=max_out) if hasattr(llm, "bind") else llm
-        resp = await ainvoke_with_rate_limit_backoff(
-            call, [HumanMessage(content=prompt)], lane="memory_model"
+        return await summarize_ltm_corpus(
+            self, combined_dialog_text, consolidation=consolidation
         )
-        text = getattr(resp, "content", None)
-        return (str(text) if text is not None else "").strip()
 
     def reset_context(self, channel_id: Optional[str] = None):
         """Сбрасывает краткую память; для Discord — ещё заметку последнего скрина в этом канале."""

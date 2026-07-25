@@ -1,4 +1,4 @@
-"""Last-image vision note helpers for talk prompt continuity."""
+"""Vision caption + last-image note helpers for talk prompt continuity."""
 
 from __future__ import annotations
 
@@ -6,6 +6,37 @@ import logging
 from typing import Any, Optional
 
 logger = logging.getLogger("neyra.agent.vision_context")
+
+
+async def caption_vision_images(
+    agent: Any,
+    user_message: str,
+    vision_images: list[tuple[str, str]],
+    *,
+    speaker_label: str,
+) -> str:
+    """Short Russian caption via VL model (before brain/talk)."""
+    from langchain_core.messages import SystemMessage
+
+    if not vision_images or not agent.llm_vision:
+        return ""
+    sys = SystemMessage(
+        content=(
+            "Ты модуль зрения. Кратко по-русски опиши, что на изображении (1–8 предложений). "
+            "Несколько картинок — перечисли по порядку. Текст на экране — по возможности дословно. "
+            "Без личности ассистента, без markdown-заголовков."
+        )
+    )
+    human = agent._make_human_turn(
+        (user_message or "").strip() or "Что на изображении?",
+        vision_images,
+        speaker_label=speaker_label,
+    )
+    resp = await agent.llm_vision.ainvoke([sys, human])
+    raw = resp.content if hasattr(resp, "content") else str(resp)
+    caption = (raw or "").strip()
+    agent._log_model_route(agent._extract_model_name(resp), lane="vision")
+    return caption
 
 
 def make_vision_memory_note(

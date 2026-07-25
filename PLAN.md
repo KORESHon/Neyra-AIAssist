@@ -306,7 +306,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 | 1 | Inventory: монолиты и «корень `core/`» (`agent.py`, `tools.py`, `reflection.py`, …) | список файлов + целевые пакеты/имена в PLAN/PR | `[x]` см. карту ниже |
 | 2 | Split `agent.py` → shelves + главный `core/neyra.py` | `NeyraAgent` API стабилен; smokes зелёные | `[x]` оркестратор в `core/neyra.py`; полки в `core/agent/` |
 | 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[x]` `agent/` `reflection/` `tools/` `memory/*` `runtime/*` `voice/*` |
-| 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[~]` seed deepcopy; caption_ok; дальше — точечный аудит |
+| 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[~]` seed deepcopy; caption_ok; overflow retry без micro-plan prefill |
 | 5 | Финальная раскладка: в корне `core/` только пакеты + один главный `.py` | канон `from core.neyra import NeyraAgent`; helpers в пакетах | `[x]` корень: `__init__.py` + `neyra.py` + пакеты |
 | 6 | Доки (ADR-0003 или раздел PLAN) + приёмка | compileall + smokes + healthcheck + Auto Review; Discord на стенде | `[~]` offline зелёные + Auto Review; Discord на стенде ещё |
 | 7 | Удалить дубли/flat shims в корне `core/` | нет теневых shim-файлов; импорты только канонические | `[x]` shims удалены; event_bus/timeutil/… ушли в `runtime`/`voice` |
@@ -315,8 +315,8 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 
 | Сейчас (корень `core/`) | ~строк | Цель |
 |-------------------------|--------|------|
-| **`core/neyra.py`** (главный оркестратор) | ~1.2k | ✅ канон `from core.neyra import NeyraAgent`; тела chat/stream через talk_messages/reply_pipeline |
-| helpers → **`core/agent/`** | полки | ✅ + bootstrap / llm_stream / reply_pipeline / talk_messages |
+| **`core/neyra.py`** (главный оркестратор) | ~1.1k | ✅ канон `from core.neyra import NeyraAgent`; тонкие обёртки + chat/stream |
+| helpers → **`core/agent/`** | полки | ✅ + bootstrap / talk_messages / reply_pipeline / ltm_summarize / file_log / … |
 | `reflection/` `tools/` `memory/` `llm/` `plugins/` | — | ✅ пакеты |
 | `runtime/` | — | ✅ server/health/secrets + event_bus/identity/timeutil/external_storage/mcp/backup |
 | `voice/` | — | ✅ stt/tts + vision_util |
@@ -354,7 +354,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 
 - [x] Inventory монолитов + целевая карта пакетов/имён.
 - [x] Главный оркестратор — `core/neyra.py`; полки — `core/agent/` *(bootstrap / talk_messages / reply_pipeline / …)*.
-- [~] Аудит костылей *(seed deepcopy, caption_ok)*.
+- [~] Аудит костылей *(seed deepcopy, caption_ok, overflow retry prefill)*.
 - [x] Финальная раскладка корня `core/`: только пакеты + один главный `.py` (`neyra.py`).
 - [x] Удалить дубли/flat shims в корне `core/`.
 - [~] `compileall` + memory smokes + healthcheck + Auto Review; Discord на стенде ещё.
