@@ -1,8 +1,8 @@
 """
-Runtime helpers: HTTP server entry, health monitor, Windows patches, secrets.
+Runtime helpers: HTTP server, health, secrets, event bus, identity, time, storage.
 
-Canonical imports: ``from core.runtime.secrets import …``, ``from core.runtime.server import …``.
-Heavy modules (server / health) are exported lazily so secrets/win shims stay light.
+Canonical: ``from core.runtime.server import …``, ``from core.runtime.event_bus import …``, …
+Heavy modules (server / health) are exported lazily.
 """
 
 from __future__ import annotations

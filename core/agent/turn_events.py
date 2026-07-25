@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from core.event_bus import (
+from core.runtime.event_bus import (
     CHAT_TURN_COMPLETED,
     CHAT_TURN_FAILED,
     MEMORY_LONG_TERM_WRITE,

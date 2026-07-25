@@ -1,9 +1,9 @@
 """
-core.agent.neyra — Главный агент Нейры (оркестрация).
+core.neyra — главный оркестратор агента Нейры (единственный top-level модуль в core/).
 
 Использует LangChain + OpenAI-compatible LLM.
 Подсистемы: STM / Hub memory / PeopleDB / Tools / Event Bus.
-Хелперы вынесены в core.agent.reply_postprocess и core.agent.micro_plan (фаза 1R).
+Хелперы — пакет ``core.agent`` (фаза 1R).
 """
 
 from __future__ import annotations
@@ -16,19 +16,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import micro_plan as _micro_plan
-from .reply_postprocess import (
+import core.agent.micro_plan as _micro_plan
+from core.agent.reply_postprocess import (
     EMPTY_REPLY_PLACEHOLDER,
     ensure_nonempty_reply,
     extract_sound_tags,
     extract_think_blocks,
 )
-from core.event_bus import EventBus
-from core.identity import UnifiedIdentityMapper
+from core.runtime.event_bus import EventBus
+from core.runtime.identity import UnifiedIdentityMapper
 
 logger = logging.getLogger("neyra.agent")
 
-from .llm_setup import DEPRECATED_OPENROUTER_MODELS
+from core.agent.llm_setup import DEPRECATED_OPENROUTER_MODELS
 
 # Маркер скрытого суффикса Discord GET_LYRICS — включает сохранение переносов строк и больший max_tokens.
 LYRICS_REQUEST_MARKER = "[SYSTEM HIDDEN INSTRUCTION: User wants lyrics"
@@ -58,7 +58,7 @@ class NeyraAgent:
         self._setup_memory()
         self._setup_tools()
         self._setup_logs()
-        self._project_root = Path(__file__).resolve().parents[2]
+        self._project_root = Path(__file__).resolve().parents[1]
         self._wm_turns_since_refresh = 0
         self._wm_last_refresh_mono = 0.0
         self._emotion_last_mono = 0.0
@@ -68,13 +68,13 @@ class NeyraAgent:
 
     def _setup_llm(self):
         """OpenAI-compatible LLM (OpenRouter, Ollama, Groq, …) — см. core.llm.profile."""
-        from .llm_setup import setup_llm_connection
+        from core.agent.llm_setup import setup_llm_connection
 
         setup_llm_connection(self)
 
     def _setup_openai_compatible_llm(self):
         """Единый путь: ChatOpenAI к base_url с api_key из профиля провайдера."""
-        from .llm_setup import setup_openai_compatible_llm
+        from core.agent.llm_setup import setup_openai_compatible_llm
 
         setup_openai_compatible_llm(self)
 
@@ -135,7 +135,7 @@ class NeyraAgent:
         latency_ms: Optional[float] = None,
     ) -> str:
         """Dual-write full turn into SQLite chat_log (Memory Hub). Returns turn_id."""
-        from .chat_log import append_turn_to_chat_log
+        from core.agent.chat_log import append_turn_to_chat_log
 
         asst_cfg = self.config.get("assistant") if isinstance(self.config.get("assistant"), dict) else {}
         assistant_name = str(asst_cfg.get("name") or "").strip() or None
@@ -214,7 +214,7 @@ class NeyraAgent:
 
     def _init_people_db(self):
         """Засеивает базовые досье, только если Hub/PeopleDB ещё пусты (никакого JSON-импорта)."""
-        from .people_seed import seed_default_people
+        from core.agent.people_seed import seed_default_people
 
         seed_default_people(self.people_db, getattr(self, "memory_hub", None))
 
@@ -238,7 +238,7 @@ class NeyraAgent:
         working_memory_context: str = "",
     ) -> str:
         """Собирает системный промпт. Порядок (B2): роль → активный → упомянутые → правила → RAG → остальное."""
-        from .prompts import build_talk_system_prompt
+        from core.agent.prompts import build_talk_system_prompt
 
         return build_talk_system_prompt(
             base_prompt=self.config["assistant"]["system_prompt"],
@@ -275,7 +275,7 @@ class NeyraAgent:
         working_memory_context: str = "",
     ) -> str:
         """Компактный системный промпт для brain: инструменты и факты, без личности talk-модели."""
-        from .prompts import build_brain_system_prompt
+        from core.agent.prompts import build_brain_system_prompt
 
         return build_brain_system_prompt(
             extra_memories=extra_memories,
@@ -331,7 +331,7 @@ class NeyraAgent:
         lyrics_mode: bool,
     ) -> str:
         """Маршрутизация и tool-loop на llm_brain; возвращает текст для секции talk «brain»."""
-        from .brain_phase import run_brain_tool_phase
+        from core.agent.brain_phase import run_brain_tool_phase
 
         return await run_brain_tool_phase(
             self,
@@ -345,7 +345,7 @@ class NeyraAgent:
 
     def _make_vision_memory_note(self, thoughts: str, clean_text: str) -> str:
         """Текст для «памяти последнего скрина»: приоритет — CoT/think из ответа VL."""
-        from .vision_context import make_vision_memory_note
+        from core.agent.vision_context import make_vision_memory_note
 
         vis = self._vision_pipeline_cfg()
         return make_vision_memory_note(
@@ -359,7 +359,7 @@ class NeyraAgent:
         channel_id: Optional[str],
         vision_images: Optional[list],
     ) -> Optional[str]:
-        from .vision_context import last_image_context_for_prompt
+        from core.agent.vision_context import last_image_context_for_prompt
 
         vis_cfg = self._vision_pipeline_cfg()
         return last_image_context_for_prompt(
@@ -376,7 +376,7 @@ class NeyraAgent:
         thoughts: str,
         clean_text: str,
     ) -> None:
-        from .vision_context import store_vision_note_if_needed
+        from core.agent.vision_context import store_vision_note_if_needed
 
         vis = self._vision_pipeline_cfg()
         store_vision_note_if_needed(
@@ -396,7 +396,7 @@ class NeyraAgent:
         author_display_name: Optional[str] = None,
     ) -> str:
         """Подпись собеседника для STM, HumanMessage и system prompt (этап B1)."""
-        from .speakers import resolve_speaker_label
+        from core.agent.speakers import resolve_speaker_label
 
         return resolve_speaker_label(
             self.memory_hub, username, discord_user_id, author_display_name
@@ -404,7 +404,7 @@ class NeyraAgent:
 
     def _format_spoken_user_message(self, text: str, speaker_label: str) -> str:
         """Префикс авторства реплики в контексте LLM ([Пользователь …]: …)."""
-        from .speakers import format_spoken_user_message
+        from core.agent.speakers import format_spoken_user_message
 
         return format_spoken_user_message(text, speaker_label)
 
@@ -416,7 +416,7 @@ class NeyraAgent:
         speaker_label: Optional[str] = None,
     ):
         """HumanMessage: текст или мультимодальный контент (mime, base64) для VL."""
-        from .speakers import make_human_turn
+        from core.agent.speakers import make_human_turn
 
         return make_human_turn(
             user_message,
@@ -462,7 +462,7 @@ class NeyraAgent:
         username: Optional[str],
         discord_user_id: Optional[str],
     ) -> None:
-        from .memory_jobs import run_async_reflection
+        from core.agent.memory_jobs import run_async_reflection
 
         await run_async_reflection(
             self, user_message, assistant_text, username, discord_user_id
@@ -475,14 +475,14 @@ class NeyraAgent:
         username: Optional[str],
         discord_user_id: Optional[str],
     ) -> None:
-        from .memory_jobs import schedule_async_reflection
+        from core.agent.memory_jobs import schedule_async_reflection
 
         schedule_async_reflection(
             self, user_message, assistant_text, username, discord_user_id
         )
 
     def _format_stm_tail(self, max_messages: int = 12) -> str:
-        from .memory_jobs import format_stm_tail
+        from core.agent.memory_jobs import format_stm_tail
 
         return format_stm_tail(self.short_memory, max_messages)
 
@@ -500,7 +500,7 @@ class NeyraAgent:
         speaker_label: str,
         reason: str,
     ) -> None:
-        from .memory_jobs import run_working_memory_refresh
+        from core.agent.memory_jobs import run_working_memory_refresh
 
         await run_working_memory_refresh(
             self,
@@ -520,7 +520,7 @@ class NeyraAgent:
         speaker_label: str,
         stm_trimmed: bool = False,
     ) -> None:
-        from .memory_jobs import schedule_working_memory_refresh
+        from core.agent.memory_jobs import schedule_working_memory_refresh
 
         schedule_working_memory_refresh(
             self,
@@ -538,7 +538,7 @@ class NeyraAgent:
         metadata: dict,
         speaker_label: str,
     ) -> None:
-        from .memory_jobs import save_dialog_to_ltm_with_emotion
+        from core.agent.memory_jobs import save_dialog_to_ltm_with_emotion
 
         await save_dialog_to_ltm_with_emotion(
             self, user_message, clean_text, metadata, speaker_label
@@ -553,7 +553,7 @@ class NeyraAgent:
         username: Optional[str],
         discord_user_id: Optional[str],
     ) -> None:
-        from .memory_jobs import schedule_emotion_diary
+        from core.agent.memory_jobs import schedule_emotion_diary
 
         schedule_emotion_diary(
             self,
@@ -713,7 +713,7 @@ class NeyraAgent:
 
     async def _de_repeat_reply(self, user_message: str, clean_text: str) -> str:
         """Если новый ответ почти дублирует предыдущий — быстрый перефраз."""
-        from .de_repeat import de_repeat_reply
+        from core.agent.de_repeat import de_repeat_reply
 
         return await de_repeat_reply(
             user_message=user_message,
@@ -743,7 +743,7 @@ class NeyraAgent:
 
     def _detect_mentioned_names(self, text: str) -> list[str]:
         """Определение известных имён/ников с учетом русских окончаний (падежей)."""
-        from .people_context import detect_mentioned_names
+        from core.agent.people_context import detect_mentioned_names
 
         return detect_mentioned_names(text, self.memory_hub.get_all_names_map())
 
@@ -756,14 +756,14 @@ class NeyraAgent:
         """
         B2: досье текущего пользователя отдельно от прочих упомянутых (без дублирования).
         """
-        from .people_context import split_people_context
+        from core.agent.people_context import split_people_context
 
         return split_people_context(self.memory_hub, mentioned, username, discord_user_id)
 
     @staticmethod
     def _shrink_people_sections(active: str, mentioned: str, max_chars: int) -> tuple[str, str]:
         """Ужимает блоки досье при переполнении контекста; приоритет — активный собеседник."""
-        from .people_context import shrink_people_sections
+        from core.agent.people_context import shrink_people_sections
 
         return shrink_people_sections(active, mentioned, max_chars)
 
@@ -783,7 +783,7 @@ class NeyraAgent:
             return f"Ошибка инструмента: {e}"
 
     def _collect_tool_context(self, text: str) -> str:
-        from .tool_heuristics import collect_tool_context
+        from core.agent.tool_heuristics import collect_tool_context
 
         return collect_tool_context(
             self.tools,
@@ -793,7 +793,7 @@ class NeyraAgent:
         )
 
     def _handle_memory_trigger(self, text: str, mentioned: list[str], username: str) -> list[str]:
-        from .tool_heuristics import handle_memory_trigger
+        from core.agent.tool_heuristics import handle_memory_trigger
 
         return handle_memory_trigger(
             people_db=self.people_db,
@@ -811,7 +811,7 @@ class NeyraAgent:
         return self.memory_hub.diary_recent_text(limit=limit) or "Дневник пока пуст."
 
     def _handle_websearch_trigger(self, text: str) -> str:
-        from .tool_heuristics import handle_websearch_trigger
+        from core.agent.tool_heuristics import handle_websearch_trigger
 
         return handle_websearch_trigger(self.tools, text)
 
@@ -834,7 +834,7 @@ class NeyraAgent:
         sounds: list,
         metadata: dict,
     ) -> None:
-        from .turn_events import publish_memory_and_chat_events
+        from core.agent.turn_events import publish_memory_and_chat_events
 
         publish_memory_and_chat_events(
             self.event_bus,
@@ -856,7 +856,7 @@ class NeyraAgent:
         channel_id: Optional[str],
         error: str,
     ) -> None:
-        from .turn_events import publish_chat_turn_failed
+        from core.agent.turn_events import publish_chat_turn_failed
 
         publish_chat_turn_failed(
             self.event_bus,
@@ -887,7 +887,7 @@ class NeyraAgent:
         """
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        from .turn_prep import prepare_turn
+        from core.agent.turn_prep import prepare_turn
 
         prep = await prepare_turn(
             self,
@@ -1022,7 +1022,7 @@ class NeyraAgent:
         clean_text = await self._retry_short_reply_if_empty(final_messages_used, clean_text)
         clean_text = await self._de_repeat_reply(user_message, clean_text)
 
-        from .turn_finalize import finalize_successful_turn
+        from core.agent.turn_finalize import finalize_successful_turn
 
         await finalize_successful_turn(
             self,
@@ -1078,7 +1078,7 @@ class NeyraAgent:
         """
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-        from .turn_prep import prepare_turn
+        from core.agent.turn_prep import prepare_turn
 
         prep = await prepare_turn(
             self,
@@ -1315,7 +1315,7 @@ class NeyraAgent:
         if context_exceeded:
             logger.info("Успешный ответ после переполнения контекста.")
 
-        from .turn_finalize import finalize_successful_turn
+        from core.agent.turn_finalize import finalize_successful_turn
 
         await finalize_successful_turn(
             self,

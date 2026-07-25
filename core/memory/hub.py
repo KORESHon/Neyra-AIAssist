@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from core.event_bus import (
+from core.runtime.event_bus import (
     MEMORY_CHAT_LOG_APPEND,
     MEMORY_JOURNAL_UPDATED,
     MEMORY_LONG_TERM_WRITE,
@@ -17,7 +17,7 @@ from core.event_bus import (
 )
 from core.memory.semantic_index import ChromaSemanticIndex, SemanticIndex
 from core.memory.sqlite_store import SqliteStore
-from core.timeutil import configure_timezone, now_storage_iso, to_utc_iso
+from core.runtime.timeutil import configure_timezone, now_storage_iso, to_utc_iso
 
 logger = logging.getLogger("neyra.memory.hub")
 

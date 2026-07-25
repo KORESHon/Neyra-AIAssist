@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.event_bus import MEMORY_CHAT_LOG_APPEND, EventBus
+from core.runtime.event_bus import MEMORY_CHAT_LOG_APPEND, EventBus
 from core.memory import MemoryHub
 from core.memory.stores import NeyraDiary, PeopleDB
 
@@ -383,7 +383,7 @@ def main() -> int:
 
         # Blocker repro: UTC-stored Hub ts must still match host-local cutoff window
         from datetime import timezone as _tz
-        from core.timeutil import now_local
+        from core.runtime.timeutil import now_local
 
         utc_recent = (now_local().astimezone(_tz.utc) - timedelta(minutes=10)).isoformat()
         hub_d.append_chat_batch(
@@ -428,7 +428,7 @@ def main() -> int:
         assert "older-local-offset" not in mixed, mixed
 
         # system.timezone override must affect now_local / cutoff (not only the log line)
-        from core.timeutil import configure_timezone, now_iso as local_iso, resolve_tz
+        from core.runtime.timeutil import configure_timezone, now_iso as local_iso, resolve_tz
 
         configure_timezone("Europe/Moscow")
         assert "Europe/Moscow" in str(getattr(resolve_tz(), "key", "")) or str(resolve_tz())

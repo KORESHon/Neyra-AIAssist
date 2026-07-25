@@ -238,7 +238,7 @@ async def run_console() -> None:
 
     # Инициализация агента
     try:
-        from core.agent import NeyraAgent
+        from core.neyra import NeyraAgent
         agent = NeyraAgent(config)
         await agent.start_mcp_clients()
     except Exception as e:

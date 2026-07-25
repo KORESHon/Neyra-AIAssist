@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from core.timeutil import now_local
+from core.runtime.timeutil import now_local
 
 logger = logging.getLogger("neyra.working_memory")
 
@@ -222,7 +222,7 @@ async def refresh_working_memory_async(
         bus = getattr(agent, "event_bus", None)
         if bus is not None and (hub is None or hub_ok):
             try:
-                from core.event_bus import MEMORY_WORKING_MEMORY_UPDATED, CoreEvent
+                from core.runtime.event_bus import MEMORY_WORKING_MEMORY_UPDATED, CoreEvent
 
                 bus.publish(
                     CoreEvent(

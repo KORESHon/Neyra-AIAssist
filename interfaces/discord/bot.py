@@ -28,7 +28,7 @@ from discord.app_commands import Choice
 
 from core.llm.profile import resolve_openai_compatible_connection
 
-from core.event_bus import (
+from core.runtime.event_bus import (
     MUSIC_CLEAR,
     MUSIC_PAUSE,
     MUSIC_PLAY,
@@ -42,7 +42,7 @@ from core.event_bus import (
 )
 
 if TYPE_CHECKING:
-    from core.agent import NeyraAgent
+    from core.neyra import NeyraAgent
     from core.reflection import ReflectionEngine
 
 logger = logging.getLogger("neyra.discord")
@@ -887,7 +887,7 @@ class NeyraDiscordBot(discord.Client):
         )
 
     async def _collect_image_attachments(self, message: discord.Message) -> list[tuple[str, str]]:
-        from core.vision_util import prepare_image_for_vision, resolve_discord_image_mime
+        from core.voice.vision_util import prepare_image_for_vision, resolve_discord_image_mime
 
         from core.llm.profile import merged_vision_pipeline
 

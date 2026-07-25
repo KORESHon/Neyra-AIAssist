@@ -10,7 +10,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from core.external_storage import ExternalStorageAdapter, build_external_storage_adapter
+from core.runtime.external_storage import ExternalStorageAdapter, build_external_storage_adapter
 
 logger = logging.getLogger("neyra.backup")
 

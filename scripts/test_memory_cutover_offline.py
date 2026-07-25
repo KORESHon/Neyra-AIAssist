@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
 from core.memory import MemoryHub
 from core.memory.stores import NeyraDiary, PeopleDB
 from core.reflection import ReflectionEngine
-from core.timeutil import now_local
+from core.runtime.timeutil import now_local
 
 
 class _FakeLTM:

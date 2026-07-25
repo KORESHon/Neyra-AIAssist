@@ -61,7 +61,7 @@ def main() -> int:
 
     agent = None
     if manifest.id == "discord":
-        from core.agent import NeyraAgent
+        from core.neyra import NeyraAgent
 
         agent = NeyraAgent(cfg)
 
