@@ -482,7 +482,7 @@ def main() -> int:
 
         # Hub WM read failure must abort refresh (not overwrite with default template)
         import asyncio
-        from core import working_memory as wm_mod
+        from core.memory import working_memory as wm_mod
 
         saved_before = str(hub_d.sqlite.latest_wm_snapshot(user_id="u_wm")["content"])
         real_latest = hub_d.sqlite.latest_wm_snapshot

@@ -34,7 +34,7 @@ apply_runtime_patches()
 from core.agent import NeyraAgent
 from core.backup_manager import BackupManager
 from core.event_bus import CoreEvent
-from core.ltm_maintenance import execute_ltm_summarize
+from core.memory.ltm_maintenance import execute_ltm_summarize
 from core.plugins import PluginContext, PluginLoader, run_plugin_entrypoint
 from core.reflection import ReflectionEngine
 from core.runtime import HealthMonitor

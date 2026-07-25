@@ -498,7 +498,7 @@ class MemoryHub:
         self, internal_user_id: str, *, root: Any = None
     ) -> str:
         """WM snippet for prompt: latest SQLite snapshot only (Hub is the sole WM store)."""
-        from core import working_memory as wm
+        from core.memory import working_memory as wm
 
         snap = self.sqlite.latest_wm_snapshot(user_id=internal_user_id)
         if snap and str(snap.get("content") or "").strip():

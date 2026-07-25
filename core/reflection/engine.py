@@ -693,14 +693,14 @@ class ReflectionEngine:
             return ""
 
     def _ltm_scheduled_prune_job(self) -> None:
-        from core.ltm_maintenance import run_scheduled_prune
+        from core.memory.ltm_maintenance import run_scheduled_prune
 
         if self.agent is None:
             return
         run_scheduled_prune(self.agent, self.config)
 
     async def _ltm_scheduled_summarize_job(self) -> None:
-        from core.ltm_maintenance import run_scheduled_summarize
+        from core.memory.ltm_maintenance import run_scheduled_summarize
 
         if self.agent is None:
             return

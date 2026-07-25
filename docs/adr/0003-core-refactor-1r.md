@@ -17,19 +17,36 @@ Phase **1R** deep-refactors for readability without product behavior changes:
 3. Audit crutches/bugs found during moves; fix or document.
 4. Shrink 1B flat shims only after callers migrate.
 
-### First slice (landed)
+### Landed shelves
 
 ```
 core/agent/
   __init__.py          # exports NeyraAgent + constants
-  neyra.py             # NeyraAgent orchestration (still large)
+  neyra.py             # NeyraAgent orchestration (~2.2k; still large)
   reply_postprocess.py # sound tags / think blocks / empty salvage
   micro_plan.py        # PLAN stream filters
   prompts.py           # talk + brain system prompt builders
+  people_context.py    # people mention / dossier blocks
+  speakers.py          # speaker labels / spoken user lines
+  turn_events.py       # Event Bus publish helpers for turns
+  chat_log.py          # Hub chat_log dual-write helper
+
+core/reflection/
+  __init__.py          # exports ReflectionEngine
+  engine.py            # former core/reflection.py
+
+core/memory/
+  working_memory.py    # moved from core/working_memory.py
+  emotional_layer.py   # moved from core/emotional_layer.py
+  ltm_maintenance.py   # moved from core/ltm_maintenance.py
 ```
+
+Flat shims kept for transitional imports: `core/working_memory.py`, `core/emotional_layer.py`, `core/ltm_maintenance.py`.
+
+Canonical imports: `from core.memory import working_memory`, `emotional_layer`, `ltm_maintenance`; `from core.reflection import ReflectionEngine`.
 
 ## Consequences
 
-- Callers keep `from core.agent import NeyraAgent`.
-- Further slices: `prompts.py`, `chat.py`, `memory_ops.py`, then `reflection` / `tools` / WM packages.
+- Callers keep `from core.agent import NeyraAgent` and `from core.reflection import ReflectionEngine`.
+- Next: `tools` / `mcp_client` / `backup_manager` packages; further shrink `neyra.py`; then shim cleanup + crutch audit.
 - Prefer small reviewable commits per shelf.

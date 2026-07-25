@@ -24,14 +24,7 @@ from .reply_postprocess import (
     extract_sound_tags,
     extract_think_blocks,
 )
-from core.event_bus import (
-    CHAT_TURN_COMPLETED,
-    CHAT_TURN_FAILED,
-    MEMORY_LONG_TERM_WRITE,
-    MEMORY_SHORT_TERM_UPDATE,
-    CoreEvent,
-    EventBus,
-)
+from core.event_bus import EventBus
 from core.identity import UnifiedIdentityMapper
 
 logger = logging.getLogger("neyra.agent")
@@ -353,40 +346,22 @@ class NeyraAgent:
         latency_ms: Optional[float] = None,
     ) -> str:
         """Dual-write full turn into SQLite chat_log (Memory Hub). Returns turn_id."""
-        turn_id = self.memory_hub.new_turn_id()
-        base_meta = dict(meta or {})
+        from .chat_log import append_turn_to_chat_log
+
         asst_cfg = self.config.get("assistant") if isinstance(self.config.get("assistant"), dict) else {}
         assistant_name = str(asst_cfg.get("name") or "").strip() or None
-        rows = [
-            {
-                "role": "user",
-                "text": user_text,
-                "user_id": internal_user_id,
-                "display_name": display_name,
-                "channel_id": channel_id,
-                "source": source or "agent",
-                "turn_id": turn_id,
-                "meta": base_meta,
-            },
-            {
-                "role": "assistant",
-                "text": assistant_text,
-                "user_id": internal_user_id,
-                "display_name": assistant_name,
-                "channel_id": channel_id,
-                "source": source or "agent",
-                "turn_id": turn_id,
-                "latency_ms": latency_ms,
-                "meta": base_meta,
-            },
-        ]
-        try:
-            # Offload blocking SQLite IMMEDIATE txn off the event loop (ADR-0001).
-            await asyncio.to_thread(self.memory_hub.append_chat_batch, rows)
-        except Exception as e:
-            logger.exception("MemoryHub chat_log append failed: %s", e)
-            return ""
-        return turn_id
+        return await append_turn_to_chat_log(
+            self.memory_hub,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            internal_user_id=internal_user_id,
+            display_name=display_name,
+            channel_id=channel_id,
+            source=source,
+            assistant_name=assistant_name,
+            meta=meta,
+            latency_ms=latency_ms,
+        )
 
     def _setup_tools(self):
         """Инициализирует инструменты (вызываются вручную, не через bind_tools)."""
@@ -829,26 +804,17 @@ class NeyraAgent:
         author_display_name: Optional[str] = None,
     ) -> str:
         """Подпись собеседника для STM, HumanMessage и system prompt (этап B1)."""
-        u = (username or "").strip()
-        disp = (author_display_name or "").strip()
-        if u:
-            person = self.memory_hub.find_person(u, discord_id=discord_user_id)
-            if person and person.get("names"):
-                return f"{person['names'][0]} (Discord-ник: {u})"
-            return disp or u
-        if disp:
-            return disp
-        return "user"
+        from .speakers import resolve_speaker_label
+
+        return resolve_speaker_label(
+            self.memory_hub, username, discord_user_id, author_display_name
+        )
 
     def _format_spoken_user_message(self, text: str, speaker_label: str) -> str:
         """Префикс авторства реплики в контексте LLM ([Пользователь …]: …)."""
-        body = (text or "").strip()
-        sl = (speaker_label or "").strip()
-        if not sl:
-            return body
-        if body:
-            return f"[Пользователь {sl}]: {body}"
-        return f"[Пользователь {sl}]:"
+        from .speakers import format_spoken_user_message
+
+        return format_spoken_user_message(text, speaker_label)
 
     def _make_human_turn(
         self,
@@ -858,31 +824,13 @@ class NeyraAgent:
         speaker_label: Optional[str] = None,
     ):
         """HumanMessage: текст или мультимодальный контент (mime, base64) для VL."""
-        from langchain_core.messages import HumanMessage
+        from .speakers import make_human_turn
 
-        use_vl = bool(vision_images) and self.llm_vision is not None
-        if vision_images and not self.llm_vision:
-            logger.warning(
-                "Изображения в сообщении, но llm_vision нет: vision.enabled, vision.model или use_brain_model_for_vision "
-                "(или brain/VL без мультимодальности)."
-            )
-        if use_vl:
-            text = (user_message or "").strip() or "Что на изображении? Коротко по-русски."
-            text = self._format_spoken_user_message(text, speaker_label or "")
-            parts: list[dict] = [{"type": "text", "text": text}]
-            for mime, b64 in vision_images:
-                parts.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime};base64,{b64}",
-                            "detail": "auto",
-                        },
-                    }
-                )
-            return HumanMessage(content=parts)
-        return HumanMessage(
-            content=self._format_spoken_user_message(user_message, speaker_label or "")
+        return make_human_turn(
+            user_message,
+            vision_images,
+            speaker_label=speaker_label,
+            has_vision_llm=self.llm_vision is not None,
         )
 
     def _stream_llm(self, vision_images: Optional[list[tuple[str, str]]]):
@@ -1019,7 +967,7 @@ class NeyraAgent:
         speaker_label: str,
         reason: str,
     ) -> None:
-        from core import working_memory as wm
+        from core.memory import working_memory as wm
 
         await wm.refresh_working_memory_async(
             self,
@@ -1042,7 +990,7 @@ class NeyraAgent:
         speaker_label: str,
         stm_trimmed: bool = False,
     ) -> None:
-        from core import working_memory as wm
+        from core.memory import working_memory as wm
 
         if not wm.wm_enabled(self.config):
             return
@@ -1078,7 +1026,7 @@ class NeyraAgent:
         metadata: dict,
         speaker_label: str,
     ) -> None:
-        from core import emotional_layer as el
+        from core.memory import emotional_layer as el
 
         md = dict(metadata)
         if el.layer_enabled(self.config) and el.layer_cfg(self.config).get("ltm_emotion_sync"):
@@ -1106,7 +1054,7 @@ class NeyraAgent:
         username: Optional[str],
         discord_user_id: Optional[str],
     ) -> None:
-        from core import emotional_layer as el
+        from core.memory import emotional_layer as el
 
         if not el.layer_enabled(self.config) or not el.layer_cfg(self.config).get("diary_after_turn", True):
             return
@@ -1349,27 +1297,9 @@ class NeyraAgent:
 
     def _detect_mentioned_names(self, text: str) -> list[str]:
         """Определение известных имён/ников с учетом русских окончаний (падежей)."""
-        import re
-        text_lower = text.lower()
-        name_map = self.memory_hub.get_all_names_map()
-        found = []
-        for name_lower, pid in name_map.items():
-            if pid in found:
-                continue
-            
-            # Точное совпадение (для коротких имен или английских ников)
-            if name_lower in text_lower:
-                found.append(pid)
-                continue
-                
-            # Совпадение с учетом падежей (обрезаем последнюю букву и ищем как корень слова)
-            if len(name_lower) >= 4:
-                stem = name_lower[:-1]
-                # Ищем \bкорень + 0-2 буквы окончания\b
-                if re.search(r'\b' + re.escape(stem) + r'[а-яa-z]{0,2}\b', text_lower):
-                    found.append(pid)
-                    
-        return found
+        from .people_context import detect_mentioned_names
+
+        return detect_mentioned_names(text, self.memory_hub.get_all_names_map())
 
     def _split_people_context_for_prompt(
         self,
@@ -1380,31 +1310,16 @@ class NeyraAgent:
         """
         B2: досье текущего пользователя отдельно от прочих упомянутых (без дублирования).
         """
-        active_pid: Optional[str] = None
-        u = (username or "").strip()
-        if u:
-            ap = self.memory_hub.find_person(u, discord_id=discord_user_id)
-            if ap:
-                active_pid = ap["id"]
-        active_block = (self.memory_hub.get_person_summary(active_pid) or "").strip() if active_pid else ""
-        other_ids = [pid for pid in mentioned if not active_pid or pid != active_pid]
-        if not other_ids:
-            return active_block, ""
-        summaries = [self.memory_hub.get_person_summary(pid) for pid in other_ids]
-        others = "\n\n".join(s for s in summaries if s)
-        return active_block, others
+        from .people_context import split_people_context
+
+        return split_people_context(self.memory_hub, mentioned, username, discord_user_id)
 
     @staticmethod
     def _shrink_people_sections(active: str, mentioned: str, max_chars: int) -> tuple[str, str]:
         """Ужимает блоки досье при переполнении контекста; приоритет — активный собеседник."""
-        a, m = (active or "").strip(), (mentioned or "").strip()
-        if len(a) + len(m) <= max_chars:
-            return a, m
-        if a:
-            a_cap = min(len(a), max(max_chars // 2 + 80, max_chars - 120))
-            a = a[:a_cap]
-        m = m[: max(0, max_chars - len(a))]
-        return a, m
+        from .people_context import shrink_people_sections
+
+        return shrink_people_sections(active, mentioned, max_chars)
 
     # ─── Инструменты — ручной вызов ────────────────────────────────────────
 
@@ -1703,42 +1618,19 @@ class NeyraAgent:
         sounds: list,
         metadata: dict,
     ) -> None:
-        self.event_bus.publish(
-            CoreEvent(
-                MEMORY_SHORT_TERM_UPDATE,
-                "core.agent",
-                {
-                    "user_id": internal_user_id,
-                    "channel_id": channel_id,
-                    "short_memory_messages": len(self.short_memory),
-                },
-            )
-        )
-        self.event_bus.publish(
-            CoreEvent(
-                MEMORY_LONG_TERM_WRITE,
-                "core.agent",
-                {
-                    "user_id": internal_user_id,
-                    "username": metadata.get("username"),
-                    "discord_id": metadata.get("discord_id"),
-                    "rag_enabled": self.long_memory.rag_enabled,
-                },
-            )
-        )
-        self.event_bus.publish(
-            CoreEvent(
-                CHAT_TURN_COMPLETED,
-                "core.agent",
-                {
-                    "user_id": internal_user_id,
-                    "channel_id": channel_id,
-                    "username": username,
-                    "user_chars": len(user_message or ""),
-                    "assistant_chars": len(clean_text or ""),
-                    "sounds": list(sounds) if sounds else [],
-                },
-            )
+        from .turn_events import publish_memory_and_chat_events
+
+        publish_memory_and_chat_events(
+            self.event_bus,
+            internal_user_id=internal_user_id,
+            channel_id=channel_id,
+            username=username,
+            user_message=user_message,
+            clean_text=clean_text,
+            sounds=sounds,
+            metadata=metadata,
+            short_memory_len=len(self.short_memory),
+            rag_enabled=self.long_memory.rag_enabled,
         )
 
     def _publish_chat_turn_failed(
@@ -1748,16 +1640,13 @@ class NeyraAgent:
         channel_id: Optional[str],
         error: str,
     ) -> None:
-        self.event_bus.publish(
-            CoreEvent(
-                CHAT_TURN_FAILED,
-                "core.agent",
-                {
-                    "user_id": internal_user_id,
-                    "channel_id": channel_id,
-                    "error": error[:2000],
-                },
-            )
+        from .turn_events import publish_chat_turn_failed
+
+        publish_chat_turn_failed(
+            self.event_bus,
+            internal_user_id=internal_user_id,
+            channel_id=channel_id,
+            error=error,
         )
 
     async def chat(
@@ -2482,8 +2371,8 @@ class NeyraAgent:
                 "connected_servers": self.mcp_manager.connected_servers(),
                 "errors": self.mcp_manager.last_errors(),
             }
-        from core import emotional_layer as em
-        from core import working_memory as wm
+        from core.memory import emotional_layer as em
+        from core.memory import working_memory as wm
 
         return {
             "mode": self.mode,
