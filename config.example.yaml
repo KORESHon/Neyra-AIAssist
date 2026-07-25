@@ -360,30 +360,85 @@ memory:
   reflection_time: "04:00"
 
 # ---------------------------
-# Cloud voice adapters / Облачные voice-адаптеры
+# Voice STT (canonical for STTEngine) / Распознавание речи
 # ---------------------------
-# EN: These are adapters for future/local voice interfaces.
-# RU: Это адаптеры для будущих/локальных голосовых интерфейсов.
-voice_cloud:
+# EN: STTEngine reads ONLY voice.stt (key "engine", not "provider").
+# RU: STTEngine читает ТОЛЬКО voice.stt (ключ "engine", не "provider").
+# EN: voice_cloud.stt is NOT a drop-in for STTEngine — see voice_cloud below (TTS + legacy notes).
+# RU: voice_cloud.stt не включает STTEngine — см. voice_cloud ниже (TTS + legacy).
+#
+# EN: engine: faster-whisper | groq | deepgram | openrouter (openrouter = Stage 2F)
+# RU: engine: faster-whisper | groq | deepgram | openrouter (openrouter = фаза 2F)
+# EN: OpenRouter STT uses the same OPENROUTER_API_KEY as LLM (no separate STT secret).
+# RU: OpenRouter STT использует тот же OPENROUTER_API_KEY, что и LLM.
+# Docs: https://openrouter.ai/docs/guides/overview/multimodal/stt
+voice:
   stt:
-    # EN: STT provider key.
-    # RU: Ключ провайдера распознавания речи.
-    provider: "deepgram"
+    # EN: Active STT backend for core.voice.stt.STTEngine.
+    # RU: Активный бэкенд STT для core.voice.stt.STTEngine.
+    engine: "deepgram"
 
-    # EN: STT model name.
-    # RU: Название STT-модели.
-    model: "nova-3"
-
-    # EN: STT API base URL.
-    # RU: Базовый URL STT API.
-    base_url: "https://api.deepgram.com/v1"
-
-    # EN: Primary recognition language.
-    # RU: Основной язык распознавания.
+    # EN: Default language (ISO-639-1). Used by local/groq/openrouter; Deepgram may override.
+    # RU: Язык по умолчанию (ISO-639-1).
     language: "ru"
 
-    # EN: STT request timeout.
-    # RU: Таймаут STT-запроса.
+    # EN: Request timeout seconds (cloud engines).
+    # RU: Таймаут облачных запросов (сек).
+    timeout_seconds: 30.0
+
+    # EN: Max cloud retries before optional local fallback.
+    # RU: Число ретраев облака до опционального local fallback.
+    max_retries: 1
+
+    # EN: If cloud fails, try local faster-whisper (requires package).
+    # RU: При сбое облака пробовать local faster-whisper (нужен пакет).
+    fallback_to_local: true
+
+    # EN: Local faster-whisper model size when engine=faster-whisper (or fallback).
+    # RU: Размер локальной модели faster-whisper.
+    model: "small"
+    device: "cpu"
+
+    # EN: OpenRouter /audio/transcriptions (Stage 2F). Model ~$0.04/hour audio.
+    # RU: OpenRouter STT (фаза 2F). Модель ~$0.04/час аудио.
+    openrouter:
+      model: "openai/whisper-large-v3-turbo"
+      # EN: Empty = use openrouter.base_url from root config.
+      # RU: Пусто = взять openrouter.base_url из корневого конфига.
+      base_url: ""
+      temperature: 0.0
+
+    deepgram:
+      model: "nova-3"
+      base_url: "https://api.deepgram.com/v1"
+      # EN: api_key from DEEPGRAM_API_KEY via apply_env_secrets (do not put secrets in YAML).
+      # RU: api_key подставляется из DEEPGRAM_API_KEY (не хранить секреты в YAML).
+      smart_format: true
+      punctuate: true
+      upload_payload: "linear16"
+      use_detect_language: false
+
+    groq:
+      model: "whisper-large-v3-turbo"
+      base_url: "https://api.groq.com/openai/v1"
+      # EN: api_key from GROQ_API_KEY via apply_env_secrets.
+      # RU: api_key из GROQ_API_KEY.
+      temperature: 0.0
+      filter_hallucinations: true
+
+# ---------------------------
+# Cloud voice adapters / Облачные voice-адаптеры (TTS + legacy STT notes)
+# ---------------------------
+# EN: TTS adapters live here. STTEngine does NOT read voice_cloud.stt.
+# RU: Здесь TTS. STTEngine НЕ читает voice_cloud.stt — канон выше: voice.stt.
+voice_cloud:
+  stt:
+    # EN: Legacy/docs-only mirror — prefer voice.stt.engine for runtime.
+    # RU: Legacy/заметка — для runtime используйте voice.stt.engine.
+    provider: "deepgram"
+    model: "nova-3"
+    base_url: "https://api.deepgram.com/v1"
+    language: "ru"
     timeout_seconds: 30.0
 
   tts:

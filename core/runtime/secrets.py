@@ -40,12 +40,22 @@ def apply_env_secrets(cfg: dict) -> None:
 
     g = _s("GROQ_API_KEY")
     if g:
+        # Canonical STTEngine path: voice.stt.groq.api_key
+        voice_stt = cfg.setdefault("voice", {}).setdefault("stt", {})
+        groq_block = voice_stt.setdefault("groq", {})
+        if isinstance(groq_block, dict):
+            groq_block["api_key"] = g
+        # Legacy mirror (voice_cloud is not read by STTEngine)
         vc = cfg.setdefault("voice_cloud", {})
         stt = vc.setdefault("stt", {})
         stt["groq_api_key"] = g
 
     dg = _s("DEEPGRAM_API_KEY")
     if dg:
+        voice_stt = cfg.setdefault("voice", {}).setdefault("stt", {})
+        dg_block = voice_stt.setdefault("deepgram", {})
+        if isinstance(dg_block, dict):
+            dg_block["api_key"] = dg
         vc = cfg.setdefault("voice_cloud", {})
         stt = vc.setdefault("stt", {})
         stt["deepgram_api_key"] = dg
