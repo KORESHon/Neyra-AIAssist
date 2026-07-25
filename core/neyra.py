@@ -175,6 +175,7 @@ class NeyraAgent:
         attached_image_caption: str = "",
         working_memory_context: str = "",
         include_appearance: bool = False,
+        pre_context: str = "",
     ) -> str:
         """Собирает системный промпт. Порядок (B2): роль → активный → упомянутые → правила → RAG → остальное."""
         from core.agent.persona import build_talk_base_prompt
@@ -203,6 +204,7 @@ class NeyraAgent:
             brain_router_context=brain_router_context,
             attached_image_caption=attached_image_caption,
             working_memory_context=working_memory_context,
+            pre_context=pre_context,
         )
 
     def _build_brain_system_prompt(
@@ -218,6 +220,7 @@ class NeyraAgent:
         mcp_tools_catalog: str = "",
         last_image_context: Optional[str] = None,
         working_memory_context: str = "",
+        pre_context: str = "",
     ) -> str:
         """Компактный системный промпт для brain: инструменты/факты + короткий identity snippet."""
         from core.agent.persona import persona_brain_snippet
@@ -235,6 +238,7 @@ class NeyraAgent:
             mcp_tools_catalog=mcp_tools_catalog,
             last_image_context=last_image_context,
             working_memory_context=working_memory_context,
+            pre_context=pre_context,
         )
 
     async def _caption_vision_images(

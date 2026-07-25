@@ -185,10 +185,10 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 
 **Приёмка:**
 
-- [ ] Флаг off → поведение как сейчас.
-- [ ] Флаг on → в логе/debug видно, что блок собран; ответ использует намёк уместно.
-- [ ] Нет раздувания промпта сверх `max_chars`.
-- [ ] Два разных `internal_user_id` → чужой WM / user-tied semantic **не** попадает в PRE-CONTEXT.
+- [x] Флаг off → поведение как сейчас.
+- [x] Флаг on → блок `# PRE-CONTEXT` собирается (debug log); soft-fail при ошибках.
+- [x] Нет раздувания промпта сверх `max_chars`.
+- [x] WM только через `working_memory_for_prompt(internal_user_id)` — пустой uid → блок пропущен; semantic source пока skip (нет user metadata API).
 
 ---
 

@@ -336,6 +336,17 @@ memory:
     max_file_chars: 12000
     llm_max_tokens: 1200
 
+  # EN: Stage 2B — short PRE-CONTEXT hint (diary + user-scoped WM). Off = previous behavior.
+  # RU: Этап 2B — короткий PRE-CONTEXT (дневник + WM пользователя). Off = как раньше.
+  # EN: WM always requires internal_user_id (never global latest snapshot).
+  # RU: WM всегда с internal_user_id (никогда глобальный latest snapshot).
+  # EN: `semantic` listed but skipped until user-scoped semantic API exists.
+  pre_context:
+    enabled: false
+    max_chars: 600
+    sources: [diary, wm]
+    inject_lane: talk   # talk | brain | both
+
   # EN: Persona affect in diary / PeopleDB / LTM metadata (memory_model). ltm_emotion_sync adds latency per turn.
   # RU: Эмоции персоны в дневнике / досье / метаданные LTM; ltm_emotion_sync — доп. задержка на ход.
   emotional_layer:

@@ -43,6 +43,7 @@ def build_talk_system_prompt(
         attached_image_caption=caption_ok,
         working_memory_context=prep.wm_snip,
         include_appearance=bool(getattr(prep, "include_appearance", False)),
+        pre_context=str(getattr(prep, "pre_context", "") or ""),
     )
 
 

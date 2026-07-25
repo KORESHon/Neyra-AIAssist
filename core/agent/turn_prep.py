@@ -31,6 +31,7 @@ class TurnPrep:
     talk_vm: Optional[list[tuple[str, str]]]
     has_vis_prompt: bool
     include_appearance: bool
+    pre_context: str
     brain_sys: str
 
 
@@ -102,12 +103,25 @@ async def prepare_turn(
         has_vis_prompt = bool(vision_images) and not caption_ok and agent.llm_vision is None
 
     from core.agent.persona import should_inject_appearance
+    from core.agent.pre_context import build_pre_context, lane_wants_pre_context
 
     include_appearance = should_inject_appearance(
         agent.config,
         user_message=user_message,
         has_vision_images=bool(vision_images),
     )
+
+    pre_context = build_pre_context(
+        agent,
+        internal_user_id=internal_uid,
+        user_message=user_message,
+    )
+    if pre_context:
+        logger.debug(
+            "PRE-CONTEXT собран (%s chars) lane=%s",
+            len(pre_context),
+            "on",
+        )
 
     brain_sys = agent._build_brain_system_prompt(
         extra_memories=memories,
@@ -120,6 +134,7 @@ async def prepare_turn(
         mcp_tools_catalog=mcp_catalog,
         last_image_context=last_img_ctx,
         working_memory_context=wm_snip,
+        pre_context=pre_context if lane_wants_pre_context(agent.config, "brain") else "",
     )
 
     return TurnPrep(
@@ -143,5 +158,6 @@ async def prepare_turn(
         talk_vm=talk_vm,
         has_vis_prompt=has_vis_prompt,
         include_appearance=include_appearance,
+        pre_context=pre_context if lane_wants_pre_context(agent.config, "talk") else "",
         brain_sys=brain_sys,
     )
