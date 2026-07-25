@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (PR #7 — phase 1R complete; merge after final acceptance 2026-07-25).
+Accepted (merged via [PR #7](https://github.com/KORESHon/Neyra-AIAssist/pull/7), `1b873d0`, 2026-07-25).
 
 ## Context
 
