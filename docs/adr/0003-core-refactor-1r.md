@@ -25,6 +25,7 @@ core/agent/
   neyra.py             # NeyraAgent orchestration (still large)
   reply_postprocess.py # sound tags / think blocks / empty salvage
   micro_plan.py        # PLAN stream filters
+  prompts.py           # talk + brain system prompt builders
 ```
 
 ## Consequences

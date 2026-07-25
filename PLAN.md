@@ -304,7 +304,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 | # | Задача | Done when | Статус |
 |---|--------|-----------|--------|
 | 1 | Inventory: монолиты и «корень `core/`» (`agent.py`, `tools.py`, `reflection.py`, …) | список файлов + целевые пакеты/имена в PLAN/PR | `[x]` см. карту ниже |
-| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[~]` пакет + `reply_postprocess` / `micro_plan`; оркестрация ещё в `neyra.py` |
+| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[~]` пакет: `neyra` + `reply_postprocess` + `micro_plan` + `prompts`; chat/memory_ops ещё в `neyra.py` |
 | 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[ ]` |
 | 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[ ]` |
 | 5 | Финальная раскладка по подпапкам `core/` + сужение/снятие shims 1B | канонические импорты везде критичных callers | `[ ]` |
@@ -314,7 +314,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 
 | Сейчас (корень `core/`) | ~строк | Цель |
 |-------------------------|--------|------|
-| `agent.py` → **`core/agent/`** | ~2.6k | ✅ пакет: `neyra.py` + `reply_postprocess.py` + `micro_plan.py`; дальше — prompts / chat / memory_ops |
+| `agent.py` → **`core/agent/`** | ~2.6k | ✅ пакет: `neyra.py` + `reply_postprocess` + `micro_plan` + `prompts`; дальше — chat / memory_ops |
 | `reflection.py` | ~720 | `core/reflection/` (engine + journal helpers) |
 | `ltm_maintenance.py` | ~450 | `core/memory/ltm_maintenance.py` или `core/memory/maintenance.py` |
 | `tools.py` | ~420 | `core/tools/` (registry + builtins) |
