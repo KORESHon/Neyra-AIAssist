@@ -44,7 +44,7 @@
 | **Канон импорта** | `from core.neyra import NeyraAgent` (lazy re-export: `from core.agent import NeyraAgent`) |
 | **Интерфейсы** | Discord resident + Internal API (`:8787`) + dashboard; MCP debug-server |
 | **ADR** | [0001](docs/adr/0001-memory-hub-v2.md) Hub · [0002](docs/adr/0002-core-layout-1b.md) layout · [0003](docs/adr/0003-core-refactor-1r.md) refactor |
-| **Активный фокус** | **Этап 2** — фазы 2A–2E (план в [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10)) |
+| **Активный фокус** | **Этап 2** — фазы 2A–2F (план в [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10)) |
 
 **Windows runtime:** `.venv_win` + `run_neyra.bat` → `scripts/neyra_win_launcher.ps1`.  
 **Linux/WSL:** `run_neyra.sh` (`*.sh` → LF via `.gitattributes`); venv `.venv` или `~/neyra-venv` на `/mnt`.
@@ -56,7 +56,7 @@
 | # | Этап | Статус |
 |---|------|--------|
 | **1** | Memory Hub v2 + реорганизация `core/` (фазы 1A → 1B → 1R) | ✅ done |
-| **2** | Точечные улучшения (фазы 2A–2E; см. ниже) | ▶ **активный** · трек [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) |
+| **2** | Точечные улучшения (фазы 2A–2F; см. ниже) | ▶ **активный** · трек [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) |
 | **3** | Web UI как WebSocket-мост к Event Bus | очередь |
 | **4** | Автономный сервер + тонкие клиенты / колонка | дальнее будущее |
 
@@ -137,8 +137,9 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 | **2C — Session archive** | политика при overflow STM/контекста | явный dump в Hub + опц. trim/clean start; событие на шине |
 | **2D — Security pass** | сверка секретов и границ людей | чеклист закрыт; нет утечек в логах/API; доки обновлены |
 | **2E — Fast-Path home** | короткие команды умного дома без полного brain+RAG | intent → tool/`home.*`; fallback в brain; конфиг + smoke |
+| **2F — Voice STT OpenRouter** | провайдер STT через OpenRouter Whisper | `openai/whisper-large-v3-turbo` в `core/voice`; переключение конфигом; smoke на клипе |
 
-**Отложено (не фаза этапа 2):** live-STT через Nemotron Omni на OpenRouter — модель принимает **файл/клип** (`input_audio` / `audio_url`), а не live mic-stream. Live voice → этап 4 (Deepgram live / local Whisper / WSS audio). File/clip Omni-STT можно вернуть позже как опциональный провайдер, если понадобится offline-транскрипт без live.
+**Отложено:** live mic-stream (realtime WebSocket ASR). Nemotron Omni на chat/completions — file/clip audio для «послушай и ответь», не выделенный STT endpoint; для транскрипта в этапе 2 берём **OpenRouter `/audio/transcriptions`** (фаза 2F). Live колонка / Deepgram live → этап 4.
 
 ---
 
@@ -252,6 +253,55 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 
 ---
 
+### Фаза 2F — Voice STT: OpenRouter Whisper
+
+**Проблема:** в `core/voice/stt.py` уже есть local faster-whisper, Groq и Deepgram, но нет провайдера через тот же ключ OpenRouter, что и LLM. Нужен дешёвый облачный STT без отдельного Deepgram/Groq ключа.
+
+**Целевая модель:** `openai/whisper-large-v3-turbo` (~$0.04 / час аудио; duration-based).  
+**Дока:** [OpenRouter Speech-to-Text](https://openrouter.ai/docs/guides/overview/multimodal/stt) — `POST https://openrouter.ai/api/v1/audio/transcriptions`.
+
+**Контракт API (зафиксировать в коде):**
+
+1. Auth: тот же Bearer, что LLM (`OPENROUTER_API_KEY` / `openrouter.api_key`).
+2. Два пути входа (оба поддерживать или явно выбрать один + fallback):
+   - **JSON:** `{ "model", "input_audio": { "data": "<raw base64>", "format": "wav|mp3|…" }, "language"? }` — base64 = сырые байты, не data-URI.
+   - **multipart** (OpenAI-compatible): `file` + `model` (+ `language`), лимит 25 MB.
+3. Ответ: `{ "text", "usage": { "seconds", "cost", … } }`; логировать `usage.seconds` / `usage.cost` на debug, не светить ключ.
+4. Опции: `language` (default `ru` как у текущего STT), `temperature` по желанию; `response_format=json` (default). Длиннее ~60s upstream timeout — резать/чанкить клипы.
+5. Форматы: как минимум `wav`, `mp3`, `webm`, `ogg` (Discord/браузер).
+
+**Сделать в коде:**
+
+1. Расширить `core/voice/stt.py` (или тонкий `core/voice/openrouter_stt.py` + вызов из `STTEngine`):
+   - `engine` / `provider`: `openrouter` (рядом с `faster-whisper` / `groq` / `deepgram`).
+   - `model`: default `openai/whisper-large-v3-turbo` (конфиг перекрывает).
+   - `base_url`: default `https://openrouter.ai/api/v1` (или из `openrouter.base_url`).
+2. Конфиг — синхрон `config.example.yaml` ↔ `config.yaml` (и/или `voice_cloud.stt` / `voice.stt`, как принято в репо сейчас):
+   - `voice.stt.engine: openrouter` (или эквивалент в актуальной схеме).
+   - `voice.stt.openrouter.model: openai/whisper-large-v3-turbo`
+   - `language`, `timeout_seconds`, `fallback_to_local` (как у Groq/Deepgram).
+3. Переиспользовать существующий вход `transcribe(path|bytes)` — плагины (`local_voice`, будущий WS audio) не должны знать про OpenRouter.
+4. Ошибки: 401/429/timeout → лог + опц. fallback на local, без падения ядра.
+5. Короткий smoke: скрипт или ручной вызов на тестовом wav → непустой `text` + cost в логе (без коммита секретов/PII).
+6. Дока: ссылка на OpenRouter STT в HELP/ops; напоминание про цену (~4¢/час) и что это **file/clip**, не live mic.
+
+**Не делать в 2F:**
+
+- Live/streaming ASR (WebSocket mic) — этап 4.
+- TTS через OpenRouter (отдельный трек / этап 4).
+- Nemotron Omni chat+audio как замена Whisper (другой контракт; при необходимости — позже).
+- Обязательная смена default стенда на OpenRouter STT (достаточно поддержки + example; default можно оставить текущий).
+
+**Приёмка:**
+
+- [ ] `engine=openrouter` + модель turbo транскрибирует короткий рус/eng клип.
+- [ ] Ключ только из существующего OpenRouter secret path.
+- [ ] `engine=deepgram|groq|faster-whisper` без регрессий.
+- [ ] example + local config sync; в логе нет API key.
+- [ ] Дока со ссылкой на https://openrouter.ai/docs/guides/overview/multimodal/stt
+
+---
+
 ### Регрессия этапа 2 (прогон перед закрытием этапа)
 
 - [ ] `use_brain_model_for_vision: true` — вложение в Nemotron (brain), talk на сводке.
@@ -259,13 +309,14 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 - [ ] Запрос на код / плагин — brain вызывает `delegate_to_deep_logic`.
 - [ ] 429 на `memory_model` — backoff в логе, ядро не падает.
 - [ ] Discord text stream + MCP `/v1/chat` без регрессий после merge фаз.
+- [ ] STT: openrouter turbo на тестовом клипе (если ключ есть); остальные engines не сломаны.
 
 ### Вне scope этапа 2
 
 - Полный Web UI WS-мост (этап 3).
-- Live STT/TTS / колонка / self-host voice stack (этап 4).
+- Live mic ASR / колонка / полный self-host voice stack (этап 4) — **file/clip** OpenRouter STT как раз в 2F.
 - sqlite-vss, Obsidian export, desktop/mobile клиенты.
-- Nemotron Omni как **live** микрофонный STT — API даёт file/clip audio, не realtime media stream.
+- Nemotron Omni как live микрофонный STT.
 
 ---
 
@@ -313,8 +364,7 @@ Neyra = **один сервер**; колонка / телефон / Web UI = mi
 |-------|-----|-----|
 | **Local** | Whisper / faster-whisper | CosyVoice / Silero / Piper |
 | **Cloud** | Deepgram, Yandex SpeechKit, … | те же экосистемы |
-| **Фундамент** | OpenRouter STT endpoint / file-clip Omni; live mic — отдельные live-провайдеры | слот провайдера без ломки агента |
-
+| **Фундамент** | OpenRouter `/audio/transcriptions` (Whisper turbo — фаза **2F**); live mic — отдельные live-провайдеры | слот провайдера без ломки агента |
 Cloud и local — равноправны. Колонка шлёт аудио на сервер; backend выбирается конфигом.
 
 ### Память / vision на сервере
