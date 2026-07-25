@@ -104,9 +104,18 @@ def normalize_voice_config(config: dict[str, Any]) -> dict[str, Any]:
         return _normalize_modality_shape(raw)
 
     if _is_is_local_shape(raw):
-        return _migrate_is_local_shape(raw)
+        return _migrate_is_local_shape(raw, legacy_cloud_root)
 
     return _migrate_legacy_flat(raw, legacy_cloud_root)
+
+
+def _lane_enable(block: dict[str, Any], *, provider_implies: bool = False) -> bool:
+    """Explicit enable/enabled wins; otherwise False (cloud may infer from provider)."""
+    if "enable" in block or "enabled" in block:
+        return _truthy_enable(block, default=False)
+    if provider_implies and str(block.get("provider") or "").strip():
+        return True
+    return False
 
 
 def _normalize_modality_shape(raw: dict[str, Any]) -> dict[str, Any]:
@@ -114,13 +123,21 @@ def _normalize_modality_shape(raw: dict[str, Any]) -> dict[str, Any]:
     stt = _as_dict(raw.get("stt"))
     tts = _as_dict(raw.get("tts"))
 
-    def _lane(mod: dict[str, Any], *, default_cloud_enable: bool) -> dict[str, Any]:
+    def _lane(mod: dict[str, Any]) -> dict[str, Any]:
         loc = _as_dict(mod.get("local"))
         cld = _as_dict(mod.get("cloud"))
+        local_on = _lane_enable(loc)
+        cloud_on = _lane_enable(cld, provider_implies=True)
+        if local_on and not cloud_on:
+            prefer = _norm_prefer(mod.get("prefer"), "local")
+        elif cloud_on and not local_on:
+            prefer = _norm_prefer(mod.get("prefer"), "cloud")
+        else:
+            prefer = _norm_prefer(mod.get("prefer"), "cloud")
         return {
-            "prefer": _norm_prefer(mod.get("prefer"), "cloud"),
-            "local": {**loc, "enable": _truthy_enable(loc, default=False)},
-            "cloud": {**cld, "enable": _truthy_enable(cld, default=default_cloud_enable)},
+            "prefer": prefer,
+            "local": {**loc, "enable": local_on},
+            "cloud": {**cld, "enable": cloud_on},
         }
 
     # If only one modality present, keep the other disabled-safe.
@@ -128,8 +145,8 @@ def _normalize_modality_shape(raw: dict[str, Any]) -> dict[str, Any]:
         stt_out = _empty_modality()
         tts_out = _empty_modality()
     else:
-        stt_out = _lane(stt, default_cloud_enable=bool(stt))
-        tts_out = _lane(tts, default_cloud_enable=bool(tts))
+        stt_out = _lane(stt) if stt else _empty_modality()
+        tts_out = _lane(tts) if tts else _empty_modality()
 
     return {
         "language": language,
@@ -138,7 +155,10 @@ def _normalize_modality_shape(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _migrate_is_local_shape(raw: dict[str, Any]) -> dict[str, Any]:
+def _migrate_is_local_shape(
+    raw: dict[str, Any],
+    legacy_cloud_root: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     is_local = bool(raw.get("is_local", False))
     loc = _as_dict(raw.get("local"))
     cld = _as_dict(raw.get("cloud"))
@@ -146,6 +166,12 @@ def _migrate_is_local_shape(raw: dict[str, Any]) -> dict[str, Any]:
     cld_stt = _as_dict(cld.get("stt"))
     loc_tts = _as_dict(loc.get("tts"))
     cld_tts = _as_dict(cld.get("tts"))
+    # Merge legacy voice_cloud.tts secrets into cloud TTS (is_local shape)
+    lc_tts = _as_dict(_as_dict(legacy_cloud_root).get("tts"))
+    if lc_tts:
+        merged_tts = dict(lc_tts)
+        merged_tts.update(cld_tts)
+        cld_tts = merged_tts
     language = str(raw.get("language") or "ru")
     prefer = "local" if is_local else "cloud"
     timeout = float(raw.get("timeout_seconds", 30.0))

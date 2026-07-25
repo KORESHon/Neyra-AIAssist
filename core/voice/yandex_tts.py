@@ -145,11 +145,18 @@ async def synthesize_from_config(text: str, config: dict[str, Any]) -> bytes:
         )
         return b""
 
-    api_key = str(block.get("api_key") or "").strip()
-    folder_id = str(block.get("folder_id") or "").strip()
+    import os
+
+    api_key = str(block.get("api_key") or "").strip() or (
+        os.environ.get("YANDEX_API_KEY") or ""
+    ).strip()
+    folder_id = str(block.get("folder_id") or "").strip() or (
+        os.environ.get("YANDEX_FOLDER_ID") or os.environ.get("YANDEX_ID_KEY") or ""
+    ).strip()
     if not api_key or not folder_id:
         logger.error(
-            "TTS(Yandex): нет api_key/folder_id — озвучка пропущена, поднастройте voice.tts.cloud"
+            "TTS(Yandex): нет api_key/folder_id — озвучка пропущена, "
+            "задайте YANDEX_* в .env или voice.tts.cloud"
         )
         return b""
 

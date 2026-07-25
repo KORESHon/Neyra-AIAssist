@@ -50,6 +50,19 @@ def _tts_is_modality(tts: dict) -> bool:
     return False
 
 
+def _voice_is_is_local_shape(voice: dict) -> bool:
+    """Intermediate shape: voice.is_local + voice.local/cloud.{stt,tts}."""
+    if not voice:
+        return False
+    if "is_local" in voice:
+        return True
+    loc = voice.get("local")
+    cld = voice.get("cloud")
+    if not isinstance(loc, dict) or not isinstance(cld, dict):
+        return False
+    return ("stt" in loc or "tts" in loc) and ("stt" in cld or "tts" in cld)
+
+
 def apply_env_secrets(cfg: dict) -> None:
     """Непустые переменные из окружения перезаписывают соответствующие поля конфига."""
     if not isinstance(cfg, dict):
@@ -72,15 +85,35 @@ def apply_env_secrets(cfg: dict) -> None:
         """
         Inject into existing shape only.
         - Modality: voice.stt.cloud.<provider>.api_key
+        - is_local: voice.cloud.stt.<provider>.api_key
         - Legacy flat: voice.stt.<provider>.api_key (+ voice_cloud mirror)
-        Never create bare voice.cloud / voice.stt.cloud that would poison normalize.
+        Never invent modality cloud on a clean legacy YAML.
         """
-        voice = cfg.setdefault("voice", {})
+        voice = cfg.get("voice")
         if not isinstance(voice, dict):
+            voice = {}
+            cfg["voice"] = voice
+
+        # Intermediate is_local shape first (do not create voice.stt)
+        if _voice_is_is_local_shape(voice):
+            cloud = voice.setdefault("cloud", {})
+            if isinstance(cloud, dict):
+                cloud_stt = cloud.setdefault("stt", {})
+                if isinstance(cloud_stt, dict):
+                    block = cloud_stt.setdefault(provider, {})
+                    if isinstance(block, dict):
+                        block["api_key"] = key
+            vc = cfg.setdefault("voice_cloud", {})
+            if isinstance(vc, dict):
+                vc_stt = vc.setdefault("stt", {})
+                if isinstance(vc_stt, dict):
+                    vc_stt[f"{provider}_api_key"] = key
             return
-        stt = voice.setdefault("stt", {})
+
+        stt = voice.get("stt")
         if not isinstance(stt, dict):
-            return
+            stt = {}
+            voice["stt"] = stt
 
         if _stt_is_modality(stt):
             cloud = stt.setdefault("cloud", {})
@@ -90,7 +123,7 @@ def apply_env_secrets(cfg: dict) -> None:
                     block["api_key"] = key
             return
 
-        # Legacy flat / empty stt — do not invent modality cloud
+        # Legacy flat — do not invent modality cloud
         flat = stt.setdefault(provider, {})
         if isinstance(flat, dict):
             flat["api_key"] = key
@@ -158,17 +191,31 @@ def apply_env_secrets(cfg: dict) -> None:
     yk = _s("YANDEX_API_KEY")
     yf = _s("YANDEX_FOLDER_ID") or _s("YANDEX_ID_KEY")
     if yk or yf:
-        voice = _as_dict(cfg.get("voice"))
+        voice = cfg.get("voice")
+        if not isinstance(voice, dict):
+            voice = {}
+            cfg["voice"] = voice
         tts_root = _as_dict(voice.get("tts"))
-        if voice and _tts_is_modality(tts_root):
+
+        if _tts_is_modality(tts_root):
             cloud_tts = tts_root.setdefault("cloud", {})
             if isinstance(cloud_tts, dict):
                 if yk:
                     cloud_tts["api_key"] = yk
                 if yf:
                     cloud_tts["folder_id"] = yf
+        elif _voice_is_is_local_shape(voice):
+            # Intermediate shape: keys live under voice.cloud.tts
+            cloud = voice.setdefault("cloud", {})
+            if isinstance(cloud, dict):
+                cloud_tts = cloud.setdefault("tts", {})
+                if isinstance(cloud_tts, dict):
+                    if yk:
+                        cloud_tts["api_key"] = yk
+                    if yf:
+                        cloud_tts["folder_id"] = yf
 
-        # Legacy mirror — dual-read for old plugins; does not create voice.cloud
+        # Legacy mirror — dual-read for old plugins
         vc = cfg.setdefault("voice_cloud", {})
         if isinstance(vc, dict):
             tts = vc.setdefault("tts", {})
