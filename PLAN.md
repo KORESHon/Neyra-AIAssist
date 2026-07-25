@@ -304,7 +304,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 | # | Задача | Done when | Статус |
 |---|--------|-----------|--------|
 | 1 | Inventory: монолиты и «корень `core/`» (`agent.py`, `tools.py`, `reflection.py`, …) | список файлов + целевые пакеты/имена в PLAN/PR | `[x]` см. карту ниже |
-| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[~]` пакет + полки (`prompts`, people/speakers/events/chat_log, `tool_heuristics`); оркестрация ещё в `neyra.py` (~2k) |
+| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[~]` пакет + полки (+ `tool_heuristics`, `people_seed`, `vision_context`); оркестрация ещё в `neyra.py` |
 | 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[~]` `reflection/`, `tools/`, memory WM/emotion/ltm, `runtime` mcp/backup; дальше — дорезка / аудит |
 | 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[ ]` |
 | 5 | Финальная раскладка по подпапкам `core/` + сужение/снятие shims 1B/1R | канонические импорты везде критичных callers | `[ ]` |
@@ -315,7 +315,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 
 | Сейчас (корень `core/`) | ~строк | Цель |
 |-------------------------|--------|------|
-| `agent.py` → **`core/agent/`** | ~2k в `neyra.py` | ✅ пакет + полки incl. `tool_heuristics`; дальше — vision/LLM setup / chat turn |
+| `agent.py` → **`core/agent/`** | ~1.8k в `neyra.py` | ✅ пакет + полки incl. `tool_heuristics` / `people_seed` / `vision_context`; дальше — LLM setup / chat turn |
 | `reflection.py` → **`core/reflection/`** | ~720 | ✅ пакет: `engine.py` (+ `__init__` → `ReflectionEngine`) |
 | `ltm_maintenance.py` | ~450 | ✅ `core/memory/ltm_maintenance.py` (+ flat shim → задача 7) |
 | `tools.py` → **`core/tools/`** | ~420 | ✅ пакет: `builtins.py` (+ `__init__` → `ALL_TOOLS` / `init_tools`) |
