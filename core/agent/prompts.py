@@ -29,7 +29,7 @@ def build_talk_system_prompt(
     working_memory_context: str = "",
 ) -> str:
     """Assemble talk-lane system prompt. Order: role → active → mentioned → rules → RAG → rest."""
-    from core.llm_profile import is_local_openai_compatible_provider
+    from core.llm.profile import is_local_openai_compatible_provider
 
     if is_local_openai_compatible_provider(backend):
         hw_note = "\n[СИСТЕМНАЯ ИНФОРМАЦИЯ: Работаешь через локальный/self-host OpenAI-compatible LLM endpoint.]"

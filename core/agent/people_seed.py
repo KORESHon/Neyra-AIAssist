@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any
 
@@ -121,7 +122,8 @@ def seed_default_people(people_db: Any, memory_hub: Any = None) -> int:
         return 0
 
     logger.info("Создаю начальные досье PeopleDB...")
-    for person in DEFAULT_PEOPLE:
+    for template in DEFAULT_PEOPLE:
+        person = copy.deepcopy(template)
         person.setdefault("last_seen", None)
         people_db._cache[person["id"]] = person
         if hub is not None:

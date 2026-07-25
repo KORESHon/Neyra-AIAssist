@@ -71,7 +71,7 @@ class NeyraAgent:
 
     def _setup_llm(self):
         """OpenAI-compatible LLM (OpenRouter, Ollama, Groq, …) — см. core.llm_profile."""
-        from core.llm_profile import resolve_openai_compatible_connection
+        from core.llm.profile import resolve_openai_compatible_connection
 
         self._llm_connection = resolve_openai_compatible_connection(self.config)
         self.backend = self._llm_connection.provider
@@ -81,7 +81,7 @@ class NeyraAgent:
         """Единый путь: ChatOpenAI к base_url с api_key из профиля провайдера."""
         from langchain_openai import ChatOpenAI
 
-        from core.llm_profile import (
+        from core.llm.profile import (
             merge_llm_tuning_options,
             resolved_brain_model,
             resolved_memory_model,
@@ -291,7 +291,7 @@ class NeyraAgent:
 
     def _vision_pipeline_cfg(self) -> dict[str, Any]:
         """Единый контур vision: openrouter.vision_model (см. core.llm_profile.merged_vision_pipeline)."""
-        from core.llm_profile import merged_vision_pipeline
+        from core.llm.profile import merged_vision_pipeline
 
         return merged_vision_pipeline(self.config)
 
@@ -542,92 +542,17 @@ class NeyraAgent:
         lyrics_mode: bool,
     ) -> str:
         """Маршрутизация и tool-loop на llm_brain; возвращает текст для секции talk «brain»."""
-        from langchain_core.messages import AIMessage as LC_AIMessage
-        from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+        from .brain_phase import run_brain_tool_phase
 
-        parts: list[str] = []
-        um = (user_message or "").strip()
-        if um:
-            parts.append(self._format_spoken_user_message(um, speaker_label))
-        vc = (vision_caption or "").strip()
-        if vc and not vision_images:
-            parts.append("[Конспект изображения VL]\n" + vc)
-        human_content = "\n\n".join(parts) if parts else "(пустое сообщение)"
-        if lyrics_mode:
-            human_content += "\n\n[Оговорка] Пользователь запросил режим текста песни — учитывай для инструментов/поиска."
-
-        if vision_images:
-            human_msg = self._make_human_turn(
-                um or "Что на изображении? Учти контекст для инструментов.",
-                vision_images,
-                speaker_label=speaker_label,
-            )
-            if vc:
-                extra = "\n\n[Доп. контекст VL]\n" + vc
-                if isinstance(human_msg.content, list):
-                    human_msg.content[0]["text"] = str(human_msg.content[0].get("text", "")) + extra
-                else:
-                    human_msg = HumanMessage(content=str(human_msg.content) + extra)
-        else:
-            human_msg = HumanMessage(content=human_content)
-
-        messages: list[Any] = [
-            SystemMessage(content=brain_system),
-            human_msg,
-        ]
-
-        mcp_cfg = self.config.get("mcp_client") if isinstance(self.config.get("mcp_client"), dict) else {}
-        use_tool_loop = bool(mcp_cfg.get("llm_tool_calls")) and bool(self.tools)
-        max_tool_steps = max(1, int(mcp_cfg.get("llm_tool_max_steps", 4)))
-
-        brain_llm = self.llm_brain
-        if lyrics_mode:
-            cap = self.lyrics_reply_max_tokens
-            if self.brain_max_tokens is not None:
-                cap = max(self.brain_max_tokens, cap)
-            brain_llm = self.llm_brain.bind(max_tokens=cap)
-
-        try:
-            if not use_tool_loop:
-                response = await self._ainvoke_text_with_fallback(messages, llm=brain_llm)
-                self._log_model_route(self._extract_model_name(response), lane="brain")
-                text = response.content if hasattr(response, "content") else str(response)
-                return (text or "").strip()
-
-            bound = brain_llm.bind_tools(list(self.tools.values()))
-            step = 0
-            response = None
-            while step < max_tool_steps:
-                response = await self._ainvoke_text_with_fallback(messages, llm=bound)
-                self._log_model_route(self._extract_model_name(response), lane="brain")
-                tcalls = getattr(response, "tool_calls", None) if isinstance(response, LC_AIMessage) else None
-                if not tcalls:
-                    break
-                messages.append(response)
-                for tc in tcalls:
-                    if isinstance(tc, dict):
-                        tid = str(tc.get("id") or "")
-                        tname = str(tc.get("name") or "")
-                        args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
-                    else:
-                        tid = str(getattr(tc, "id", None) or "")
-                        tname = str(getattr(tc, "name", None) or "")
-                        args = getattr(tc, "args", None) or {}
-                        if not isinstance(args, dict):
-                            args = {}
-                    if not tname:
-                        continue
-                    out = await self._execute_tool(tname, **args)
-                    messages.append(ToolMessage(content=out, tool_call_id=tid))
-                step += 1
-            if response is None:
-                response = await self._ainvoke_text_with_fallback(messages, llm=brain_llm)
-                self._log_model_route(self._extract_model_name(response), lane="brain")
-            text = response.content if hasattr(response, "content") else str(response)
-            return (text or "").strip()
-        except Exception as e:
-            logger.warning("Brain phase: ошибка, talk продолжит без сводки brain: %s", e)
-            return ""
+        return await run_brain_tool_phase(
+            self,
+            user_message=user_message,
+            speaker_label=speaker_label,
+            vision_caption=vision_caption,
+            vision_images=vision_images,
+            brain_system=brain_system,
+            lyrics_mode=lyrics_mode,
+        )
 
     def _make_vision_memory_note(self, thoughts: str, clean_text: str) -> str:
         """Текст для «памяти последнего скрина»: приоритет — CoT/think из ответа VL."""
@@ -748,57 +673,11 @@ class NeyraAgent:
         username: Optional[str],
         discord_user_id: Optional[str],
     ) -> None:
-        if not self.async_reflection_enabled:
-            return
-        try:
-            from langchain_core.messages import HumanMessage, SystemMessage
+        from .memory_jobs import run_async_reflection
 
-            ar = self.async_reflection_cfg if isinstance(self.async_reflection_cfg, dict) else {}
-            ar_bind: dict[str, Any] = {
-                "temperature": float(ar.get("temperature", self.reflection_temperature)),
-            }
-            ar_max = ar.get("max_tokens")
-            if ar_max is not None:
-                ar_bind["max_tokens"] = int(ar_max)
-            elif self.reflection_max_tokens is not None:
-                ar_bind["max_tokens"] = self.reflection_max_tokens
-            else:
-                ar_bind["max_tokens"] = 500
-            llm_ar = self.llm_memory.bind(**ar_bind)
-
-            sys_prompt = (
-                "Ты внутренний аналитический модуль Нейры. "
-                "Сформируй краткий (4-8 предложений) анализ микро-диалога: "
-                "намерение пользователя, эмоции, качество ответа и что стоит запомнить на будущее. "
-                "Не пиши теги <think>, markdown и служебные поля."
-            )
-            human = (
-                f"Пользователь ({username or 'unknown'}, discord_id={discord_user_id or ''}) сказал:\n"
-                f"{user_message}\n\n"
-                f"Нейра ответила:\n{assistant_text}\n\n"
-                "Сделай полезную заметку для дневника."
-            )
-            from core.llm_retry import ainvoke_with_rate_limit_backoff
-
-            resp = await ainvoke_with_rate_limit_backoff(
-                llm_ar,
-                [SystemMessage(content=sys_prompt), HumanMessage(content=human)],
-                lane="memory_model",
-            )
-            note = (resp.content if hasattr(resp, "content") else str(resp)).strip()
-            note = re.sub(r"\s+", " ", note).strip()
-            if not note:
-                return
-            if len(note) > int(self.async_reflection_cfg.get("max_note_chars", 1200)):
-                note = note[: int(self.async_reflection_cfg.get("max_note_chars", 1200)) - 1] + "…"
-            self.diary.add_entry(
-                text=note,
-                source="async_reflection",
-                meta={"username": username or "unknown", "discord_id": discord_user_id or ""},
-            )
-            logger.debug("Async reflection: запись в дневник добавлена (%s симв.)", len(note))
-        except Exception as e:
-            logger.warning("Async reflection ошибка: %s", e)
+        await run_async_reflection(
+            self, user_message, assistant_text, username, discord_user_id
+        )
 
     def _schedule_async_reflection(
         self,
@@ -807,29 +686,16 @@ class NeyraAgent:
         username: Optional[str],
         discord_user_id: Optional[str],
     ) -> None:
-        if not self.async_reflection_enabled:
-            return
-        try:
-            asyncio.create_task(
-                self._run_async_reflection(
-                    user_message=user_message,
-                    assistant_text=assistant_text,
-                    username=username,
-                    discord_user_id=discord_user_id,
-                )
-            )
-        except Exception as e:
-            logger.warning("Не удалось запланировать async reflection: %s", e)
+        from .memory_jobs import schedule_async_reflection
+
+        schedule_async_reflection(
+            self, user_message, assistant_text, username, discord_user_id
+        )
 
     def _format_stm_tail(self, max_messages: int = 12) -> str:
-        lines: list[str] = []
-        for m in self.short_memory.get_history()[-max_messages:]:
-            role = str(m.get("role") or "")
-            content = str(m.get("content") or "")
-            label = "Пользователь" if role == "user" else "Нейра"
-            chunk = content if len(content) <= 1600 else content[:1597] + "…"
-            lines.append(f"{label}: {chunk}")
-        return "\n".join(lines)
+        from .memory_jobs import format_stm_tail
+
+        return format_stm_tail(self.short_memory, max_messages)
 
     def _read_working_memory_for_prompt(self, internal_user_id: str) -> str:
         return self.memory_hub.working_memory_for_prompt(
@@ -845,16 +711,13 @@ class NeyraAgent:
         speaker_label: str,
         reason: str,
     ) -> None:
-        from core.memory import working_memory as wm
+        from .memory_jobs import run_working_memory_refresh
 
-        await wm.refresh_working_memory_async(
+        await run_working_memory_refresh(
             self,
-            self.config,
-            root=self._project_root,
             internal_user_id=internal_user_id,
             user_message=user_message,
             assistant_text=assistant_text,
-            stm_tail=self._format_stm_tail(12),
             speaker_label=speaker_label,
             reason=reason,
         )
@@ -868,34 +731,16 @@ class NeyraAgent:
         speaker_label: str,
         stm_trimmed: bool = False,
     ) -> None:
-        from core.memory import working_memory as wm
+        from .memory_jobs import schedule_working_memory_refresh
 
-        if not wm.wm_enabled(self.config):
-            return
-        cfg = wm.wm_config(self.config)
-        force = bool(stm_trimmed and cfg.get("update_after_context_trim", True))
-        self._wm_turns_since_refresh += 1
-        every = max(1, int(cfg.get("update_every_n_turns", 2)))
-        should = force or self._wm_turns_since_refresh >= every
-        if not should:
-            return
-        gap = float(cfg.get("min_interval_seconds", 30))
-        if gap > 0 and not force and (time.monotonic() - self._wm_last_refresh_mono) < gap:
-            return
-        self._wm_turns_since_refresh = 0
-        self._wm_last_refresh_mono = time.monotonic()
-        try:
-            asyncio.create_task(
-                self._run_working_memory_refresh(
-                    internal_user_id=internal_user_id,
-                    user_message=user_message,
-                    assistant_text=assistant_text,
-                    speaker_label=speaker_label,
-                    reason="context_trim" if stm_trimmed else f"every_{every}_turns",
-                )
-            )
-        except Exception as e:
-            logger.warning("Не удалось запланировать working_memory: %s", e)
+        schedule_working_memory_refresh(
+            self,
+            internal_user_id=internal_user_id,
+            user_message=user_message,
+            assistant_text=assistant_text,
+            speaker_label=speaker_label,
+            stm_trimmed=stm_trimmed,
+        )
 
     async def _save_dialog_to_ltm_with_emotion(
         self,
@@ -904,24 +749,11 @@ class NeyraAgent:
         metadata: dict,
         speaker_label: str,
     ) -> None:
-        from core.memory import emotional_layer as el
+        from .memory_jobs import save_dialog_to_ltm_with_emotion
 
-        md = dict(metadata)
-        if el.layer_enabled(self.config) and el.layer_cfg(self.config).get("ltm_emotion_sync"):
-            tag = await el.compact_emotion_for_ltm(
-                self,
-                self.config,
-                user_message=user_message,
-                assistant_text=clean_text,
-                speaker_label=speaker_label,
-            )
-            if tag:
-                md["assistant_emotion"] = tag
-        hub = getattr(self, "memory_hub", None)
-        if hub is not None:
-            hub.save_dialog_semantic(user_message, clean_text, md)
-        else:
-            self.long_memory.save(user_message, clean_text, md)
+        await save_dialog_to_ltm_with_emotion(
+            self, user_message, clean_text, metadata, speaker_label
+        )
 
     def _schedule_emotion_diary(
         self,
@@ -932,28 +764,16 @@ class NeyraAgent:
         username: Optional[str],
         discord_user_id: Optional[str],
     ) -> None:
-        from core.memory import emotional_layer as el
+        from .memory_jobs import schedule_emotion_diary
 
-        if not el.layer_enabled(self.config) or not el.layer_cfg(self.config).get("diary_after_turn", True):
-            return
-        gap = float(el.layer_cfg(self.config).get("diary_emotion_min_interval_seconds", 90))
-        if gap > 0 and (time.monotonic() - self._emotion_last_mono) < gap:
-            return
-        self._emotion_last_mono = time.monotonic()
-        try:
-            asyncio.create_task(
-                el.diary_emotion_after_turn_async(
-                    self,
-                    self.config,
-                    user_message=user_message,
-                    assistant_text=assistant_text,
-                    speaker_label=speaker_label,
-                    username=username,
-                    discord_user_id=discord_user_id,
-                )
-            )
-        except Exception as e:
-            logger.warning("Не удалось запланировать emotional_layer diary: %s", e)
+        schedule_emotion_diary(
+            self,
+            user_message=user_message,
+            assistant_text=assistant_text,
+            speaker_label=speaker_label,
+            username=username,
+            discord_user_id=discord_user_id,
+        )
 
     async def _ainvoke_text_with_fallback(self, messages: list[Any], *, llm=None):
         """Обычный нестриминговый вызов (одна модель)."""
@@ -1992,7 +1812,7 @@ class NeyraAgent:
                 f"{raw}"
             )
         llm = getattr(self, "llm_memory", None) or getattr(self, "llm_reflection", None) or self.llm_talk
-        from core.llm_retry import ainvoke_with_rate_limit_backoff
+        from core.llm.retry import ainvoke_with_rate_limit_backoff
 
         call = llm.bind(max_tokens=max_out) if hasattr(llm, "bind") else llm
         resp = await ainvoke_with_rate_limit_backoff(

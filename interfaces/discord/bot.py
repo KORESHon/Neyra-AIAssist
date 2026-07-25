@@ -26,7 +26,7 @@ from discord import app_commands
 from discord.ext import tasks
 from discord.app_commands import Choice
 
-from core.llm_profile import resolve_openai_compatible_connection
+from core.llm.profile import resolve_openai_compatible_connection
 
 from core.event_bus import (
     MUSIC_CLEAR,
@@ -130,7 +130,7 @@ def _normalize_intent_label(raw: str) -> str:
 
 
 def _intent_classifier_model(cfg: dict) -> str:
-    from core.llm_profile import resolved_memory_model
+    from core.llm.profile import resolved_memory_model
 
     llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
     prov = str(llm.get("provider") or cfg.get("BACKEND") or "openrouter").strip().lower()
@@ -889,7 +889,7 @@ class NeyraDiscordBot(discord.Client):
     async def _collect_image_attachments(self, message: discord.Message) -> list[tuple[str, str]]:
         from core.vision_util import prepare_image_for_vision, resolve_discord_image_mime
 
-        from core.llm_profile import merged_vision_pipeline
+        from core.llm.profile import merged_vision_pipeline
 
         vis = merged_vision_pipeline(self.config)
         if not vis.get("enabled"):

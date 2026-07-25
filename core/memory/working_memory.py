@@ -178,7 +178,7 @@ async def refresh_working_memory_async(
         )
     )
     try:
-        from core.llm_retry import ainvoke_with_rate_limit_backoff
+        from core.llm.retry import ainvoke_with_rate_limit_backoff
 
         llm = getattr(agent, "llm_memory", None) or getattr(agent, "llm_reflection", None) or agent.llm_talk
         call = llm.bind(max_tokens=max_out) if hasattr(llm, "bind") else llm

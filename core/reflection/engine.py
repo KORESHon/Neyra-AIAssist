@@ -391,7 +391,7 @@ class ReflectionEngine:
             llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
                 self.agent, "llm_reflection", self.agent.llm
             )
-            from core.llm_retry import ainvoke_with_rate_limit_backoff
+            from core.llm.retry import ainvoke_with_rate_limit_backoff
 
             response = await ainvoke_with_rate_limit_backoff(
                 llm_reflect, [HumanMessage(content=prompt)], lane="memory_model"
@@ -620,7 +620,7 @@ class ReflectionEngine:
             llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
                 self.agent, "llm_reflection", self.agent.llm
             )
-            from core.llm_retry import ainvoke_with_rate_limit_backoff
+            from core.llm.retry import ainvoke_with_rate_limit_backoff
 
             response = await ainvoke_with_rate_limit_backoff(
                 llm_reflect, [HumanMessage(content=prompt)], lane="memory_model"
@@ -670,7 +670,7 @@ class ReflectionEngine:
             llm_reflect = getattr(self.agent, "llm_memory", None) or getattr(
                 self.agent, "llm_reflection", self.agent.llm
             )
-            from core.llm_retry import ainvoke_with_rate_limit_backoff
+            from core.llm.retry import ainvoke_with_rate_limit_backoff
 
             response = await ainvoke_with_rate_limit_backoff(
                 llm_reflect, [HumanMessage(content=prompt)], lane="memory_model"

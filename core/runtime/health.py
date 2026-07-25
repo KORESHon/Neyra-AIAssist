@@ -92,7 +92,7 @@ class HealthMonitor:
     async def _check_backend(self) -> dict:
         try:
             import httpx
-            from core.llm_profile import resolve_openai_compatible_connection
+            from core.llm.profile import resolve_openai_compatible_connection
 
             conn = resolve_openai_compatible_connection(self.config)
             base = conn.base_url.rstrip("/")
@@ -153,7 +153,7 @@ class HealthMonitor:
         if root is None:
             return False
         try:
-            from core.plugin_loader import PluginLoader
+            from core.plugins.loader import PluginLoader
 
             for m in PluginLoader(root).discover_manifests():
                 if m.id == "discord" and m.enabled and m.lifecycle == "resident":
