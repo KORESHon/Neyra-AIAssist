@@ -15,38 +15,31 @@ Phase **1R** deep-refactors for readability without product behavior changes:
 1. Inventory monoliths → target shelves (see `PLAN.md` 1R map).
 2. Split by responsibility into packages/modules; keep public imports stable (`from core.agent import NeyraAgent`).
 3. Audit crutches/bugs found during moves; fix or document.
-4. Shrink 1B flat shims only after callers migrate.
+4. Shrink 1B/1R flat shims only after callers migrate; **final checklist item: delete duplicate files left in `core/` root**.
 
 ### Landed shelves
 
 ```
 core/agent/
-  __init__.py          # exports NeyraAgent + constants
-  neyra.py             # NeyraAgent orchestration (~2.2k; still large)
-  reply_postprocess.py # sound tags / think blocks / empty salvage
-  micro_plan.py        # PLAN stream filters
-  prompts.py           # talk + brain system prompt builders
-  people_context.py    # people mention / dossier blocks
-  speakers.py          # speaker labels / spoken user lines
-  turn_events.py       # Event Bus publish helpers for turns
-  chat_log.py          # Hub chat_log dual-write helper
+  __init__.py, neyra.py (~2k)
+  reply_postprocess.py, micro_plan.py, prompts.py
+  people_context.py, speakers.py, turn_events.py, chat_log.py
+  tool_heuristics.py
 
-core/reflection/
-  __init__.py          # exports ReflectionEngine
-  engine.py            # former core/reflection.py
+core/reflection/          # ReflectionEngine
+core/tools/               # builtins.py → ALL_TOOLS / init_tools
 
 core/memory/
-  working_memory.py    # moved from core/working_memory.py
-  emotional_layer.py   # moved from core/emotional_layer.py
-  ltm_maintenance.py   # moved from core/ltm_maintenance.py
+  working_memory.py, emotional_layer.py, ltm_maintenance.py  (+ Hub)
+
+core/runtime/
+  mcp_client.py, backup.py   # + server/health/secrets/win
 ```
 
-Flat shims kept for transitional imports: `core/working_memory.py`, `core/emotional_layer.py`, `core/ltm_maintenance.py`.
-
-Canonical imports: `from core.memory import working_memory`, `emotional_layer`, `ltm_maintenance`; `from core.reflection import ReflectionEngine`.
+Transitional flat shims still in `core/` root (to remove in task 7):
+`working_memory.py`, `emotional_layer.py`, `ltm_maintenance.py`, `mcp_client.py`, `backup_manager.py`, plus 1B shims (`plugin_*`, `llm_*`, `server`, `stt`, …).
 
 ## Consequences
 
-- Callers keep `from core.agent import NeyraAgent` and `from core.reflection import ReflectionEngine`.
-- Next: `tools` / `mcp_client` / `backup_manager` packages; further shrink `neyra.py`; then shim cleanup + crutch audit.
-- Prefer small reviewable commits per shelf.
+- Prefer canonical imports (`core.tools`, `core.runtime.mcp_client`, `core.runtime.backup`, `core.memory.*`).
+- Next: further shrink `neyra.py`, crutch audit, then delete root duplicates (task 7) + acceptance.

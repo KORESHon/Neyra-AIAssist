@@ -304,28 +304,27 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 | # | Задача | Done when | Статус |
 |---|--------|-----------|--------|
 | 1 | Inventory: монолиты и «корень `core/`» (`agent.py`, `tools.py`, `reflection.py`, …) | список файлов + целевые пакеты/имена в PLAN/PR | `[x]` см. карту ниже |
-| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[~]` пакет: `neyra` + `reply_postprocess` + `micro_plan` + `prompts` + `people_context` + `speakers` + `turn_events` + `chat_log`; tools wiring / остаток оркестрации ещё в `neyra.py` (~2.2k) |
-| 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[~]` `reflection/` пакет; WM / emotional_layer / `ltm_maintenance` → `core/memory/`; дальше — `tools`, `mcp_client`, … |
-
+| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[~]` пакет + полки (`prompts`, people/speakers/events/chat_log, `tool_heuristics`); оркестрация ещё в `neyra.py` (~2k) |
+| 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[~]` `reflection/`, `tools/`, memory WM/emotion/ltm, `runtime` mcp/backup; дальше — дорезка / аудит |
 | 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[ ]` |
-| 5 | Финальная раскладка по подпапкам `core/` + сужение/снятие shims 1B | канонические импорты везде критичных callers | `[ ]` |
+| 5 | Финальная раскладка по подпапкам `core/` + сужение/снятие shims 1B/1R | канонические импорты везде критичных callers | `[ ]` |
 | 6 | Доки (ADR-0003 или раздел PLAN) + приёмка | compileall + smokes + healthcheck + Auto Review; Discord на стенде | `[ ]` |
+| 7 | Удалить дубли файлов в корне `core/` (flat shims 1B/1R после перевода callers) | в корне `core/` нет «теневых» копий/`*.py`-shim'ов для уже перенесённых модулей; импорты только канонические | `[ ]` |
 
 #### Inventory / целевая карта (1R)
 
 | Сейчас (корень `core/`) | ~строк | Цель |
 |-------------------------|--------|------|
-| `agent.py` → **`core/agent/`** | ~2.2k в `neyra.py` | ✅ пакет: `neyra` + `reply_postprocess` + `micro_plan` + `prompts` + `people_context` + `speakers` + `turn_events` + `chat_log`; дальше — tools wiring |
-| `reflection.py` → **`core/reflection/`** | ~720 | ✅ пакет: `engine.py` (+ `__init__` → `ReflectionEngine`); дальше — journal helpers при необходимости |
-| `ltm_maintenance.py` | ~450 | ✅ `core/memory/ltm_maintenance.py` (+ flat shim) |
-| `tools.py` | ~420 | `core/tools/` (registry + builtins) |
-| `mcp_client.py` | ~340 | `core/runtime/mcp_client.py` или `core/mcp/` |
-| `working_memory.py` | ~210 | ✅ `core/memory/working_memory.py` (+ flat shim) |
-| `emotional_layer.py` | ~115 | ✅ `core/memory/emotional_layer.py` (+ flat shim) |
-
-| `backup_manager.py` | ~95 | `core/runtime/backup.py` |
+| `agent.py` → **`core/agent/`** | ~2k в `neyra.py` | ✅ пакет + полки incl. `tool_heuristics`; дальше — vision/LLM setup / chat turn |
+| `reflection.py` → **`core/reflection/`** | ~720 | ✅ пакет: `engine.py` (+ `__init__` → `ReflectionEngine`) |
+| `ltm_maintenance.py` | ~450 | ✅ `core/memory/ltm_maintenance.py` (+ flat shim → задача 7) |
+| `tools.py` → **`core/tools/`** | ~420 | ✅ пакет: `builtins.py` (+ `__init__` → `ALL_TOOLS` / `init_tools`) |
+| `mcp_client.py` | ~340 | ✅ `core/runtime/mcp_client.py` (+ flat shim → задача 7) |
+| `working_memory.py` | ~210 | ✅ `core/memory/working_memory.py` (+ flat shim → задача 7) |
+| `emotional_layer.py` | ~115 | ✅ `core/memory/emotional_layer.py` (+ flat shim → задача 7) |
+| `backup_manager.py` | ~95 | ✅ `core/runtime/backup.py` (+ flat shim → задача 7) |
 | `timeutil.py` / `event_bus.py` / `identity.py` / … | <100 | оставить или тонкий `core/runtime` / `core/common` по мере нужды |
-| flat shims 1B (`plugin_*`, `llm_*`, `server`, …) | — | сужать в конце 1R после перевода callers |
+| flat shims 1B/1R (`plugin_*`, `llm_*`, `server`, WM, …) | — | **задача 7:** удалить дубли после перевода callers |
 
 ---
 
@@ -358,9 +357,10 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 **Фаза 1R** *(трек: [PR #7](https://github.com/KORESHon/Neyra-AIAssist/pull/7))*
 
 - [x] Inventory монолитов + целевая карта пакетов/имён.
-- [~] Split `agent.py` и других крупных модулей «по полкам» *(agent shelves + `reflection/` + memory WM/emotion/ltm; осталось: tools/mcp/backup + дорезка `neyra.py`)*.
+- [~] Split `agent.py` и других крупных модулей «по полкам» *(agent shelves + `reflection/` + `tools/` + memory WM/emotion/ltm + runtime mcp/backup; дальше — дорезка `neyra.py`)*.
 - [ ] Переименования по логическому назначению; аудит костылей/багов.
-- [ ] Финальная раскладка в подпапки `core/`; сужение shims 1B (+ новые shims 1R для WM/emotion/ltm).
+- [ ] Финальная раскладка в подпапки `core/`; сужение shims 1B/1R.
+- [ ] Удалить дубли файлов в корне `core/` (flat shims после перевода callers на канон).
 - [ ] `compileall` + memory smokes + healthcheck + Auto Review; Discord на стенде.
 ## Этап 2 — Дополнительные улучшения (пакет мелких задач)
 

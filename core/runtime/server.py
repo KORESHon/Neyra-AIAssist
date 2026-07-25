@@ -17,7 +17,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from core.agent import NeyraAgent
-from core.backup_manager import BackupManager
+from core.runtime.backup import BackupManager
 from core.runtime.health import HealthMonitor
 from core.plugins import PluginContext, PluginLoader, run_plugin_entrypoint
 from core.reflection import ReflectionEngine

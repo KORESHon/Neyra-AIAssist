@@ -379,7 +379,7 @@ class NeyraAgent:
         self._mcp_merge_done = False
         mc = self.config.get("mcp_client") if isinstance(self.config.get("mcp_client"), dict) else {}
         if mc.get("enabled"):
-            from core.mcp_client import MCPClientManager
+            from core.runtime.mcp_client import MCPClientManager
 
             self.mcp_manager = MCPClientManager(self.config)
         logger.info(f"Tools готовы: {list(self.tools.keys())}")
@@ -1337,183 +1337,25 @@ class NeyraAgent:
             return f"Ошибка инструмента: {e}"
 
     def _collect_tool_context(self, text: str) -> str:
-        """
-        Детерминированный вызов tools по эвристикам.
-        Идея: меньше ждать триггер-слов, чаще подмешивать релевантную память/досье автоматически.
-        """
-        parts: list[str] = []
-        tl = text.lower().strip()
+        from .tool_heuristics import collect_tool_context
 
-        time_phrases = (
-            "который час",
-            "сколько времени",
-            "какое время",
-            "которая сейчас дата",
-            "какой сегодня день",
-            "какая сегодня дата",
-            "какое сегодня число",
+        return collect_tool_context(
+            self.tools,
+            text=text,
+            rag_enabled=bool(self.long_memory.rag_enabled),
+            detect_mentioned_names=self._detect_mentioned_names,
         )
-        if any(p in tl for p in time_phrases) and "погода" not in tl:
-            try:
-                out = self.tools["get_current_time"].invoke({})
-                parts.append(f"[время]\n{out}")
-            except Exception as e:
-                logger.debug("get_current_time: %s", e)
-
-        sys_markers = (
-            "железо",
-            "загрузка проц",
-            "загрузка цп",
-            "оператив",
-            "uptime",
-            "сколько места",
-            "место на диск",
-            " диск ",
-            "диск ",
-            "озу ",
-        )
-        if ("систем" in tl and "контекст" not in tl) or any(s in tl for s in sys_markers):
-            cmd = "uptime"
-            if "диск" in tl or "место" in tl:
-                cmd = "disk"
-            elif "оператив" in tl or "озу" in tl:
-                cmd = "memory"
-            elif "проц" in tl or "cpu" in tl or "цп" in tl:
-                cmd = "cpu"
-            elif "python" in tl:
-                cmd = "python"
-            try:
-                raw = self.tools["check_system"].invoke({"command": cmd})
-                parts.append(f"[система:{cmd}]\n{raw[:2500]}")
-            except Exception as e:
-                logger.debug("check_system: %s", e)
-
-        # Долгосрочная память (RAG) — явные фразы
-        mem_starts = ("вспомни про", "вспомни что", "вспомни,", "что мы говорили про", "что мы обсуждали")
-        mem_extra = ("найди в памяти", "поиск в памяти")
-        wants_mem = self.long_memory.rag_enabled and (
-            (tl.startswith("вспомни ") and len(text.strip()) > 10)
-            or any(m in tl for m in mem_starts)
-            or any(m in tl for m in mem_extra)
-        )
-        if wants_mem:
-            q = text.strip()
-            low = q.lower()
-            for prefix in ("вспомни про ", "вспомни что ", "вспомни, ", "вспомни "):
-                if low.startswith(prefix):
-                    q = q[len(prefix) :].strip()
-                    break
-            else:
-                for needle in ("что мы говорили про ", "что мы обсуждали ", "найди в памяти ", "поиск в памяти диалог "):
-                    if needle in low:
-                        q = q[low.find(needle) + len(needle) :].strip()
-                        break
-            if len(q) < 3:
-                q = text.strip()
-            try:
-                out = self.tools["search_memory"].invoke({"query": q[:800]})
-                parts.append(f"[память]\n{out[:3000]}")
-            except Exception as e:
-                logger.debug("search_memory: %s", e)
-
-        import re
-
-        m = re.search(r"(?:досье|инфа)\s+(?:на|про)\s+(.+)", text.strip(), flags=re.IGNORECASE)
-        if m:
-            who = m.group(1).strip().strip("?.!, ")
-            if who:
-                try:
-                    out = self.tools["get_person_info"].invoke({"name_or_id": who[:120]})
-                    parts.append(f"[досье:{who}]\n{out[:2500]}")
-                except Exception as e:
-                    logger.debug("get_person_info: %s", e)
-
-        # Автодосье: если упомянуто известное имя, подмешиваем краткую справку без явной команды.
-        try:
-            mentioned = self._detect_mentioned_names(text)
-            for pid in mentioned[:2]:
-                out = self.tools["get_person_info"].invoke({"name_or_id": pid})
-                parts.append(f"[авто-досье:{pid}]\n{str(out)[:1400]}")
-        except Exception as e:
-            logger.debug("auto get_person_info: %s", e)
-
-        # Автопамять: если похоже на продолжение темы/контекста, запрашиваем RAG без ключевого слова "вспомни".
-        mem_hints = (
-            "помнишь",
-            "как там",
-            "что там было",
-            "мы говорили",
-            "раньше",
-            "вчера",
-            "в прошлый раз",
-            "опять про",
-            "продолжим",
-        )
-        if self.long_memory.rag_enabled and (
-            any(h in tl for h in mem_hints)
-            or (len(tl) >= 18 and ("кто " in tl or "что " in tl or "почему " in tl) and "?" in tl)
-        ):
-            try:
-                out = self.tools["search_memory"].invoke({"query": text[:800]})
-                parts.append(f"[авто-память]\n{str(out)[:2200]}")
-            except Exception as e:
-                logger.debug("auto search_memory: %s", e)
-
-        # Авто-подстройка характера: если юзер просит тон/манеру, добавляем профиль характера.
-        style_hints = ("будь", "говори", "тон", "стиль", "помягче", "пожестче", "характер")
-        if any(h in tl for h in style_hints):
-            try:
-                out = self.tools["get_character_profile"].invoke({})
-                parts.append(f"[профиль-характера]\n{str(out)[:900]}")
-            except Exception as e:
-                logger.debug("get_character_profile: %s", e)
-
-        return "\n\n".join(parts) if parts else ""
-
-    # ─── Главный метод: генерация ответа ──────────────────────────────────
 
     def _handle_memory_trigger(self, text: str, mentioned: list[str], username: str) -> list[str]:
-        """Эвристический поиск просьб что-то запомнить. (Фаза 2.5 — обход слабости 8B моделей)"""
-        saved: list[str] = []
-        text_lower = text.lower()
-        if any(w in text_lower for w in ["запиши", "запомни", "добавь"]):
-            
-            # ЗАЩИТА ОТ ВЗЛОМА: Пользователи не могут перезаписывать критические роли
-            # Только ebluffy может записывать странные вещи.
-            if username != "ebluffy":
-                # Запрещаем записывать факты, в которых они пытаются переписать хоста или удалить память
-                forbidden = ["хозяин", "создатель", "владелец", "лучше чем", "забудь", "удали", "перепиши"]
-                if any(bad in text_lower for bad in forbidden):
-                    logger.warning(f"Блокирована попытка взлома памяти от {username}: {text}")
-                    return saved
+        from .tool_heuristics import handle_memory_trigger
 
-            import re
-            match = re.search(r"(?:запиши|запомни|добавь)[^:,]*(?:[:,]\s*|что\s+)(.+)", text, flags=re.IGNORECASE)
-            # Убираем возможный мусор типа обращений
-            raw_fact = match.group(1).strip() if match else text
-            if len(raw_fact) < 5: 
-                return saved
-
-            fact = f"(Со слов {username or 'друга'}): {raw_fact}"
-
-            # Кому сохраняем? Если в тексте упомянуты конкретные люди, сохраняем ИМ.
-            # Иначе сохраняем самому отправителю.
-            author_p = self.memory_hub.find_person(username) if username else None
-            
-            # Автор сам всегда попадает в mentioned из-за логики chat_stream, вычистим его для поиска "кого упомянули"
-            mentioned_others = [m for m in mentioned if not (author_p and m == author_p["id"])]
-            
-            if mentioned_others:
-                targets = mentioned_others
-            elif author_p:
-                targets = [author_p["id"]]
-            else:
-                targets = []
-
-            for uid in targets:
-                if self.people_db.update_fact(uid, fact):
-                    saved.append(f"{uid}: {raw_fact}")
-        return saved
+        return handle_memory_trigger(
+            people_db=self.people_db,
+            memory_hub=self.memory_hub,
+            text=text,
+            mentioned=mentioned,
+            username=username,
+        )
 
     def add_diary_entry(self, text: str, source: str = "manual", meta: Optional[dict] = None) -> bool:
         """Ручная запись в личный дневник Нейры."""
@@ -1523,81 +1365,9 @@ class NeyraAgent:
         return self.memory_hub.diary_recent_text(limit=limit) or "Дневник пока пуст."
 
     def _handle_websearch_trigger(self, text: str) -> str:
-        """Эвристический веб-поиск: актуальные темы/новости/фактуальные вопросы без явных триггеров."""
-        text_lower = text.lower()
+        from .tool_heuristics import handle_websearch_trigger
 
-        # Guard: не запускаем авто-websearch для внутренних задач разработки/плагинов.
-        # Такие запросы должны обрабатываться tool-loop (например, create_or_edit_plugin), а не “гуглением”.
-        internal_dev_markers = (
-            "create_or_edit_plugin",
-            "plugin.yaml",
-            "main_script",
-            "hot-reload",
-            "hot reload",
-            "rollback",
-            "плагин",
-            "плагины",
-            "interfaces/",
-            "interfaces\\",
-            "core/",
-            "core\\",
-            "нейра",
-        )
-        if any(m in text_lower for m in internal_dev_markers):
-            return ""
-        
-        # Спец-обработка для точной погоды
-        if "погода" in text_lower:
-            try:
-                import requests
-                import re
-                match = re.search(r"погода(?: в)?\s+([а-яА-Яa-zA-Z\-]+)", text_lower)
-                city = match.group(1) if match else "Воронеж"
-                res = requests.get(f"https://wttr.in/{city}?format=%l:+%c+%t,+ветер+%w,+влажность+%h", timeout=5)
-                if res.status_code == 200:
-                    weather_text = res.content.decode('utf-8').strip()
-                    # Чистим графические эмодзи, чтобы Нейра их не подхватила
-                    weather_text = re.sub(r'[^\w\s\.,:\+\-°%]', '', weather_text)
-                    logger.info(f"Сработал триггер Погода: {weather_text}")
-                    return f"Результат поиска (Погода в реальном времени): {weather_text}"
-            except Exception as e:
-                logger.error(f"Weather heuristic error: {e}")
-                
-        triggers = ["новости", "найди", "погугли", "гугл", "интернет", "кто так", "что так"]
-        fresh_markers = (
-            "сегодня",
-            "сейчас",
-            "последние",
-            "актуаль",
-            "в этом году",
-            "в 2025",
-            "в 2026",
-            "новое",
-            "обновлен",
-        )
-        factual_question = (
-            "?" in text_lower
-            and any(q in text_lower for q in ("кто", "что", "где", "когда", "почему", "сколько"))
-            and len(text_lower) > 22
-        )
-        # Если вопрос явно про личный контекст/память — не уводим в веб.
-        personal_markers = ("мы", "помнишь", "про меня", "досье", "в памяти", "наш", "мой")
-        wants_web = (
-            any(t in text_lower for t in triggers)
-            or any(t in text_lower for t in fresh_markers)
-            or factual_question
-        ) and not any(pm in text_lower for pm in personal_markers)
-
-        if wants_web:
-            try:
-                logger.info("Авто-WebSearch: %s", text[:140])
-                out = self.tools["web_search"].invoke({"query": text[:500]})
-                if out:
-                    return str(out)[:2200]
-            except Exception as e:
-                logger.error(f"Heuristic WebSearch ошибка: {e}")
-        
-        return ""
+        return handle_websearch_trigger(self.tools, text)
 
     def _resolve_internal_user_id(
         self, discord_user_id: Optional[str], username: Optional[str]

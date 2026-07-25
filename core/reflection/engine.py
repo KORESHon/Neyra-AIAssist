@@ -217,7 +217,7 @@ class ReflectionEngine:
         if not sync_after:
             return
         try:
-            from core.backup_manager import BackupManager
+            from core.runtime.backup import BackupManager
 
             mgr = BackupManager(self.config)
             res = await asyncio.to_thread(mgr.run_backup, "post_big_reflection")
