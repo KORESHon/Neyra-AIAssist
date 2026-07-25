@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 
 from core.event_bus import MEMORY_CHAT_LOG_APPEND, EventBus
 from core.memory import MemoryHub
-from core.memory.legacy import NeyraDiary, PeopleDB
+from core.memory.stores import NeyraDiary, PeopleDB
 
 
 class _FakeLTM:

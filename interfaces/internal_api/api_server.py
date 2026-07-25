@@ -1,7 +1,7 @@
 """
 Internal API (v1): маршруты FastAPI и сборка приложения (`build_app`).
 
-Процесс поднимается из ядра — `core.server.run_neyra_server`; папка `interfaces/internal_api/`
+Процесс поднимается из ядра — `core.runtime.run_neyra_server`; папка `interfaces/internal_api/`
 остаётся модулем маршрутов и точкой `main_script` для PluginLoader.
 """
 
@@ -27,18 +27,17 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from core.win_runtime import apply_runtime_patches
+from core.runtime.win_runtime import apply_runtime_patches
 
 apply_runtime_patches()
 
 from core.agent import NeyraAgent
 from core.backup_manager import BackupManager
 from core.event_bus import CoreEvent
-from core.health_monitor import HealthMonitor
 from core.ltm_maintenance import execute_ltm_summarize
-from core.plugin_loader import PluginLoader
-from core.plugin_sdk import PluginContext, run_plugin_entrypoint
+from core.plugins import PluginContext, PluginLoader, run_plugin_entrypoint
 from core.reflection import ReflectionEngine
+from core.runtime import HealthMonitor
 
 logger = logging.getLogger("neyra.api")
 
@@ -1267,8 +1266,7 @@ def build_app(
 
     @app.get("/v1/llm/balance")
     async def v1_llm_balance(request: Request, _: None = Depends(dep_viewer)):
-        from core.llm_profile import resolve_openai_compatible_connection
-        from core.openrouter_balance import fetch_openrouter_key_usage
+        from core.llm import fetch_openrouter_key_usage, resolve_openai_compatible_connection
 
         trace_id = _trace_id(request)
         conn = resolve_openai_compatible_connection(config)
@@ -1748,6 +1746,6 @@ def build_app(
 
 def run_internal_api(config: dict) -> None:
     """Точка входа плагина `api`: делегирует в ядро `core.server.run_neyra_server`."""
-    from core.server import run_neyra_server
+    from core.runtime import run_neyra_server
 
     run_neyra_server(config)

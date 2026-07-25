@@ -4,7 +4,7 @@ Cyber-Core — Проект «Нейра»
 Главная точка входа.
 
 Использование:
-  python main.py                  # Ядро (по умолчанию): HTTP API + дашборд + resident-плагины — см. core/server.py
+  python main.py                  # Ядро (по умолчанию): HTTP API + дашборд + resident-плагины — см. core/runtime/server.py
   python main.py --mode core      # то же явно
   python main.py --mode console   # только консоль (промпты, без HTTP-стека)
 
@@ -31,11 +31,11 @@ import threading
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
-from core.win_runtime import apply_runtime_patches
+from core.runtime.win_runtime import apply_runtime_patches
 
 apply_runtime_patches()
 # Секреты из .env (см. .env.example) — до CUDA и до загрузки config.yaml
-from core.secrets_loader import apply_env_secrets, load_dotenv_file
+from core.runtime.secrets import apply_env_secrets, load_dotenv_file
 
 load_dotenv_file(_PROJECT_ROOT)
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -49,7 +49,7 @@ from typing import Any
 
 import yaml
 
-from core.plugin_config import merge_plugin_configs
+from core.plugins import merge_plugin_configs
 
 # ─── Загрузка конфига ─────────────────────────────────────────────────────────
 
@@ -194,7 +194,7 @@ async def run_console() -> None:
     from rich.console import Console
     from rich.panel import Panel
     from rich.text import Text
-    from core.health_monitor import HealthMonitor
+    from core.runtime import HealthMonitor
 
     console = Console()
 
@@ -204,7 +204,7 @@ async def run_console() -> None:
     # Проверяем доступность OpenAI-compatible endpoint (/v1/models)
     import httpx, time as _time
 
-    from core.llm_profile import resolve_openai_compatible_connection
+    from core.llm import resolve_openai_compatible_connection
 
     conn = resolve_openai_compatible_connection(config)
     backend_name = conn.provider.upper()
@@ -456,8 +456,8 @@ async def run_console() -> None:
 # ─── Ядро (HTTP + дашборд + resident-плагины) ─────────────────────────────────
 
 async def run_http_stack() -> None:
-    """Ядро Нейры: FastAPI + дашборд + один NeyraAgent; см. core.server.run_neyra_server."""
-    from core.server import run_neyra_server
+    """Ядро Нейры: FastAPI + дашборд + один NeyraAgent; см. core.runtime.run_neyra_server."""
+    from core.runtime import run_neyra_server
 
     await asyncio.to_thread(run_neyra_server, config)
 
