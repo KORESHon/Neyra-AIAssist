@@ -527,28 +527,9 @@ class NeyraAgent:
 
     async def _retry_short_reply_if_empty(self, messages: list[Any], current_text: str) -> str:
         """Если после очистки ответ пустой, делаем быстрый короткий re-ask одной фразой."""
-        if (current_text or "").strip() != EMPTY_REPLY_PLACEHOLDER:
-            return current_text
-        try:
-            from langchain_core.messages import SystemMessage
-            guard = SystemMessage(
-                content=(
-                    "Срочный повтор: ответь ОДНОЙ короткой фразой по-русски (до 18 слов), "
-                    "без тегов, скобок и внутреннего мышления."
-                )
-            )
-            retry_messages = [messages[0], guard, *messages[1:]] if messages else [guard]
-            resp = await self.llm_talk.ainvoke(retry_messages)
-            raw = resp.content if hasattr(resp, "content") else str(resp)
-            text_no_think, _ = self._extract_think_blocks(raw)
-            clean, _ = self._extract_sound_tags(text_no_think)
-            clean = (clean or "").strip()
-            if clean:
-                logger.info("Пустой ответ восстановлен через short re-ask")
-                return clean
-        except Exception as e:
-            logger.warning("Short re-ask ошибка: %s", e)
-        return current_text
+        from core.agent.reply_pipeline import retry_short_reply_if_empty
+
+        return await retry_short_reply_if_empty(self, messages, current_text)
 
     def _strip_leading_micro_plan(self, text: str) -> tuple[str, str]:
         """Удаляет ведущий [PLAN]...[/PLAN] (или кастомные теги) из ответа."""
@@ -756,16 +737,9 @@ class NeyraAgent:
             "raw": str,           — полный сырой ответ модели
         }
         """
-        from core.agent.reply_pipeline import (
-            log_micro_plan_metrics,
-            polish_clean_reply,
-            sanitize_raw_reply,
-        )
-        from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
-        from core.agent.turn_finalize import finalize_successful_turn
-        from core.agent.turn_prep import prepare_turn
+        from core.agent.chat import run_chat
 
-        prep = await prepare_turn(
+        return await run_chat(
             self,
             user_message=user_message,
             username=username,
@@ -774,84 +748,7 @@ class NeyraAgent:
             channel_id=channel_id,
             author_display_name=author_display_name,
             lyrics_marker=LYRICS_REQUEST_MARKER,
-            log_lane="chat",
         )
-        caption_ok = (prep.attached_caption or "").strip()
-        brain_context = ""
-        try:
-            brain_context = await self._run_brain_tool_phase(
-                user_message=user_message,
-                speaker_label=prep.speaker_label,
-                vision_caption=caption_ok or None,
-                vision_images=vision_images if prep.brain_native_vis else None,
-                brain_system=prep.brain_sys,
-                lyrics_mode=prep.lyrics_mode,
-            )
-        except Exception as e:
-            logger.warning("Brain phase: пропуск сводки — %s", e)
-
-        system_prompt = build_talk_system_prompt(self, prep, brain_context=brain_context)
-        messages = build_talk_messages(
-            self, prep, system_prompt, user_message=user_message, vision_images=vision_images
-        )
-        final_messages_used = messages
-
-        try:
-            cap_llm = (
-                self.llm_talk.bind(max_tokens=max(self.reply_max_tokens, self.lyrics_reply_max_tokens))
-                if prep.lyrics_mode
-                else self.llm_talk
-            )
-            response = await self._ainvoke_text_with_fallback(messages, llm=cap_llm)
-            self._log_model_route(self._extract_model_name(response), lane="talk")
-            raw_response = response.content if hasattr(response, "content") else str(response)
-        except Exception as e:
-            logger.error("Ошибка вызова LLM: %s", e)
-            self._publish_chat_turn_failed(
-                internal_user_id=prep.internal_uid,
-                channel_id=channel_id,
-                error=str(e),
-            )
-            return {
-                "text": f"[SOUND: bruh] Что-то сломалось на моей стороне: {e}",
-                "sounds": ["bruh"],
-                "thoughts": "",
-                "raw": "",
-            }
-
-        clean_text, thoughts, sounds = sanitize_raw_reply(
-            self, raw_response, lyrics_mode=prep.lyrics_mode, mode_label="chat"
-        )
-        clean_text = await polish_clean_reply(
-            self,
-            user_message=user_message,
-            clean_text=clean_text,
-            messages=final_messages_used,
-        )
-
-        await finalize_successful_turn(
-            self,
-            user_message=user_message,
-            clean_text=clean_text,
-            thoughts=thoughts,
-            sounds=sounds,
-            username=username,
-            discord_user_id=discord_user_id,
-            channel_id=channel_id,
-            speaker_label=prep.speaker_label,
-            internal_uid=prep.internal_uid,
-            vision_images=vision_images,
-            saved_facts=prep.saved_facts,
-            source="chat",
-            stm_trimmed=False,
-        )
-        log_micro_plan_metrics(self)
-        return {
-            "text": clean_text,
-            "sounds": sounds,
-            "thoughts": thoughts,
-            "raw": raw_response,
-        }
 
     async def chat_stream(
         self,
@@ -872,16 +769,9 @@ class NeyraAgent:
                 elif chunk["type"] == "done":
                     sounds = chunk["sounds"]
         """
-        from core.agent.reply_pipeline import (
-            log_micro_plan_metrics,
-            polish_clean_reply,
-            sanitize_raw_reply,
-        )
-        from core.agent.talk_messages import build_talk_messages, build_talk_system_prompt
-        from core.agent.turn_finalize import finalize_successful_turn
-        from core.agent.turn_prep import prepare_turn
+        from core.agent.chat_stream import iter_chat_stream
 
-        prep = await prepare_turn(
+        async for chunk in iter_chat_stream(
             self,
             user_message=user_message,
             username=username,
@@ -890,183 +780,8 @@ class NeyraAgent:
             channel_id=channel_id,
             author_display_name=author_display_name,
             lyrics_marker=LYRICS_REQUEST_MARKER,
-            log_lane="stream",
-        )
-        caption_ok = (prep.attached_caption or "").strip()
-        brain_context = ""
-        try:
-            brain_context = await self._run_brain_tool_phase(
-                user_message=user_message,
-                speaker_label=prep.speaker_label,
-                vision_caption=caption_ok or None,
-                vision_images=vision_images if prep.brain_native_vis else None,
-                brain_system=prep.brain_sys,
-                lyrics_mode=prep.lyrics_mode,
-            )
-        except Exception as e:
-            logger.warning("Brain phase (stream): пропуск сводки — %s", e)
-
-        system_prompt = build_talk_system_prompt(self, prep, brain_context=brain_context)
-        stream_llm = self.llm_talk
-        if prep.lyrics_mode:
-            stream_llm = self.llm_talk.bind(
-                max_tokens=max(self.reply_max_tokens, self.lyrics_reply_max_tokens)
-            )
-        if vision_images:
-            mode = "brain-native" if prep.brain_native_vis else "caption→brain→talk"
-            logger.info(
-                "Зрение: %s, изображений=%s | talk_model=%s",
-                mode,
-                len(vision_images),
-                getattr(self, "llm_talk_model", self.llm_model),
-            )
-
-        messages = build_talk_messages(
-            self, prep, system_prompt, user_message=user_message, vision_images=vision_images
-        )
-        final_messages_used = messages
-
-        # 3. Стриминг — yield токены по мере генерации
-        raw_response = ""
-        context_exceeded = False
-        used_model_name: Optional[str] = None
-        plan_state = self._init_micro_plan_state()
-        raw_chunk_count = 0
-        yielded_chunk_count = 0
-        try:
-            stream_iter = self._astream_text_with_fallback(messages, llm=stream_llm)
-            async for chunk in stream_iter:
-                if used_model_name is None:
-                    used_model_name = self._extract_model_name(chunk)
-                token = chunk.content if hasattr(chunk, "content") else str(chunk)
-                if token:
-                    raw_chunk_count += 1
-                    raw_response += token
-                    visible = self._filter_micro_plan_token(token, plan_state)
-                    if visible:
-                        yield {"type": "token", "text": visible}
-                        yielded_chunk_count += 1
-            tail = self._finalize_micro_plan_state(plan_state)
-            if tail:
-                yield {"type": "token", "text": tail}
-                yielded_chunk_count += 1
-            self._log_model_route(used_model_name, lane="talk")
-            logger.debug(
-                "LLM stream stats | raw_chunks=%s | yielded_chunks=%s | micro_plan=%s",
-                raw_chunk_count,
-                yielded_chunk_count,
-                self.micro_planning_enabled,
-            )
-
-        except Exception as e:
-            err_str = str(e)
-
-            # Контекст переполнен → чистим память и пробуем снова
-            if "context size has been exceeded" in err_str.lower() or "context_length_exceeded" in err_str.lower():
-                context_exceeded = True
-                logger.warning(f"Контекст переполнен (LMStudio n_ctx мал)! Очищаю историю до 1 сообщения и урезаю промпт...")
-                # Очищаем историю почти в ноль
-                self.short_memory.trim_to_half()
-                self.short_memory.trim_to_half()
-                
-                # Урезаем системный промпт (убираем веб и память, оставляем только базу)
-                system_prompt = build_talk_system_prompt(
-                    self, prep, brain_context=brain_context,
-                    shrink_people=True, drop_extra_context=True,
-                )
-                messages_retry = build_talk_messages(
-                    self,
-                    prep,
-                    system_prompt,
-                    user_message=user_message,
-                    vision_images=vision_images,
-                    with_micro_plan_prefill=False,
-                )
-                final_messages_used = messages_retry
-
-                try:
-                    retry_iter = self._astream_text_with_fallback(messages_retry, llm=stream_llm)
-                    async for chunk in retry_iter:
-                        if used_model_name is None:
-                            used_model_name = self._extract_model_name(chunk)
-                        token = chunk.content if hasattr(chunk, "content") else str(chunk)
-                        if token:
-                            raw_chunk_count += 1
-                            raw_response += token
-                            visible = self._filter_micro_plan_token(token, plan_state)
-                            if visible:
-                                yield {"type": "token", "text": visible}
-                                yielded_chunk_count += 1
-                    tail = self._finalize_micro_plan_state(plan_state)
-                    if tail:
-                        yield {"type": "token", "text": tail}
-                        yielded_chunk_count += 1
-                    self._log_model_route(used_model_name, lane="talk")
-                    logger.debug(
-                        "LLM stream stats | raw_chunks=%s | yielded_chunks=%s | micro_plan=%s | retry=true",
-                        raw_chunk_count,
-                        yielded_chunk_count,
-                        self.micro_planning_enabled,
-                    )
-                except Exception as e2:
-                    logger.error(f"Ошибка повторного запроса (даже с урезанным контекстом): {e2}")
-                    self._publish_chat_turn_failed(
-                        internal_user_id=prep.internal_uid,
-                        channel_id=channel_id,
-                        error=str(e2),
-                    )
-                    yield {"type": "error", "text": str(e2)}
-                    return
-            else:
-                logger.error(f"Ошибка стриминга LLM: {e}")
-                self._publish_chat_turn_failed(
-                    internal_user_id=prep.internal_uid,
-                    channel_id=channel_id,
-                    error=err_str,
-                )
-                yield {"type": "error", "text": err_str}
-                return
-
-        # 4. Постобработка после завершения стрима
-        clean_text, thoughts, sounds = sanitize_raw_reply(
-            self, raw_response, lyrics_mode=prep.lyrics_mode, mode_label="stream"
-        )
-        clean_text = await polish_clean_reply(
-            self,
-            user_message=user_message,
-            clean_text=clean_text,
-            messages=final_messages_used,
-        )
-
-        if context_exceeded:
-            logger.info("Успешный ответ после переполнения контекста.")
-
-        await finalize_successful_turn(
-            self,
-            user_message=user_message,
-            clean_text=clean_text,
-            thoughts=thoughts,
-            sounds=sounds,
-            username=username,
-            discord_user_id=discord_user_id,
-            channel_id=channel_id,
-            speaker_label=prep.speaker_label,
-            internal_uid=prep.internal_uid,
-            vision_images=vision_images,
-            saved_facts=prep.saved_facts,
-            source="chat_stream",
-            stm_trimmed=context_exceeded,
-        )
-        log_micro_plan_metrics(self)
-        logger.debug("Стрим завершён | sounds=%s | len=%s", sounds, len(clean_text))
-
-        yield {
-            "type": "done",
-            "text": clean_text,
-            "sounds": sounds,
-            "thoughts": thoughts,
-            "raw": raw_response,
-        }
+        ):
+            yield chunk
 
     async def summarize_ltm_corpus(self, combined_dialog_text: str, *, consolidation: bool = False) -> str:
         """

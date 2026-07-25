@@ -31,4 +31,5 @@ core/
 ## Consequences
 
 - Clear entry point for the agent brain.
-- Remaining: optional further shrink of chat/stream bodies; Discord stand acceptance; merge.
+- Talk lanes live in `core/agent/chat.py` and `core/agent/chat_stream.py`; `neyra.py` stays thin wrappers + wiring.
+- Remaining: Discord stand acceptance; merge when Auto Review stays green.
