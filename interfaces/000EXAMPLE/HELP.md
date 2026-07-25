@@ -94,7 +94,7 @@ from pathlib import Path
 
 import yaml
 
-from core.plugin_sdk import PluginContext
+from core.plugins.sdk import PluginContext
 
 
 def _plugin_dir() -> Path:
@@ -185,7 +185,7 @@ from __future__ import annotations
 import asyncio
 
 from core.agent import NeyraAgent
-from core.plugin_sdk import PluginContext
+from core.plugins.sdk import PluginContext
 
 
 def run_plugin(ctx: PluginContext) -> None:

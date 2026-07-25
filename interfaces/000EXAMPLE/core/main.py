@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from core.plugin_sdk import PluginContext
+from core.plugins.sdk import PluginContext
 
 logger = logging.getLogger("neyra.plugin.example")
 

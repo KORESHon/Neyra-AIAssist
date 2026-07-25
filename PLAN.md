@@ -304,10 +304,10 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 | # | Задача | Done when | Статус |
 |---|--------|-----------|--------|
 | 1 | Inventory: монолиты и «корень `core/`» (`agent.py`, `tools.py`, `reflection.py`, …) | список файлов + целевые пакеты/имена в PLAN/PR | `[x]` см. карту ниже |
-| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[~]` пакет + полки (+ `brain_phase`, `memory_jobs`, …); `neyra.py` ~1.7k |
-| 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[~]` `reflection/`, `tools/`, memory WM/emotion/ltm, `runtime` mcp/backup; дальше — chat turn / аудит |
+| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[~]` + `llm_setup` / `turn_prep` / `de_repeat`; `neyra.py` ~1.5k |
+| 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[~]` packages landed; дальше — финальная дорезка chat bodies / аудит |
 | 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[~]` Auto Review: deepcopy seed fixed |
-| 5 | Финальная раскладка по подпапкам `core/` + сужение/снятие shims 1B/1R | канонические импорты везде критичных callers | `[~]` core/agent/memory/tools/runtime + healthcheck/discord → канон; shims ещё в корне |
+| 5 | Финальная раскладка по подпапкам `core/` + сужение/снятие shims 1B/1R | канонические импорты везде критичных callers | `[~]` scripts/plugins/interfaces → канон; flat shims ещё в корне (задача 7) |
 | 6 | Доки (ADR-0003 или раздел PLAN) + приёмка | compileall + smokes + healthcheck + Auto Review; Discord на стенде | `[ ]` |
 | 7 | Удалить дубли файлов в корне `core/` (flat shims 1B/1R после перевода callers) | в корне `core/` нет «теневых» копий/`*.py`-shim'ов для уже перенесённых модулей; импорты только канонические | `[ ]` |
 
@@ -315,7 +315,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 
 | Сейчас (корень `core/`) | ~строк | Цель |
 |-------------------------|--------|------|
-| `agent.py` → **`core/agent/`** | ~1.7k в `neyra.py` | ✅ + `brain_phase` / `memory_jobs` / seed deepcopy; дальше — LLM setup / chat turn |
+| `agent.py` → **`core/agent/`** | ~1.5k в `neyra.py` | ✅ + `llm_setup` / `turn_prep` / `de_repeat` / `brain_phase` / `memory_jobs`; дальше — тела chat/chat_stream |
 | `reflection.py` → **`core/reflection/`** | ~720 | ✅ пакет: `engine.py` (+ `__init__` → `ReflectionEngine`) |
 | `ltm_maintenance.py` | ~450 | ✅ `core/memory/ltm_maintenance.py` (+ flat shim → задача 7) |
 | `tools.py` → **`core/tools/`** | ~420 | ✅ пакет: `builtins.py` (+ `__init__` → `ALL_TOOLS` / `init_tools`) |
@@ -357,9 +357,9 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 **Фаза 1R** *(трек: [PR #7](https://github.com/KORESHon/Neyra-AIAssist/pull/7))*
 
 - [x] Inventory монолитов + целевая карта пакетов/имён.
-- [~] Split `agent.py` и других крупных модулей «по полкам» *(+ `brain_phase`/`memory_jobs`; дальше — chat turn / LLM setup)*.
+- [~] Split `agent.py` и других крупных модулей «по полкам» *(+ `llm_setup`/`turn_prep`/`de_repeat`; дальше — тела chat)*.
 - [~] Переименования по логическому назначению; аудит костылей/багов *(seed deepcopy)*.
-- [~] Финальная раскладка; канонические импорты в критичных callers; shims ещё в корне.
+- [~] Финальная раскладка; канонические импорты в scripts/interfaces; shims ещё в корне.
 - [ ] Удалить дубли файлов в корне `core/` (flat shims после перевода callers на канон).
 - [ ] `compileall` + memory smokes + healthcheck + Auto Review; Discord на стенде.
 ## Этап 2 — Дополнительные улучшения (пакет мелких задач)

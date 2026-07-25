@@ -24,8 +24,8 @@ if str(ROOT) not in sys.path:
 def load_config_dict() -> dict:
     import yaml
 
-    from core.plugin_config import merge_plugin_configs
-    from core.secrets_loader import apply_env_secrets
+    from core.plugins.config import merge_plugin_configs
+    from core.runtime.secrets import apply_env_secrets
 
     p = ROOT / "config.yaml"
     if not p.is_file():

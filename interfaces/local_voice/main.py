@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.plugin_sdk import PluginContext
+from core.plugins.sdk import PluginContext
 
 
 def run_plugin(ctx: PluginContext) -> None:

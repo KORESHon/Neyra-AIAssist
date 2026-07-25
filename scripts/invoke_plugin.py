@@ -24,8 +24,8 @@ def main() -> int:
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
-    from core.plugin_loader import PluginLoader
-    from core.plugin_sdk import PluginContext, run_plugin_entrypoint
+    from core.plugins.loader import PluginLoader
+    from core.plugins.sdk import PluginContext, run_plugin_entrypoint
 
     loader = PluginLoader(root)
     manifest = None
@@ -49,8 +49,8 @@ def main() -> int:
     if not cfg_path.is_file():
         print("config.yaml not found", file=sys.stderr)
         return 1
-    from core.plugin_config import merge_plugin_configs
-    from core.secrets_loader import apply_env_secrets, load_dotenv_file
+    from core.plugins.config import merge_plugin_configs
+    from core.runtime.secrets import apply_env_secrets, load_dotenv_file
 
     load_dotenv_file(root)
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
