@@ -272,8 +272,8 @@ Cutover-флаги (`hub_legacy_import`, `hub_legacy_fallback`, `hub_dual_write_
 | 6 | **Memory naming cleanup:** переименовать `core/memory/legacy.py` в нейтральное имя; обновить `__init__` + shims | нет «legacy» в имени модуля при полностью abandoned file-store; smokes зелёные | `[x]` |
 | 7 | **Чистка дублей / мёртвого кода** после cutover: unused imports, устаревшие комментарии «dual-write/fallback», мёртвые пути | `rg` по `hub_legacy`/`dual_write`/`import-legacy` в коде = только docs/history; compileall чистый | `[~]` docstring/naming cleanup в memory; полный sweep comments — по ходу |
 | 8 | **`agent.py` раскладка (осторожно):** вынести крупные куски (chat turn / prompt build / tools wiring) в `core/agent/` *без* смены поведения | `NeyraAgent` публичный API стабилен; smoke chat path / compileall | `[ ]` *можно вторым коммитом/под-PR если слишком жирно* |
-| 9 | **Обновить импорты потребителей:** `main.py`, Internal API, Discord, scripts, MCP, docs/examples | нет «сломанных» абсолютных импортов на старые модули без shim | `[ ]` |
-| 10 | **Доки:** короткий ADR или раздел в PLAN «Core layout 1B» + обновить setup-доки при смене канонических импортов плагинов | ревьюер понимает канон vs shim | `[ ]` |
+| 9 | **Обновить импорты потребителей:** `main.py`, Internal API, Discord, scripts, MCP, docs/examples | нет «сломанных» абсолютных импортов на старые модули без shim | `[~]` main + Internal API на канон; остальные через shim |
+| 10 | **Доки:** короткий ADR или раздел в PLAN «Core layout 1B» + обновить setup-доки при смене канонических импортов плагинов | ревьюер понимает канон vs shim | `[x]` ADR-0002 |
 | 11 | **Приёмка:** compileall + memory smokes + healthcheck; ручной/MCP ping Discord resident если стенд поднят | чекбоксы фазы 1B в критериях приёмки `[x]` | `[ ]` |
 
 #### Вне scope 1B (не делать в этом PR)
