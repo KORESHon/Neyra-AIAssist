@@ -112,8 +112,9 @@ def load_plugin_settings() -> dict:
 
 def run_plugin(ctx: PluginContext) -> None:
     local = load_plugin_settings()
-    global_stt = (ctx.config.get("voice_cloud") or {}).get("stt") or {}
-    endpoint = local.get("custom_stt_url") or global_stt.get("base_url")
+    voice = ctx.config.get("voice") or {}
+    cloud_stt = ((voice.get("cloud") or {}).get("stt") or {})
+    endpoint = local.get("custom_stt_url") or (cloud_stt.get("deepgram") or {}).get("base_url")
     ...
 ```
 

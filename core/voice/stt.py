@@ -208,20 +208,24 @@ def _save_deepgram_debug_payload(
 
 
 class STTEngine:
-    """STT: faster-whisper (локально), Groq, Deepgram Nova (облако)."""
+    """STT: faster-whisper (local) или cloud provider из ``voice.cloud.stt``."""
 
     def __init__(self, config: dict):
-        self.config = config
-        stt_cfg = (config.get("voice") or {}).get("stt") or {}
-        self.engine = str(stt_cfg.get("engine", "faster-whisper")).strip().lower()
-        self.model_size = str(stt_cfg.get("model", "small"))
-        self.language = str(stt_cfg.get("language", "ru"))
-        self.timeout_seconds = float(stt_cfg.get("timeout_seconds", 30.0))
-        self.max_retries = int(stt_cfg.get("max_retries", 1))
-        self.cloud_fallback_to_local = bool(stt_cfg.get("fallback_to_local", True))
-        self._cloud_fail_count = 0
+        from core.voice.config import resolve_stt_runtime
 
-        cloud = stt_cfg.get("groq") or {}
+        self.config = config
+        rt = resolve_stt_runtime(config)
+        local_stt = rt["local_stt"]
+        self.engine = str(rt["engine"]).strip().lower()
+        self.model_size = str(local_stt.get("model", "small"))
+        self.language = str(rt["language"] or "ru")
+        self.timeout_seconds = float(rt["timeout_seconds"])
+        self.max_retries = int(rt["max_retries"])
+        self.cloud_fallback_to_local = bool(rt["fallback_to_local"])
+        self._cloud_fail_count = 0
+        self._voice_is_local = bool(rt["is_local"])
+
+        cloud = rt["groq"]
         self.groq_base_url = str(cloud.get("base_url", "https://api.groq.com/openai/v1")).rstrip("/")
         env_k = _dedupe_groq_api_key(_normalize_api_key(os.environ.get("GROQ_API_KEY", "")))
         cfg_k = _dedupe_groq_api_key(_normalize_api_key(str(cloud.get("api_key", ""))))
@@ -234,13 +238,14 @@ class STTEngine:
         self.groq_reject_short_thanks_max_sec = float(cloud.get("reject_short_thanks_max_sec", 2.0))
         if self.engine == "groq":
             logger.info(
-                "STT(Groq): model=%s | key_source=%s | key_len=%s",
+                "STT(Groq): model=%s | key_source=%s | key_len=%s | is_local=%s",
                 self.groq_model,
                 "env" if env_k else ("config" if cfg_k else "none"),
                 len(self.groq_api_key),
+                self._voice_is_local,
             )
 
-        dg = stt_cfg.get("deepgram") or {}
+        dg = rt["deepgram"]
         env_dg = _normalize_api_key(os.environ.get("DEEPGRAM_API_KEY", ""))
         cfg_dg = _normalize_api_key(str(dg.get("api_key", "")))
         self.dg_api_key = env_dg or cfg_dg
@@ -255,23 +260,42 @@ class STTEngine:
         # wav — тело как файл WAV; linear16 — только PCM + query encoding/sample_rate/channels (надёжнее для VC)
         self.dg_upload_payload = str(dg.get("upload_payload", "linear16")).strip().lower()
         # true — не передаём language=, включаем detect_language (рекомендуется для VC / смешанного потока)
-        # false — всегда language=… (voice.stt.language); true — detect_language (на коротких VC-кусках часто en/id и пустой текст)
+        # false — всегда language=… (voice.language); true — detect_language (на коротких VC-кусках часто en/id и пустой текст)
         self.dg_use_detect_language = bool(dg.get("use_detect_language", False))
         self.dg_language = str(dg.get("language", "") or "").strip()
         self.dg_dump_payload = bool(dg.get("dump_payload_debug", False))
         self.dg_dump_dir = Path(str(dg.get("dump_payload_dir", "./logs/voice_tmp")).strip() or "./logs/voice_tmp")
         if self.engine == "deepgram":
             logger.info(
-                "STT(Deepgram): model=%s | upload=%s | detect_lang=%s | dump=%s | key_source=%s | key_len=%s",
+                "STT(Deepgram): model=%s | upload=%s | detect_lang=%s | dump=%s | key_source=%s | key_len=%s | is_local=%s",
                 self.dg_model,
                 self.dg_upload_payload,
                 self.dg_use_detect_language,
                 self.dg_dump_payload,
                 "env" if env_dg else ("config" if cfg_dg else "none"),
                 len(self.dg_api_key),
+                self._voice_is_local,
             )
 
-        dev = str(stt_cfg.get("device", "cpu")).lower()
+        # OpenRouter block reserved for Stage 2F implementation (settings already resolved).
+        self._openrouter_stt = rt["openrouter"]
+
+        if self.engine == "faster-whisper":
+            logger.info(
+                "STT(local faster-whisper): model=%s | device_cfg=%s | is_local=%s",
+                self.model_size,
+                local_stt.get("device", "cpu"),
+                self._voice_is_local,
+            )
+
+        if self.engine == "openrouter":
+            logger.info(
+                "STT(OpenRouter): model=%s | is_local=%s (provider wired in Stage 2F code)",
+                str(self._openrouter_stt.get("model") or "openai/whisper-large-v3-turbo"),
+                self._voice_is_local,
+            )
+
+        dev = str(local_stt.get("device", "cpu")).lower()
         if dev == "cuda":
             try:
                 import torch
@@ -283,7 +307,7 @@ class STTEngine:
         self._model = None
 
     def _load(self) -> bool:
-        if self.engine in ("groq", "deepgram"):
+        if self.engine in ("groq", "deepgram", "openrouter"):
             return True
         if self._model is not None:
             return True

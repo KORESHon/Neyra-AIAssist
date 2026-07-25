@@ -360,115 +360,88 @@ memory:
   reflection_time: "04:00"
 
 # ---------------------------
-# Voice STT (canonical for STTEngine) / Распознавание речи
+# Voice (unified local / cloud) / Голос: локально или облако
 # ---------------------------
-# EN: STTEngine reads ONLY voice.stt (key "engine", not "provider").
-# RU: STTEngine читает ТОЛЬКО voice.stt (ключ "engine", не "provider").
-# EN: voice_cloud.stt is NOT a drop-in for STTEngine — see voice_cloud below (TTS + legacy notes).
-# RU: voice_cloud.stt не включает STTEngine — см. voice_cloud ниже (TTS + legacy).
-#
-# EN: engine: faster-whisper | groq | deepgram | openrouter (openrouter = Stage 2F)
-# RU: engine: faster-whisper | groq | deepgram | openrouter (openrouter = фаза 2F)
-# EN: OpenRouter STT uses the same OPENROUTER_API_KEY as LLM (no separate STT secret).
-# RU: OpenRouter STT использует тот же OPENROUTER_API_KEY, что и LLM.
+# EN: Single root `voice`. Pick lane with is_local.
+#     true  → voice.local.stt / voice.local.tts
+#     false → voice.cloud.stt / voice.cloud.tts
+# RU: Один корень `voice`. Режим: is_local.
+#     true  → voice.local.*
+#     false → voice.cloud.*
+# EN: cloud.stt.provider: deepgram | groq | openrouter (openrouter = Stage 2F)
+# RU: cloud.stt.provider: deepgram | groq | openrouter (openrouter = фаза 2F)
+# EN: OpenRouter STT shares OPENROUTER_API_KEY with LLM.
 # Docs: https://openrouter.ai/docs/guides/overview/multimodal/stt
+# EN: Legacy keys voice_cloud / flat voice.stt are still accepted by code (normalized).
 voice:
-  stt:
-    # EN: Active STT backend for core.voice.stt.STTEngine.
-    # RU: Активный бэкенд STT для core.voice.stt.STTEngine.
-    engine: "deepgram"
+  # EN: true = local faster-whisper (+ local TTS when wired); false = cloud providers.
+  # RU: true = локальный faster-whisper (+ local TTS когда будет); false = облако.
+  is_local: false
 
-    # EN: Default language (ISO-639-1). Used by local/groq/openrouter; Deepgram may override.
-    # RU: Язык по умолчанию (ISO-639-1).
-    language: "ru"
+  # EN: Default language (ISO-639-1).
+  # RU: Язык по умолчанию (ISO-639-1).
+  language: "ru"
 
-    # EN: Request timeout seconds (cloud engines).
-    # RU: Таймаут облачных запросов (сек).
-    timeout_seconds: 30.0
+  # EN: Cloud request timeout / retries / optional fallback to local.stt.
+  # RU: Таймаут облака / ретраи / опциональный fallback на local.stt.
+  timeout_seconds: 30.0
+  max_retries: 1
+  fallback_to_local: true
 
-    # EN: Max cloud retries before optional local fallback.
-    # RU: Число ретраев облака до опционального local fallback.
-    max_retries: 1
+  local:
+    stt:
+      # EN: faster-whisper model size + device (used when is_local=true or as cloud fallback).
+      # RU: размер модели faster-whisper + device.
+      model: "small"
+      device: "cpu"
+    tts:
+      # EN: Local TTS placeholder (Silero/Piper/… — Stage 4).
+      # RU: Заглушка локального TTS (этап 4).
+      provider: ""
 
-    # EN: If cloud fails, try local faster-whisper (requires package).
-    # RU: При сбое облака пробовать local faster-whisper (нужен пакет).
-    fallback_to_local: true
+  cloud:
+    stt:
+      # EN: Active cloud STT provider (ignored when is_local=true).
+      # RU: Активный облачный STT (игнорируется при is_local=true).
+      provider: "deepgram"
 
-    # EN: Local faster-whisper model size when engine=faster-whisper (or fallback).
-    # RU: Размер локальной модели faster-whisper.
-    model: "small"
-    device: "cpu"
+      openrouter:
+        # EN: ~$0.04/hour audio. Same OPENROUTER_API_KEY as LLM.
+        # RU: ~$0.04/час. Тот же OPENROUTER_API_KEY, что у LLM.
+        model: "openai/whisper-large-v3-turbo"
+        base_url: ""
+        temperature: 0.0
 
-    # EN: OpenRouter /audio/transcriptions (Stage 2F). Model ~$0.04/hour audio.
-    # RU: OpenRouter STT (фаза 2F). Модель ~$0.04/час аудио.
-    openrouter:
-      model: "openai/whisper-large-v3-turbo"
-      # EN: Empty = use openrouter.base_url from root config.
-      # RU: Пусто = взять openrouter.base_url из корневого конфига.
-      base_url: ""
-      temperature: 0.0
+      deepgram:
+        model: "nova-3"
+        base_url: "https://api.deepgram.com/v1"
+        # EN: api_key from DEEPGRAM_API_KEY (apply_env_secrets) — do not put secrets in YAML.
+        # RU: api_key из DEEPGRAM_API_KEY — не хранить секреты в YAML.
+        smart_format: true
+        punctuate: true
+        upload_payload: "linear16"
+        use_detect_language: false
 
-    deepgram:
-      model: "nova-3"
-      base_url: "https://api.deepgram.com/v1"
-      # EN: api_key from DEEPGRAM_API_KEY via apply_env_secrets (do not put secrets in YAML).
-      # RU: api_key подставляется из DEEPGRAM_API_KEY (не хранить секреты в YAML).
-      smart_format: true
-      punctuate: true
-      upload_payload: "linear16"
-      use_detect_language: false
+      groq:
+        model: "whisper-large-v3-turbo"
+        base_url: "https://api.groq.com/openai/v1"
+        # EN: api_key from GROQ_API_KEY.
+        # RU: api_key из GROQ_API_KEY.
+        temperature: 0.0
+        filter_hallucinations: true
 
-    groq:
-      model: "whisper-large-v3-turbo"
-      base_url: "https://api.groq.com/openai/v1"
-      # EN: api_key from GROQ_API_KEY via apply_env_secrets.
-      # RU: api_key из GROQ_API_KEY.
-      temperature: 0.0
-      filter_hallucinations: true
-
-# ---------------------------
-# Cloud voice adapters / Облачные voice-адаптеры (TTS + legacy STT notes)
-# ---------------------------
-# EN: TTS adapters live here. STTEngine does NOT read voice_cloud.stt.
-# RU: Здесь TTS. STTEngine НЕ читает voice_cloud.stt — канон выше: voice.stt.
-voice_cloud:
-  stt:
-    # EN: Legacy/docs-only mirror — prefer voice.stt.engine for runtime.
-    # RU: Legacy/заметка — для runtime используйте voice.stt.engine.
-    provider: "deepgram"
-    model: "nova-3"
-    base_url: "https://api.deepgram.com/v1"
-    language: "ru"
-    timeout_seconds: 30.0
-
-  tts:
-    # EN: TTS provider key.
-    # RU: Ключ провайдера синтеза речи.
-    provider: "yandex"
-
-    # EN: Full TTS endpoint URL.
-    # RU: Полный URL endpoint для TTS.
-    endpoint: "https://tts.api.cloud.yandex.net/tts/v3/utteranceSynthesis"
-
-    # EN: Voice preset name.
-    # RU: Имя голосового пресета.
-    voice: "masha"
-
-    # EN: Voice role/style depending on provider.
-    # RU: Роль/стиль голоса (зависит от провайдера).
-    role: "friendly"
-
-    # EN: Speech rate multiplier.
-    # RU: Множитель скорости речи.
-    speed: 1.1
-
-    # EN: Pitch shift in Hz.
-    # RU: Сдвиг высоты тона в Гц.
-    pitch_shift_hz: 50.0
-
-    # EN: TTS request timeout.
-    # RU: Таймаут TTS-запроса.
-    timeout_seconds: 60.0
+    tts:
+      # EN: Cloud TTS provider.
+      # RU: Облачный TTS.
+      provider: "yandex"
+      endpoint: "https://tts.api.cloud.yandex.net/tts/v3/utteranceSynthesis"
+      voice: "masha"
+      role: "friendly"
+      speed: 1.1
+      pitch_shift_hz: 50.0
+      timeout_seconds: 60.0
+      # EN: api_key / folder_id from YANDEX_* env via apply_env_secrets.
+      # RU: api_key / folder_id из YANDEX_* в .env.
 
 # ---------------------------
 # Logging / Логирование

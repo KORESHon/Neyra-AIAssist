@@ -40,22 +40,35 @@ def apply_env_secrets(cfg: dict) -> None:
 
     g = _s("GROQ_API_KEY")
     if g:
-        # Canonical STTEngine path: voice.stt.groq.api_key
-        voice_stt = cfg.setdefault("voice", {}).setdefault("stt", {})
-        groq_block = voice_stt.setdefault("groq", {})
+        # Canonical: voice.cloud.stt.groq.api_key (+ legacy voice.stt / voice_cloud mirrors)
+        cloud_stt = (
+            cfg.setdefault("voice", {})
+            .setdefault("cloud", {})
+            .setdefault("stt", {})
+        )
+        groq_block = cloud_stt.setdefault("groq", {})
         if isinstance(groq_block, dict):
             groq_block["api_key"] = g
-        # Legacy mirror (voice_cloud is not read by STTEngine)
+        legacy_stt = cfg.setdefault("voice", {}).setdefault("stt", {})
+        if isinstance(legacy_stt, dict):
+            legacy_stt.setdefault("groq", {})["api_key"] = g
         vc = cfg.setdefault("voice_cloud", {})
         stt = vc.setdefault("stt", {})
         stt["groq_api_key"] = g
 
     dg = _s("DEEPGRAM_API_KEY")
     if dg:
-        voice_stt = cfg.setdefault("voice", {}).setdefault("stt", {})
-        dg_block = voice_stt.setdefault("deepgram", {})
+        cloud_stt = (
+            cfg.setdefault("voice", {})
+            .setdefault("cloud", {})
+            .setdefault("stt", {})
+        )
+        dg_block = cloud_stt.setdefault("deepgram", {})
         if isinstance(dg_block, dict):
             dg_block["api_key"] = dg
+        legacy_stt = cfg.setdefault("voice", {}).setdefault("stt", {})
+        if isinstance(legacy_stt, dict):
+            legacy_stt.setdefault("deepgram", {})["api_key"] = dg
         vc = cfg.setdefault("voice_cloud", {})
         stt = vc.setdefault("stt", {})
         stt["deepgram_api_key"] = dg
@@ -110,6 +123,16 @@ def apply_env_secrets(cfg: dict) -> None:
     yk = _s("YANDEX_API_KEY")
     yf = _s("YANDEX_FOLDER_ID") or _s("YANDEX_ID_KEY")
     if yk or yf:
+        cloud_tts = (
+            cfg.setdefault("voice", {})
+            .setdefault("cloud", {})
+            .setdefault("tts", {})
+        )
+        if yk:
+            cloud_tts["api_key"] = yk
+        if yf:
+            cloud_tts["folder_id"] = yf
+        # Legacy mirror for older callers still reading voice_cloud.tts
         vc = cfg.setdefault("voice_cloud", {})
         tts = vc.setdefault("tts", {})
         if yk:

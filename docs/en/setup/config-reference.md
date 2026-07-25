@@ -13,7 +13,7 @@
 - `assistant`
 - `BACKEND`, `openrouter`, `llm` — per-role nested blocks: **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** (VL + vision pipeline; no top-level **`vision:`**).
 - `memory`
-- `voice_cloud`
+- `voice` — unified (`is_local` / `local` / `cloud` for STT+TTS; legacy `voice_cloud` removed from example)
 - `health_monitor`
 - `backup`, `external_storage`
 - `logging`

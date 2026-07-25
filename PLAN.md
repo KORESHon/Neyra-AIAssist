@@ -264,8 +264,18 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 **Целевая модель:** `openai/whisper-large-v3-turbo` (~$0.04 / час аудио; duration-based).  
 **Дока:** [OpenRouter Speech-to-Text](https://openrouter.ai/docs/guides/overview/multimodal/stt) — `POST https://openrouter.ai/api/v1/audio/transcriptions`.
 
-**Канон конфига (важно):** `STTEngine` читает **только** `config["voice"]["stt"]` и ключ **`engine`** (не `provider`).  
-Блок `voice_cloud.stt` — **не** drop-in и не включает STTEngine; он остаётся legacy/заметкой для будущих cloud-адаптеров / TTS живёт в `voice_cloud.tts`. Путаница `voice_cloud` ↔ `voice.stt` или `provider` ↔ `engine` даёт silent-failure.
+**Канон конфига (важно):** единый корень `voice` (без отдельного `voice_cloud`):
+
+```yaml
+voice:
+  is_local: false          # true → local.*; false → cloud.*
+  language: "ru"
+  local:  { stt: {...}, tts: {...} }
+  cloud:  { stt: { provider: deepgram|groq|openrouter, ... }, tts: {...} }
+```
+
+`STTEngine` резолвит через `core/voice/config.py`: при `is_local=true` → faster-whisper; иначе → `cloud.stt.provider`.  
+Legacy `voice.stt` / `voice_cloud` ещё нормализуются в памяти, но в example/local больше не пишем.
 
 **Контракт API (зафиксировать в коде):**
 
@@ -279,13 +289,13 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 
 **Сделать в коде:**
 
-1. Расширить `core/voice/stt.py` (или тонкий helper + вызов из `STTEngine`):
-   - `voice.stt.engine: openrouter` (рядом с `faster-whisper` / `groq` / `deepgram`).
-   - `voice.stt.openrouter.model` default `openai/whisper-large-v3-turbo`.
+1. Дописать провайдер OpenRouter в `STTEngine` (резолв уже через `voice.cloud.stt`):
+   - `voice.is_local: false` + `voice.cloud.stt.provider: openrouter`.
+   - `voice.cloud.stt.openrouter.model` default `openai/whisper-large-v3-turbo`.
    - `base_url` из `openrouter.base_url` или `https://openrouter.ai/api/v1`.
-   - при старте с `engine=openrouter` — лог вида `STT(OpenRouter): model=… | key_source=…` (без самого ключа).
+   - лог `STT(OpenRouter): model=… | key_source=…` (без ключа).
 2. Переиспользовать `transcribe(path|bytes)` — плагины не должны знать про OpenRouter.
-3. Ошибки: 401/429/timeout → лог + опц. `fallback_to_local`, без падения ядра.
+3. Ошибки: 401/429/timeout → лог + опц. `fallback_to_local` → `voice.local.stt`.
 4. Короткий smoke на тестовом wav → непустой `text` + cost в логе.
 5. Дока: ссылка на OpenRouter STT; цена ~4¢/час; это **file/clip**, не live mic.
 
@@ -302,20 +312,19 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 
 | Файл | Что сделать |
 |------|-------------|
-| `config.example.yaml` | Секция **`voice.stt`**: `engine`, `language`, `timeout_seconds`, `fallback_to_local`, вложенные `openrouter` / `deepgram` / `groq` (как читает `STTEngine`). Комментарий: `voice_cloud.stt` ≠ STTEngine. |
-| `config.yaml` (local) | Те же ключи; `engine` — осознанный выбор стенда (`deepgram` или `openrouter` после кода). |
-| `.env.example` | Секции с комментариями: LLM (`OPENROUTER_API_KEY` — и для chat, и для STT OpenRouter), Discord, voice (Deepgram/Groq/Yandex), Internal API, HF… |
-| `.env` (local) | Та же структура/комментарии; **секреты не удалять**, только упорядочить. Отдельный ключ для OpenRouter STT не нужен. |
-| `core/runtime/secrets.py` | `DEEPGRAM_API_KEY` / `GROQ_API_KEY` → ещё и `voice.stt.*.api_key` (не только `voice_cloud`); OpenRouter уже → `openrouter.api_key`. |
+| `config.example.yaml` / `config.yaml` | Единый **`voice`**: `is_local`, `local.{stt,tts}`, `cloud.{stt,tts}`; без `voice_cloud`. |
+| `.env.example` / `.env` | Комментарии под `is_local` / `cloud.stt.provider`; секреты сохранить. |
+| `core/runtime/secrets.py` | Deepgram/Groq → `voice.cloud.stt.*.api_key`; Yandex → `voice.cloud.tts`; OpenRouter → `openrouter.api_key`. |
+| `core/voice/config.py` | Резолвер + legacy normalize. |
 
 **Приёмка:**
 
-- [ ] `engine=openrouter` + turbo транскрибирует короткий клип; в логе `STT(OpenRouter): …`.
+- [ ] `is_local=false` + `cloud.stt.provider=openrouter` + turbo → короткий клип; лог `STT(OpenRouter): …`.
 - [ ] Ключ только из `OPENROUTER_API_KEY` / `openrouter.api_key`.
-- [ ] `engine=deepgram|groq|faster-whisper` без регрессий.
-- [ ] После sync example ключ `voice.stt.*` реально подхватывается `STTEngine` (не `voice_cloud.stt`).
-- [ ] `.env.example` и local `.env` структурированы; в логах нет API key.
-- [ ] Дока со ссылкой на https://openrouter.ai/docs/guides/overview/multimodal/stt
+- [ ] `provider=deepgram|groq` и `is_local=true` (faster-whisper) без регрессий.
+- [ ] Нет отдельного `voice_cloud` в example/local; `STTEngine` читает через `resolve_stt_runtime`.
+- [ ] `.env*` структурированы; в логах нет API key.
+- [ ] Дока: https://openrouter.ai/docs/guides/overview/multimodal/stt
 
 ---
 
