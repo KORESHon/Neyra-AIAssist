@@ -338,7 +338,7 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 - [x] Offline приёмка: `compileall` + memory smokes + `healthcheck` + Auto Review SUCCESS.
 - [x] Split `agent.py` / глубокий рефакторинг — **вынесены в фазу 1R** (не блокер 1B).
 
-**Фаза 1R** *(после merge 1B)*
+**Фаза 1R** *(трек: [PR #7](https://github.com/KORESHon/Neyra-AIAssist/pull/7))*
 
 - [ ] Inventory монолитов + целевая карта пакетов/имён.
 - [ ] Split `agent.py` и других крупных модулей «по полкам».
