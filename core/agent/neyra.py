@@ -1,22 +1,9 @@
 """
-core/agent.py — Главный агент Нейры
-─────────────────────────────────────
-Использует LangChain + Ollama для генерации ответов.
-Интегрирован с:
-  • ShortTermMemory  — история текущего диалога
-  • LongTermMemory   — ChromaDB RAG (прошлые диалоги)
-  • PeopleDB         — досье на людей
-  • Tools            — инструменты (поиск, время, мониторинг)
+core.agent.neyra — Главный агент Нейры (оркестрация).
 
-Логика ответа:
-  1. Ищем похожие диалоги в RAG
-  2. Ищем упомянутых людей в PeopleDB
-  3. При вложениях — VL конспект → brain (bind_tools / MCP при включении) → сводка для talk
-  4. Собираем промпт личности (talk) + история + запрос
-  5. Стримим / генерируем ответ talk-моделью (без инструментов)
-  6. Парсим CoT (<think>...</think>), сохраняем в thoughts.log
-  7. Парсим [SOUND: tag], убираем из текста
-  8. Сохраняем диалог в ChromaDB и chat.log
+Использует LangChain + OpenAI-compatible LLM.
+Подсистемы: STM / Hub memory / PeopleDB / Tools / Event Bus.
+Хелперы вынесены в core.agent.reply_postprocess и core.agent.micro_plan (фаза 1R).
 """
 
 from __future__ import annotations
@@ -30,6 +17,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from . import micro_plan as _micro_plan
+from .reply_postprocess import (
+    EMPTY_REPLY_PLACEHOLDER,
+    ensure_nonempty_reply,
+    extract_sound_tags,
+    extract_think_blocks,
+)
 from core.event_bus import (
     CHAT_TURN_COMPLETED,
     CHAT_TURN_FAILED,
@@ -45,7 +39,6 @@ logger = logging.getLogger("neyra.agent")
 DEPRECATED_OPENROUTER_MODELS: dict[str, str] = {
     "openrouter/elephant-alpha": "inclusionai/ling-2.6-flash:free",
 }
-EMPTY_REPLY_PLACEHOLDER = "Затупила на секунду. Повтори коротко, пожалуйста."
 
 # Маркер скрытого суффикса Discord GET_LYRICS — включает сохранение переносов строк и больший max_tokens.
 LYRICS_REQUEST_MARKER = "[SYSTEM HIDDEN INSTRUCTION: User wants lyrics"
@@ -75,7 +68,7 @@ class NeyraAgent:
         self._setup_memory()
         self._setup_tools()
         self._setup_logs()
-        self._project_root = Path(__file__).resolve().parent.parent
+        self._project_root = Path(__file__).resolve().parents[2]
         self._wm_turns_since_refresh = 0
         self._wm_last_refresh_mono = 0.0
         self._emotion_last_mono = 0.0
@@ -1343,59 +1336,24 @@ class NeyraAgent:
 
     # ─── Вспомогательные методы ────────────────────────────────────────────
 
+    def _micro_plan_settings(self) -> _micro_plan.MicroPlanSettings:
+        return _micro_plan.MicroPlanSettings(
+            enabled=bool(self.micro_planning_enabled),
+            mode=str(self.micro_plan_mode),
+            start=str(self.micro_plan_start),
+            end=str(self.micro_plan_end),
+            anchor_prefix=str(self.micro_plan_anchor_prefix),
+            anchor_reply=str(self.micro_plan_anchor_reply),
+            prefill_enabled=bool(self.micro_plan_prefill_enabled),
+        )
+
     def _extract_sound_tags(self, text: str, *, preserve_line_breaks: bool = False) -> tuple[str, list[str]]:
         """Вырезает [SOUND: tag] из текста, возвращает (чистый текст, список тегов)."""
-        pattern = r"\[SOUND:\s*(\w+)\]"
-        tags = re.findall(pattern, text)
-        clean = re.sub(pattern, "", text).strip()
-
-        # Жестко вырезаем все остальные [Roleplay] и [Действия] скобки, если модель опять галлюцинирует
-        clean = re.sub(r"\[[^\]]*\]", "", clean)
-
-        # Агрессивно вырезаем ЛЮБЫЕ действия в звездочках *Злобно хихикает*
-        clean = re.sub(r"\*[^\*]{2,150}\*", "", clean)
-
-        # Агрессивно вырезаем действия в скобках (закатывает глаза)
-        # Ищем скобки, в которых есть хотя бы 1 слово на кириллице
-        clean = re.sub(r"\([^\)]*[А-Яа-яЁё][^\)]*\)", "", clean)
-
-        # Вырезаем спам из японских смайликов и спецсимволов: ~(>_<)~, (o_O), и тд
-        # Удаляем любые конструкции начинающиеся с ~ и заканчивающиеся на ~
-        clean = re.sub(r"~[^a-zA-Zа-яА-ЯёЁ]{1,20}~", "", clean)
-        # Убираем кавычки, если модель случайно обернула всю фразу в "Текст"
-        if clean.startswith('"') and clean.endswith('"'):
-            clean = clean[1:-1]
-
-        # Обычный режим: один абзац. Режим текста песни: сохраняем \n, схлопываем только пробелы в строке.
-        if preserve_line_breaks:
-            lines = [re.sub(r"[ \t]+", " ", ln).rstrip() for ln in clean.splitlines()]
-            clean = "\n".join(lines).strip()
-        else:
-            clean = re.sub(r"\s+", " ", clean).strip()
-        clean = clean.replace('""', '"').replace("''", "'")
-
-        return clean, tags
+        return extract_sound_tags(text, preserve_line_breaks=preserve_line_breaks)
 
     def _extract_think_blocks(self, text: str) -> tuple[str, str]:
         """Вырезает <think>/<thought> блоки (модель использует оба варианта)."""
-        # Захватываем <think>...</think> и <thought>...</thought>
-        pattern = r"<(?:redacted_thinking|think|thought)>(.*?)</(?:redacted_thinking|think|thought)>"
-        thoughts = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-        clean = re.sub(pattern, "", text, flags=re.DOTALL | re.IGNORECASE)
-
-        # Убираем незакрытые хвосты типа </thought> или </think> в конце
-        clean = re.sub(
-            r"</?(?:redacted_thinking|think|thought)>",
-            "",
-            clean,
-            flags=re.IGNORECASE,
-        )
-
-        # Чистим мусор в начале: ". Текст" → "Текст"
-        clean = clean.strip()
-        clean = re.sub(r"^[\s.,;:\-–—]+", "", clean).strip()
-
-        return clean, "\n---\n".join(thoughts)
+        return extract_think_blocks(text)
 
     def _ensure_nonempty_reply(
         self,
@@ -1408,19 +1366,12 @@ class NeyraAgent:
         Гарантирует, что после пост-очистки ответ не станет пустым.
         Иногда модель уходит в служебные блоки/скобки и после фильтров ничего не остаётся.
         """
-        c = (clean_text or "").strip()
-        if c:
-            return c
-        # Мягкий salvage: убираем только SOUND-теги и лишние пробелы.
-        t = re.sub(r"\[SOUND:\s*\w+\]", "", (text_no_think or ""), flags=re.IGNORECASE)
-        if preserve_line_breaks:
-            t = "\n".join(re.sub(r"[ \t]+", " ", ln).strip() for ln in t.splitlines()).strip()
-        else:
-            t = re.sub(r"\s+", " ", t).strip()
-        if t:
-            return t
-        logger.warning("Пустой ответ после очистки: fallback-фраза")
-        return EMPTY_REPLY_PLACEHOLDER
+        return ensure_nonempty_reply(
+            text_no_think,
+            clean_text,
+            preserve_line_breaks=preserve_line_breaks,
+            empty_placeholder=EMPTY_REPLY_PLACEHOLDER,
+        )
 
     async def _retry_short_reply_if_empty(self, messages: list[Any], current_text: str) -> str:
         """Если после очистки ответ пустой, делаем быстрый короткий re-ask одной фразой."""
@@ -1449,188 +1400,27 @@ class NeyraAgent:
 
     def _strip_leading_micro_plan(self, text: str) -> tuple[str, str]:
         """Удаляет ведущий [PLAN]...[/PLAN] (или кастомные теги) из ответа."""
-        src = (text or "").strip()
-        if not self.micro_planning_enabled:
-            return src, ""
-        if not src.startswith(self.micro_plan_start):
-            return src, ""
-        end_idx = src.find(self.micro_plan_end)
-        if end_idx < 0:
-            return src, ""
-        plan = src[len(self.micro_plan_start):end_idx].strip()
-        rest = src[end_idx + len(self.micro_plan_end):].strip()
-        return rest, plan
+        return _micro_plan.strip_leading(text, self._micro_plan_settings())
 
     def _init_micro_plan_state(self) -> dict:
-        return {
-            "in_plan": False,
-            "start_idx": 0,
-            "end_idx": 0,
-            "hidden_chars": 0,
-            "anchor_decided": False,
-            "anchor_mode": False,
-            "lead_buffer": "",
-            "say_idx": 0,
-        }
+        return _micro_plan.init_state()
 
     def _filter_micro_plan_token(self, token: str, st: dict) -> str:
         """State-machine фильтр: скрывает содержимое между start/end тегами без буферизации всего ответа."""
-        if not self.micro_planning_enabled:
-            return token
-        if self.micro_plan_mode == "anchor":
-            return self._filter_micro_plan_token_anchor(token, st)
-        start = self.micro_plan_start
-        end = self.micro_plan_end
-        if not start or not end:
-            return token
-        out: list[str] = []
-        i = 0
-        while i < len(token):
-            ch = token[i]
-            if not st["in_plan"]:
-                sidx = st["start_idx"]
-                if ch == start[sidx]:
-                    st["start_idx"] = sidx + 1
-                    i += 1
-                    if st["start_idx"] >= len(start):
-                        st["in_plan"] = True
-                        st["start_idx"] = 0
-                    continue
-                if st["start_idx"] > 0:
-                    out.append(start[: st["start_idx"]])
-                    st["start_idx"] = 0
-                    continue  # re-check current char
-                out.append(ch)
-                i += 1
-            else:
-                eidx = st["end_idx"]
-                if ch == end[eidx]:
-                    st["end_idx"] = eidx + 1
-                    i += 1
-                    if st["end_idx"] >= len(end):
-                        st["in_plan"] = False
-                        st["end_idx"] = 0
-                    continue
-                if st["end_idx"] > 0:
-                    st["end_idx"] = 0
-                    continue  # re-check current char
-                st["hidden_chars"] += 1
-                i += 1  # скрываем символ внутри плана
-        return "".join(out)
+        return _micro_plan.filter_token(token, st, self._micro_plan_settings())
 
     def _filter_micro_plan_token_anchor(self, token: str, st: dict) -> str:
-        plan_anchor = self.micro_plan_anchor_prefix
-        say_anchor = self.micro_plan_anchor_reply
-        if not plan_anchor or not say_anchor:
-            return token
-
-        # Короткое "окно решения": если ответ начинается с PLAN:, скрываем до SAY:.
-        if not st["anchor_decided"]:
-            st["lead_buffer"] += token
-            probe = st["lead_buffer"].lstrip()
-            if probe.startswith(plan_anchor):
-                st["anchor_decided"] = True
-                st["anchor_mode"] = True
-                st["hidden_chars"] += len(st["lead_buffer"])
-                st["lead_buffer"] = ""
-                return ""
-            if len(probe) >= len(plan_anchor) or not plan_anchor.startswith(probe):
-                st["anchor_decided"] = True
-                out = st["lead_buffer"]
-                st["lead_buffer"] = ""
-                return out
-            return ""
-
-        if not st["anchor_mode"]:
-            return token
-
-        out: list[str] = []
-        i = 0
-        while i < len(token):
-            ch = token[i]
-            sidx = st["say_idx"]
-            if ch == say_anchor[sidx]:
-                st["say_idx"] = sidx + 1
-                st["hidden_chars"] += 1
-                i += 1
-                if st["say_idx"] >= len(say_anchor):
-                    st["anchor_mode"] = False
-                    st["say_idx"] = 0
-                continue
-            if st["say_idx"] > 0:
-                st["hidden_chars"] += st["say_idx"]
-                st["say_idx"] = 0
-                continue
-            st["hidden_chars"] += 1
-            i += 1
-        return "".join(out)
+        return _micro_plan.filter_token_anchor(token, st, self._micro_plan_settings())
 
     def _finalize_micro_plan_state(self, st: dict) -> str:
-        if not self.micro_planning_enabled:
-            return ""
-        if st.get("hidden_chars", 0) > 0:
-            self._micro_plan_metrics["filtered_stream_chars"] += int(st["hidden_chars"])
-        if self.micro_plan_mode == "anchor":
-            if not st.get("anchor_decided"):
-                tail = st.get("lead_buffer", "")
-                st["lead_buffer"] = ""
-                return tail
-            if st.get("anchor_mode"):
-                self._micro_plan_metrics["unclosed_blocks"] += 1
-            return ""
-        if not st.get("in_plan") and st.get("start_idx", 0) > 0:
-            tail = self.micro_plan_start[: st["start_idx"]]
-            st["start_idx"] = 0
-            return tail
-        if st.get("in_plan"):
-            self._micro_plan_metrics["unclosed_blocks"] += 1
-        return ""
+        return _micro_plan.finalize_state(st, self._micro_plan_settings(), self._micro_plan_metrics)
 
     def _strip_micro_plan_blocks(self, text: str) -> tuple[str, int, bool]:
         """Финальный fail-safe: вырезает все блоки start...end и обрезает незакрытый хвост."""
-        if not self.micro_planning_enabled:
-            return (text or ""), 0, False
-        if self.micro_plan_mode == "anchor":
-            return self._strip_micro_plan_anchor(text)
-        src = text or ""
-        start = self.micro_plan_start
-        end = self.micro_plan_end
-        if not start or not end or start not in src:
-            return src, 0, False
-
-        out: list[str] = []
-        i = 0
-        hidden = 0
-        unclosed = False
-        while i < len(src):
-            s = src.find(start, i)
-            if s < 0:
-                out.append(src[i:])
-                break
-            out.append(src[i:s])
-            e = src.find(end, s + len(start))
-            if e < 0:
-                hidden += len(src) - s
-                unclosed = True
-                break
-            hidden += e + len(end) - s
-            i = e + len(end)
-        return "".join(out).strip(), hidden, unclosed
+        return _micro_plan.strip_blocks(text, self._micro_plan_settings())
 
     def _strip_micro_plan_anchor(self, text: str) -> tuple[str, int, bool]:
-        src = (text or "").strip()
-        plan_anchor = self.micro_plan_anchor_prefix
-        say_anchor = self.micro_plan_anchor_reply
-        if not plan_anchor or not say_anchor:
-            return src, 0, False
-        if not src.startswith(plan_anchor):
-            return src, 0, False
-        say_idx = src.find(say_anchor, len(plan_anchor))
-        if say_idx < 0:
-            return "", len(src), True
-        hidden = say_idx + len(say_anchor)
-        rest = src[say_idx + len(say_anchor):].strip()
-        return rest, hidden, False
+        return _micro_plan.strip_anchor(text, self._micro_plan_settings())
 
     def _maybe_append_micro_plan_prefill(
         self,
@@ -1638,14 +1428,11 @@ class NeyraAgent:
         *,
         has_vision_images: bool,
     ) -> list[Any]:
-        if not self.micro_planning_enabled or not self.micro_plan_prefill_enabled or has_vision_images:
-            return messages
-        try:
-            from langchain_core.messages import AIMessage
-            prefill = self.micro_plan_start if self.micro_plan_mode != "anchor" else f"{self.micro_plan_anchor_prefix} "
-            return [*messages, AIMessage(content=prefill)]
-        except Exception:
-            return messages
+        return _micro_plan.maybe_append_prefill(
+            messages,
+            self._micro_plan_settings(),
+            has_vision_images=has_vision_images,
+        )
 
     async def _de_repeat_reply(self, user_message: str, clean_text: str) -> str:
         """

@@ -303,12 +303,27 @@ Split `agent.py` / глубокий рефакторинг / «расфасов�
 
 | # | Задача | Done when | Статус |
 |---|--------|-----------|--------|
-| 1 | Inventory: монолиты и «корень `core/`» (`agent.py`, `tools.py`, `reflection.py`, …) | список файлов + целевые пакеты/имена в PLAN/PR | `[ ]` |
-| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[ ]` |
+| 1 | Inventory: монолиты и «корень `core/`» (`agent.py`, `tools.py`, `reflection.py`, …) | список файлов + целевые пакеты/имена в PLAN/PR | `[x]` см. карту ниже |
+| 2 | Split `agent.py` → `core/agent/` (prompt / turn / tools wiring / …) | `NeyraAgent` API стабилен; smokes зелёные | `[~]` пакет + `reply_postprocess` / `micro_plan`; оркестрация ещё в `neyra.py` |
 | 3 | Рефакторинг/переименование остальных крупных модулей по назначению | имена = роль; мёртвый код убран | `[ ]` |
 | 4 | Аудит костылей/багов (костыли после 1A/1B, дубли, опасные пути) | findings закрыты или задокументированы | `[ ]` |
 | 5 | Финальная раскладка по подпапкам `core/` + сужение/снятие shims 1B | канонические импорты везде критичных callers | `[ ]` |
 | 6 | Доки (ADR-0003 или раздел PLAN) + приёмка | compileall + smokes + healthcheck + Auto Review; Discord на стенде | `[ ]` |
+
+#### Inventory / целевая карта (1R)
+
+| Сейчас (корень `core/`) | ~строк | Цель |
+|-------------------------|--------|------|
+| `agent.py` → **`core/agent/`** | ~2.6k | ✅ пакет: `neyra.py` + `reply_postprocess.py` + `micro_plan.py`; дальше — prompts / chat / memory_ops |
+| `reflection.py` | ~720 | `core/reflection/` (engine + journal helpers) |
+| `ltm_maintenance.py` | ~450 | `core/memory/ltm_maintenance.py` или `core/memory/maintenance.py` |
+| `tools.py` | ~420 | `core/tools/` (registry + builtins) |
+| `mcp_client.py` | ~340 | `core/runtime/mcp_client.py` или `core/mcp/` |
+| `working_memory.py` | ~210 | `core/memory/working_memory.py` |
+| `emotional_layer.py` | ~115 | `core/memory/emotional_layer.py` или `core/agent/emotion.py` |
+| `backup_manager.py` | ~95 | `core/runtime/backup.py` |
+| `timeutil.py` / `event_bus.py` / `identity.py` / … | <100 | оставить или тонкий `core/runtime` / `core/common` по мере нужды |
+| flat shims 1B (`plugin_*`, `llm_*`, `server`, …) | — | сужать в конце 1R после перевода callers |
 
 ---
 
