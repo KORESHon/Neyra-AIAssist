@@ -112,6 +112,8 @@ openrouter:
 
   brain_model:
     # Левое полушарие: быстрый мультимодальный маршрутизатор + tool-loop
+    # WARNING: :free endpoints may log/reuse content — do not send PII/voice/faces without consent.
+    # RU: :free может логироваться у провайдера — не слать PII/голос/лица без согласия.
     model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
     # Правое полушарие: глубокая логика (инструмент delegate_to_deep_logic)
     model_deep: "openai/gpt-oss-120b:free"

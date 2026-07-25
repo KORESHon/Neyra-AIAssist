@@ -39,6 +39,19 @@ _people_db: "PeopleDB | None" = None
 _assistant_cfg: dict | None = None
 _neyra_config: dict | None = None
 _memory_hub = None
+# Per-turn scope for RAG tools (set from chat/stream before brain/tools)
+_turn_memory_scope: dict[str, str] = {"user_id": "", "channel_id": ""}
+
+
+def set_turn_memory_scope(*, user_id: str = "", channel_id: str = "") -> None:
+    """Bind current turn user/channel for scoped semantic search."""
+    _turn_memory_scope["user_id"] = str(user_id or "").strip()
+    _turn_memory_scope["channel_id"] = str(channel_id or "").strip()
+
+
+def clear_turn_memory_scope() -> None:
+    _turn_memory_scope["user_id"] = ""
+    _turn_memory_scope["channel_id"] = ""
 
 
 def init_tools(
@@ -175,17 +188,24 @@ def web_search(query: str) -> str:
 # ─── MemorySearchTool ────────────────────────────────────────────────────────
 
 @tool
-def search_memory(query: str) -> str:
+def search_memory(query: str, user_id: str = "") -> str:
     """
     Ищет в долгосрочной памяти по смыслу: прошлые фрагменты диалогов и сохранённые знания (RAG).
     Используй, когда нужно вспомнить факты, о чём договаривались, что сохраняли через remember_knowledge.
     query — суть того, что нужно найти.
+    user_id — внутренний id текущего собеседника (если пусто — берётся из контекста хода).
     Для хронологии («что было N сообщений назад») используй recall_chat, не search_memory.
     """
+    uid = (user_id or "").strip() or _turn_memory_scope.get("user_id") or ""
+    if not uid:
+        return (
+            "Нужен user_id текущего собеседника для семантического поиска "
+            "(защита от чужих фрагментов памяти)."
+        )
     if _memory_hub is not None:
-        results = _memory_hub.search_semantic(query)
+        results = _memory_hub.search_semantic(query, user_id=uid)
     elif _long_memory is not None:
-        results = _long_memory.search(query)
+        results = _long_memory.search(query, user_id=uid)
     else:
         return "Долгосрочная память не инициализирована."
 

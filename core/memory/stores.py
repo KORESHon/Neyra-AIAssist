@@ -298,8 +298,14 @@ class LongTermMemory:
             logger.error("encode_texts failed: %s", e)
             return []
 
-    def search(self, query: str, n_results: Optional[int] = None) -> list[str]:
-        """Ищет похожие диалоги по запросу. Возвращает список текстов."""
+    def search(
+        self,
+        query: str,
+        n_results: Optional[int] = None,
+        *,
+        user_id: Optional[str] = None,
+    ) -> list[str]:
+        """Semantic search. When ``user_id`` set — only that user's docs + shared knowledge."""
         self._init()
         if self._collection is None or self._embedder is None:
             return []
@@ -311,12 +317,52 @@ class LongTermMemory:
                 return []
 
             k = min(k, count)
+            uid = str(user_id or "").strip()
+            fetch_k = min(count, max(k * 5, k) if uid else k)
             embedding = self._embedder.encode(query, show_progress_bar=False).tolist()
-            results = self._collection.query(
-                query_embeddings=[embedding],
-                n_results=k,
-            )
-            return results["documents"][0] if results["documents"] else []
+            q_kwargs: dict[str, Any] = {
+                "query_embeddings": [embedding],
+                "n_results": fetch_k,
+                "include": ["documents", "metadatas"],
+            }
+            used_where = False
+            if uid:
+                try:
+                    q_kwargs["where"] = {
+                        "$or": [
+                            {"user_id": uid},
+                            {"type": "knowledge"},
+                            {"type": "session_archive_digest"},
+                        ]
+                    }
+                    used_where = True
+                    results = self._collection.query(**q_kwargs)
+                except Exception as where_e:
+                    logger.debug("Chroma where filter failed, post-filter: %s", where_e)
+                    q_kwargs.pop("where", None)
+                    used_where = False
+                    results = self._collection.query(**q_kwargs)
+            else:
+                results = self._collection.query(**q_kwargs)
+
+            docs = (results.get("documents") or [[]])[0] or []
+            metas = (results.get("metadatas") or [[]])[0] or []
+            if not uid:
+                return list(docs[:k])
+
+            out: list[str] = []
+            for doc, meta in zip(docs, metas):
+                if not doc:
+                    continue
+                m = meta if isinstance(meta, dict) else {}
+                typ = str(m.get("type") or "").strip().lower()
+                owner = str(m.get("user_id") or "").strip()
+                if owner == uid or typ in ("knowledge", "session_archive_digest"):
+                    out.append(doc)
+                elif not used_where and not owner and typ in ("", "dialog", "chat"):
+                    # Ambiguous legacy dialog without user_id — skip when scoping
+                    continue
+            return out[:k]
 
         except Exception as e:
             logger.error(f"Ошибка поиска в ChromaDB: {e}")

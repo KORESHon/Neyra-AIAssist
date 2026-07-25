@@ -11,7 +11,13 @@ class SemanticIndex(Protocol):
 
     rag_enabled: bool
 
-    def search(self, query: str, n_results: Optional[int] = None) -> list[str]:
+    def search(
+        self,
+        query: str,
+        n_results: Optional[int] = None,
+        *,
+        user_id: Optional[str] = None,
+    ) -> list[str]:
         ...
 
     def count(self) -> int:
@@ -33,10 +39,16 @@ class ChromaSemanticIndex:
     def rag_enabled(self) -> bool:
         return bool(getattr(self._ltm, "rag_enabled", True))
 
-    def search(self, query: str, n_results: Optional[int] = None) -> list[str]:
-        if n_results is None:
-            return list(self._ltm.search(query) or [])
-        return list(self._ltm.search(query, n_results=n_results) or [])
+    def search(
+        self,
+        query: str,
+        n_results: Optional[int] = None,
+        *,
+        user_id: Optional[str] = None,
+    ) -> list[str]:
+        return list(
+            self._ltm.search(query, n_results=n_results, user_id=user_id) or []
+        )
 
     def count(self) -> int:
         try:

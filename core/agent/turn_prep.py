@@ -51,7 +51,18 @@ async def prepare_turn(
     internal_uid = agent._resolve_internal_user_id(discord_user_id, username)
     await agent._ensure_mcp()
 
-    memories = agent.long_memory.search(user_message)
+    try:
+        from core.tools.builtins import set_turn_memory_scope
+
+        set_turn_memory_scope(user_id=internal_uid, channel_id=channel_id or "")
+    except Exception:
+        pass
+
+    # User-scoped RAG (shared knowledge types still included inside search)
+    if getattr(agent, "memory_hub", None) is not None:
+        memories = agent.memory_hub.search_semantic(user_message, user_id=internal_uid)
+    else:
+        memories = agent.long_memory.search(user_message, user_id=internal_uid)
     mentioned = agent._detect_mentioned_names(user_message)
     if username:
         person = agent.memory_hub.find_person(username, discord_id=discord_user_id)

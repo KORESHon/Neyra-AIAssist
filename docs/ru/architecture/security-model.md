@@ -7,17 +7,35 @@
 
 # Модель безопасности
 
-## Базовые границы
-- Internal API локальный по умолчанию (`127.0.0.1`).
-- Bearer авторизация включается через `INTERNAL_API_TOKEN`.
-- Секреты не хранятся в `config.yaml`.
+## Граница доверия
+- Internal API по умолчанию слушает `127.0.0.1`. Всё нелокальное считай недоверенным, пока не закрыто.
+- Если **не задан ни один** из `INTERNAL_API_TOKEN` / `INTERNAL_API_VIEWER_TOKEN` / `INTERNAL_API_MAINT_TOKEN`, API **анонимный** (удобство для dev). На общем/удалённом хосте токены обязательны.
+- Роли: `viewer` — чтение memory/search/people; `admin` — чат и мутации. Давай минимум прав.
+
+## Секреты
+- Секреты только в `.env`; `apply_env_secrets` подставляет при старте. **Не коммить** `config.yaml`, plugin `config.yaml`, `.env`.
+- MCP `neyra_read_config` маскирует секретные ключи (`api_key`, `*_token`, `*_secret`, `api_hash`, …). Живые ключи в YAML всё равно не клади.
+- Не логируй `Authorization` и сырые API keys.
+
+## Изоляция памяти
+- Хронологический `recall_chat` / `POST /v1/memory/chat/recall` **требуют** `user_id` и/или `channel_id`.
+- Семантический `search_memory` / `POST /v1/memory/search` **требуют** `user_id` (диалоги scoped; общий `type=knowledge` допускается).
+- RAG в `prepare_turn` идёт через тот же user-scoped поиск.
+
+## Плагины
+- Plugin builder пишет только внутрь `interfaces/<plugin_id>/` (path jail, без `../`).
+- MCP расширяет поверхность атаки — allowlist серверов и аудит tools.
+
+## Бэкапы и ops — не коммитить
+- `.env`, корневой и `interfaces/**/config.yaml`
+- `memory/*.db*`, Chroma, `memory/working_memory/`, артефакты diary/journal
+- `logs/*` (в т.ч. `webhooks_state.json` — могут быть payload’ы)
+- `backups/` — как PII; хранить шифрованно / с контролем доступа
+
+## Бесплатные / trial модели (`:free`)
+- Эндпоинты OpenRouter / NVIDIA `:free` провайдер может логировать или переиспользовать.
+- **Не** отправляй PII, голос, лица и приватный Discord-контент на `:free` без осознанного согласия.
+- Для чувствительного audio/vision — paid/BYOK или локальные модели.
 
 ## Webhooks
-- Для outbound маршрутов можно задавать `secret`.
-- Логи доставок и DLQ ведутся в `logs/webhooks_state.json`.
-
-## Рекомендации
-- В проде включать `INTERNAL_API_TOKEN`.
-- Заворачивать API за reverse proxy + TLS.
-- Ограничивать входящий доступ firewall/IP allowlist.
-- Регулярно ротировать ключи (`OPENROUTER_API_KEY`, `DISCORD_TOKEN` и др.).
+- У outbound-маршрутов может быть `secret`. Логи доставок/DLQ — `logs/webhooks_state.json`, считай чувствительными.

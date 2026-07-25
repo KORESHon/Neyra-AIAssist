@@ -205,8 +205,11 @@ class ChatRequest(BaseModel):
 
 
 class MemorySearchRequest(BaseModel):
+    """Semantic RAG search. Requires user_id (dialogs scoped; shared knowledge still included)."""
+
     query: str = Field(min_length=1, max_length=1200)
     top_k: int = Field(default=3, ge=1, le=20)
+    user_id: Optional[str] = Field(default=None, max_length=120)
 
 
 class MemoryRecallRequest(BaseModel):
@@ -668,12 +671,19 @@ def build_app(
     @app.post("/v1/memory/search")
     async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
+        uid = (body.user_id or "").strip() or None
+        if not uid:
+            raise ApiError(
+                "memory_search_user_required",
+                "Provide user_id; unfiltered semantic search is not allowed",
+                400,
+            )
         hub = getattr(agent, "memory_hub", None)
         if hub is not None:
-            rows = hub.search_semantic(body.query, n_results=body.top_k)
+            rows = hub.search_semantic(body.query, n_results=body.top_k, user_id=uid)
         else:
-            rows = agent.long_memory.search(body.query, n_results=body.top_k)
-        return {"ok": True, "trace_id": trace_id, "data": {"results": rows}}
+            rows = agent.long_memory.search(body.query, n_results=body.top_k, user_id=uid)
+        return {"ok": True, "trace_id": trace_id, "data": {"results": rows, "user_id": uid}}
 
     @app.post("/v1/memory/chat/recall")
     async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_viewer)):

@@ -177,10 +177,16 @@ class MemoryHub:
             newest_first=newest_first,
         )
 
-    def search_semantic(self, query: str, n_results: Optional[int] = None) -> list[str]:
+    def search_semantic(
+        self,
+        query: str,
+        n_results: Optional[int] = None,
+        *,
+        user_id: Optional[str] = None,
+    ) -> list[str]:
         if not getattr(self.semantic, "rag_enabled", True):
             return []
-        return self.semantic.search(query, n_results=n_results)
+        return self.semantic.search(query, n_results=n_results, user_id=user_id)
 
     def remember_knowledge(
         self, text: str, metadata: Optional[dict[str, Any]] = None
