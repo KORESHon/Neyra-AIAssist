@@ -504,6 +504,10 @@ function Invoke-Preflight {
         Write-Ok "Healthcheck: ок."
     }
 
+    Write-Host ""
+    Write-Hi "Voice preflight (STT/TTS — soft only, ядро не блокируем)..."
+    $null = Invoke-PythonModule @('-c', 'from core.voice.config import print_voice_preflight; raise SystemExit(print_voice_preflight())')
+
     Write-Hi "Нейра готова к запуску. Что будем делать дальше, босс?"
     Write-Host ""
 }

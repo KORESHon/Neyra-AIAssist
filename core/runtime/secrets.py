@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 
 def load_dotenv_file(root: Path) -> None:
@@ -18,6 +19,35 @@ def load_dotenv_file(root: Path) -> None:
 
 def _s(name: str) -> str:
     return (os.environ.get(name) or "").strip()
+
+
+def _as_dict(value: Any) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _stt_is_modality(stt: dict) -> bool:
+    """True only if YAML already uses prefer / local.enable / cloud.enable|provider."""
+    if "prefer" in stt:
+        return True
+    loc = stt.get("local")
+    cld = stt.get("cloud")
+    if isinstance(loc, dict) and ("enable" in loc or "enabled" in loc):
+        return True
+    if isinstance(cld, dict) and ("enable" in cld or "enabled" in cld or "provider" in cld):
+        return True
+    return False
+
+
+def _tts_is_modality(tts: dict) -> bool:
+    if "prefer" in tts:
+        return True
+    loc = tts.get("local")
+    cld = tts.get("cloud")
+    if isinstance(loc, dict) and ("enable" in loc or "enabled" in loc):
+        return True
+    if isinstance(cld, dict) and ("enable" in cld or "enabled" in cld or "provider" in cld):
+        return True
+    return False
 
 
 def apply_env_secrets(cfg: dict) -> None:
@@ -38,40 +68,45 @@ def apply_env_secrets(cfg: dict) -> None:
             merged["api_key"] = lk
             cfg["llm"] = merged
 
+    def _inject_stt_provider_key(provider: str, key: str) -> None:
+        """
+        Inject into existing shape only.
+        - Modality: voice.stt.cloud.<provider>.api_key
+        - Legacy flat: voice.stt.<provider>.api_key (+ voice_cloud mirror)
+        Never create bare voice.cloud / voice.stt.cloud that would poison normalize.
+        """
+        voice = cfg.setdefault("voice", {})
+        if not isinstance(voice, dict):
+            return
+        stt = voice.setdefault("stt", {})
+        if not isinstance(stt, dict):
+            return
+
+        if _stt_is_modality(stt):
+            cloud = stt.setdefault("cloud", {})
+            if isinstance(cloud, dict):
+                block = cloud.setdefault(provider, {})
+                if isinstance(block, dict):
+                    block["api_key"] = key
+            return
+
+        # Legacy flat / empty stt — do not invent modality cloud
+        flat = stt.setdefault(provider, {})
+        if isinstance(flat, dict):
+            flat["api_key"] = key
+        vc = cfg.setdefault("voice_cloud", {})
+        if isinstance(vc, dict):
+            vc_stt = vc.setdefault("stt", {})
+            if isinstance(vc_stt, dict):
+                vc_stt[f"{provider}_api_key"] = key
+
     g = _s("GROQ_API_KEY")
     if g:
-        # Canonical: voice.cloud.stt.groq.api_key (+ legacy voice.stt / voice_cloud mirrors)
-        cloud_stt = (
-            cfg.setdefault("voice", {})
-            .setdefault("cloud", {})
-            .setdefault("stt", {})
-        )
-        groq_block = cloud_stt.setdefault("groq", {})
-        if isinstance(groq_block, dict):
-            groq_block["api_key"] = g
-        legacy_stt = cfg.setdefault("voice", {}).setdefault("stt", {})
-        if isinstance(legacy_stt, dict):
-            legacy_stt.setdefault("groq", {})["api_key"] = g
-        vc = cfg.setdefault("voice_cloud", {})
-        stt = vc.setdefault("stt", {})
-        stt["groq_api_key"] = g
+        _inject_stt_provider_key("groq", g)
 
     dg = _s("DEEPGRAM_API_KEY")
     if dg:
-        cloud_stt = (
-            cfg.setdefault("voice", {})
-            .setdefault("cloud", {})
-            .setdefault("stt", {})
-        )
-        dg_block = cloud_stt.setdefault("deepgram", {})
-        if isinstance(dg_block, dict):
-            dg_block["api_key"] = dg
-        legacy_stt = cfg.setdefault("voice", {}).setdefault("stt", {})
-        if isinstance(legacy_stt, dict):
-            legacy_stt.setdefault("deepgram", {})["api_key"] = dg
-        vc = cfg.setdefault("voice_cloud", {})
-        stt = vc.setdefault("stt", {})
-        stt["deepgram_api_key"] = dg
+        _inject_stt_provider_key("deepgram", dg)
 
     d = _s("DISCORD_TOKEN")
     if d:
@@ -123,19 +158,22 @@ def apply_env_secrets(cfg: dict) -> None:
     yk = _s("YANDEX_API_KEY")
     yf = _s("YANDEX_FOLDER_ID") or _s("YANDEX_ID_KEY")
     if yk or yf:
-        cloud_tts = (
-            cfg.setdefault("voice", {})
-            .setdefault("cloud", {})
-            .setdefault("tts", {})
-        )
-        if yk:
-            cloud_tts["api_key"] = yk
-        if yf:
-            cloud_tts["folder_id"] = yf
-        # Legacy mirror for older callers still reading voice_cloud.tts
+        voice = _as_dict(cfg.get("voice"))
+        tts_root = _as_dict(voice.get("tts"))
+        if voice and _tts_is_modality(tts_root):
+            cloud_tts = tts_root.setdefault("cloud", {})
+            if isinstance(cloud_tts, dict):
+                if yk:
+                    cloud_tts["api_key"] = yk
+                if yf:
+                    cloud_tts["folder_id"] = yf
+
+        # Legacy mirror — dual-read for old plugins; does not create voice.cloud
         vc = cfg.setdefault("voice_cloud", {})
-        tts = vc.setdefault("tts", {})
-        if yk:
-            tts["api_key"] = yk
-        if yf:
-            tts["folder_id"] = yf
+        if isinstance(vc, dict):
+            tts = vc.setdefault("tts", {})
+            if isinstance(tts, dict):
+                if yk:
+                    tts["api_key"] = yk
+                if yf:
+                    tts["folder_id"] = yf

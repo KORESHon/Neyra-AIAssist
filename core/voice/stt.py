@@ -208,12 +208,13 @@ def _save_deepgram_debug_payload(
 
 
 class STTEngine:
-    """STT: faster-whisper (local) или cloud provider из ``voice.cloud.stt``."""
+    """STT: faster-whisper (local) или cloud provider из ``voice.stt`` (modality)."""
 
     def __init__(self, config: dict):
         from core.voice.config import resolve_stt_runtime
 
         self.config = config
+        # Soft ERROR for misconfig is logged once at core startup (main.py).
         rt = resolve_stt_runtime(config)
         local_stt = rt["local_stt"]
         self.engine = str(rt["engine"]).strip().lower()
@@ -223,7 +224,14 @@ class STTEngine:
         self.max_retries = int(rt["max_retries"])
         self.cloud_fallback_to_local = bool(rt["fallback_to_local"])
         self._cloud_fail_count = 0
-        self._voice_is_local = bool(rt["is_local"])
+        self._stt_available = bool(rt.get("available", True))
+        self._primary_lane = rt.get("primary_lane")
+        self._fallback_lane = rt.get("fallback_lane")
+        if not self._stt_available:
+            logger.error(
+                "STT недоступен (local/cloud выключены или не настроены) — "
+                "ядро работает, распознавание речи отключено"
+            )
 
         cloud = rt["groq"]
         self.groq_base_url = str(cloud.get("base_url", "https://api.groq.com/openai/v1")).rstrip("/")
@@ -238,11 +246,11 @@ class STTEngine:
         self.groq_reject_short_thanks_max_sec = float(cloud.get("reject_short_thanks_max_sec", 2.0))
         if self.engine == "groq":
             logger.info(
-                "STT(Groq): model=%s | key_source=%s | key_len=%s | is_local=%s",
+                "STT(Groq): model=%s | key_source=%s | key_len=%s | lane=%s",
                 self.groq_model,
                 "env" if env_k else ("config" if cfg_k else "none"),
                 len(self.groq_api_key),
-                self._voice_is_local,
+                self._primary_lane,
             )
 
         dg = rt["deepgram"]
@@ -267,14 +275,14 @@ class STTEngine:
         self.dg_dump_dir = Path(str(dg.get("dump_payload_dir", "./logs/voice_tmp")).strip() or "./logs/voice_tmp")
         if self.engine == "deepgram":
             logger.info(
-                "STT(Deepgram): model=%s | upload=%s | detect_lang=%s | dump=%s | key_source=%s | key_len=%s | is_local=%s",
+                "STT(Deepgram): model=%s | upload=%s | detect_lang=%s | dump=%s | key_source=%s | key_len=%s | lane=%s",
                 self.dg_model,
                 self.dg_upload_payload,
                 self.dg_use_detect_language,
                 self.dg_dump_payload,
                 "env" if env_dg else ("config" if cfg_dg else "none"),
                 len(self.dg_api_key),
-                self._voice_is_local,
+                self._primary_lane,
             )
 
         # OpenRouter block reserved for Stage 2F implementation (settings already resolved).
@@ -282,18 +290,21 @@ class STTEngine:
 
         if self.engine == "faster-whisper":
             logger.info(
-                "STT(local faster-whisper): model=%s | device_cfg=%s | is_local=%s",
+                "STT(local faster-whisper): model=%s | device_cfg=%s | lane=%s",
                 self.model_size,
                 local_stt.get("device", "cpu"),
-                self._voice_is_local,
+                self._primary_lane,
             )
 
         if self.engine == "openrouter":
             logger.info(
-                "STT(OpenRouter): model=%s | is_local=%s (provider wired in Stage 2F code)",
+                "STT(OpenRouter): model=%s | lane=%s (provider wired in Stage 2F code)",
                 str(self._openrouter_stt.get("model") or "openai/whisper-large-v3-turbo"),
-                self._voice_is_local,
+                self._primary_lane,
             )
+
+        if self.engine == "none":
+            logger.error("STT engine=none — вызовы transcribe вернут пустую строку")
 
         dev = str(local_stt.get("device", "cpu")).lower()
         if dev == "cuda":
@@ -307,7 +318,7 @@ class STTEngine:
         self._model = None
 
     def _load(self) -> bool:
-        if self.engine in ("groq", "deepgram", "openrouter"):
+        if self.engine in ("groq", "deepgram", "openrouter", "none"):
             return True
         if self._model is not None:
             return True
@@ -512,6 +523,9 @@ class STTEngine:
 
     def transcribe_file(self, path: str | Path) -> str:
         path = str(path)
+        if not getattr(self, "_stt_available", True) or self.engine in ("", "none"):
+            logger.error("STT вызов пропущен — полоса не настроена (soft; ядро живо)")
+            return ""
         if self.engine == "deepgram":
             text, need_fallback = self._deepgram_transcribe_file(path)
             if text:
@@ -537,6 +551,16 @@ class STTEngine:
             if not self.cloud_fallback_to_local:
                 return ""
             logger.warning("STT: fallback на local faster-whisper после ошибки Groq")
+
+        elif self.engine == "openrouter":
+            # Provider implementation lands in Stage 2F — soft fail, never crash core.
+            logger.error(
+                "STT(OpenRouter): провайдер ещё не реализован (фаза 2F) — "
+                "распознавание пропущено, ядро продолжает работу"
+            )
+            if not self.cloud_fallback_to_local:
+                return ""
+            logger.warning("STT: fallback на local faster-whisper (OpenRouter stub)")
 
         if not self._load() or not self._model:
             return ""

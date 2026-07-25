@@ -443,6 +443,13 @@ run_initial_healthcheck() {
   fi
 }
 
+run_voice_preflight() {
+  # Soft-only: always continues (STT/TTS misconfig must not block core).
+  say "Voice preflight (STT/TTS)..."
+  "${PY}" -c 'from core.voice.config import print_voice_preflight; raise SystemExit(print_voice_preflight())' || true
+  echo ""
+}
+
 run_preflight() {
   banner
   say "Инициализация системных модулей... сканирую окружение, босс."
@@ -451,6 +458,7 @@ run_preflight() {
   check_python_deps || return 1
   check_frontend_deps || true
   run_initial_healthcheck || return 1
+  run_voice_preflight
   say "Нейра готова к запуску. Что будем делать дальше, босс?"
   echo ""
   return 0

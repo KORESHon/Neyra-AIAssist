@@ -13,7 +13,7 @@
 - `assistant`
 - `BACKEND`, `openrouter`, `llm` — модели и лимиты по ролям: вложенные **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** (VL и пайплайн зрения в одном блоке; корневого **`vision:`** больше нет).
 - `memory`
-- `voice` — единый блок (`is_local` / `local` / `cloud` для STT+TTS; устаревший `voice_cloud` больше не в example)
+- `voice` — по модальностям: `stt` / `tts` с `prefer` + `local`/`cloud`.`enable` (soft ERROR если не настроено; legacy `voice_cloud` / `is_local` ещё нормализуются)
 - `health_monitor`
 - `backup`, `external_storage`
 - `logging`

@@ -360,50 +360,39 @@ memory:
   reflection_time: "04:00"
 
 # ---------------------------
-# Voice (unified local / cloud) / Голос: локально или облако
+# Voice — STT / TTS независимо (local + cloud)
 # ---------------------------
-# EN: Single root `voice`. Pick lane with is_local.
-#     true  → voice.local.stt / voice.local.tts
-#     false → voice.cloud.stt / voice.cloud.tts
-# RU: Один корень `voice`. Режим: is_local.
-#     true  → voice.local.*
-#     false → voice.cloud.*
-# EN: cloud.stt.provider: deepgram | groq | openrouter (openrouter = Stage 2F)
-# RU: cloud.stt.provider: deepgram | groq | openrouter (openrouter = фаза 2F)
-# EN: OpenRouter STT shares OPENROUTER_API_KEY with LLM.
+# EN: Each modality has prefer + local/cloud.enable.
+#     Only one enable=true → use it. Both true → try prefer, then fallback.
+#     Both false / misconfigured → soft ERROR in log; core keeps running (STT/TTS off).
+# RU: У STT и TTS свои prefer + local/cloud.enable.
+#     Один enable → его и берём. Оба → сначала prefer, потом fallback.
+#     Оба выключены / не настроены → soft ERROR в логе; ядро НЕ падает.
+# EN: stt.cloud.provider: deepgram | groq | openrouter (openrouter = Stage 2F)
 # Docs: https://openrouter.ai/docs/guides/overview/multimodal/stt
-# EN: Legacy keys voice_cloud / flat voice.stt are still accepted by code (normalized).
+# EN: Legacy voice.is_local / voice_cloud / flat voice.stt still normalized by code.
 voice:
-  # EN: true = local faster-whisper (+ local TTS when wired); false = cloud providers.
-  # RU: true = локальный faster-whisper (+ local TTS когда будет); false = облако.
-  is_local: false
-
   # EN: Default language (ISO-639-1).
   # RU: Язык по умолчанию (ISO-639-1).
   language: "ru"
 
-  # EN: Cloud request timeout / retries / optional fallback to local.stt.
-  # RU: Таймаут облака / ретраи / опциональный fallback на local.stt.
-  timeout_seconds: 30.0
-  max_retries: 1
-  fallback_to_local: true
-
-  local:
-    stt:
-      # EN: faster-whisper model size + device (used when is_local=true or as cloud fallback).
+  stt:
+    # EN: When both local and cloud are enabled — try this lane first.
+    # RU: Если оба включены — сначала этот lane.
+    prefer: cloud
+    local:
+      enable: false
+      # EN: faster-whisper model size + device.
       # RU: размер модели faster-whisper + device.
       model: "small"
       device: "cpu"
-    tts:
-      # EN: Local TTS placeholder (Silero/Piper/… — Stage 4).
-      # RU: Заглушка локального TTS (этап 4).
-      provider: ""
-
-  cloud:
-    stt:
-      # EN: Active cloud STT provider (ignored when is_local=true).
-      # RU: Активный облачный STT (игнорируется при is_local=true).
+    cloud:
+      enable: true
+      # EN: Active cloud STT provider.
+      # RU: Активный облачный STT.
       provider: "deepgram"
+      timeout_seconds: 30.0
+      max_retries: 1
 
       openrouter:
         # EN: ~$0.04/hour audio. Same OPENROUTER_API_KEY as LLM.
@@ -430,7 +419,15 @@ voice:
         temperature: 0.0
         filter_hallucinations: true
 
-    tts:
+  tts:
+    prefer: cloud
+    local:
+      enable: false
+      # EN: Local TTS placeholder (Silero/Piper/… — Stage 4).
+      # RU: Заглушка локального TTS (этап 4).
+      provider: ""
+    cloud:
+      enable: true
       # EN: Cloud TTS provider.
       # RU: Облачный TTS.
       provider: "yandex"

@@ -1,149 +1,419 @@
-"""Resolve unified ``voice`` config (local vs cloud STT/TTS).
+"""Resolve ``voice`` config: per-modality local/cloud with prefer + soft fallback.
 
 Canonical shape::
 
     voice:
-      is_local: false
       language: "ru"
-      fallback_to_local: true
-      local:
-        stt: { model, device, ... }
-        tts: { ... }
-      cloud:
-        stt: { provider, openrouter/deepgram/groq, ... }
-        tts: { provider, ... }
+      stt:
+        prefer: cloud          # cloud | local — first choice when both enable
+        local:
+          enable: false
+          model: "small"
+          device: "cpu"
+        cloud:
+          enable: true
+          provider: deepgram   # deepgram | groq | openrouter
+          openrouter: {...}
+          deepgram: {...}
+          groq: {...}
+      tts:
+        prefer: cloud
+        local:
+          enable: false
+          provider: ""
+        cloud:
+          enable: true
+          provider: yandex
+          ...
 
-Legacy shapes (``voice.stt``, ``voice_cloud``) are accepted and normalized in-memory.
+Selection (STT and TTS independently):
+1. Only one of local/cloud enable → that lane.
+2. Both enable → try ``prefer`` first; on missing config / runtime fail → other lane.
+3. Neither enable, or both unusable → soft ERROR log (core must NOT crash).
+
+Legacy shapes still normalized in-memory:
+- ``voice.is_local`` + ``voice.local`` / ``voice.cloud`` (short-lived intermediate)
+- flat ``voice.stt.engine`` + ``voice_cloud``
 """
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Optional
+
+logger = logging.getLogger("neyra.voice.config")
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _truthy_enable(block: dict[str, Any], default: bool = False) -> bool:
+    if "enable" not in block and "enabled" not in block:
+        return default
+    return bool(block.get("enable", block.get("enabled", default)))
+
+
+def _is_modality_block(block: dict[str, Any]) -> bool:
+    """True if stt/tts block uses local/cloud.enable shape."""
+    if not block:
+        return False
+    if "prefer" in block:
+        return True
+    loc = block.get("local")
+    cld = block.get("cloud")
+    if isinstance(loc, dict) and ("enable" in loc or "enabled" in loc or "model" in loc or "device" in loc):
+        # modality local may omit enable (default false) but presence of local/cloud keys marks shape
+        return isinstance(cld, dict) or "enable" in loc or "enabled" in loc
+    if isinstance(cld, dict) and ("enable" in cld or "enabled" in cld or "provider" in cld):
+        return True
+    return isinstance(loc, dict) and isinstance(cld, dict)
+
+
+def _is_is_local_shape(raw: dict[str, Any]) -> bool:
+    if "is_local" in raw:
+        return True
+    loc = _as_dict(raw.get("local"))
+    cld = _as_dict(raw.get("cloud"))
+    # Intermediate: voice.local.stt / voice.cloud.stt (not voice.stt.local)
+    return ("stt" in loc or "tts" in loc) and ("stt" in cld or "tts" in cld)
+
+
+def _norm_prefer(value: Any, default: str = "cloud") -> str:
+    p = str(value or default).strip().lower()
+    return p if p in ("cloud", "local") else default
+
+
+def _empty_modality(prefer: str = "cloud") -> dict[str, Any]:
+    return {
+        "prefer": prefer,
+        "local": {"enable": False},
+        "cloud": {"enable": False},
+    }
+
+
 def normalize_voice_config(config: dict[str, Any]) -> dict[str, Any]:
-    """
-    Return a normalized ``voice`` dict. Does not mutate ``config`` unless legacy
-    roots need to be read; callers should use the returned structure.
-    """
+    """Return normalized voice dict (modality shape). Never raises."""
     raw = _as_dict(config.get("voice"))
-    legacy_cloud = _as_dict(config.get("voice_cloud"))
+    legacy_cloud_root = _as_dict(config.get("voice_cloud"))
 
-    # Already new shape?
-    if "local" in raw or "cloud" in raw or "is_local" in raw:
-        voice = {
-            "is_local": bool(raw.get("is_local", False)),
-            "language": str(raw.get("language") or "ru"),
-            "timeout_seconds": float(raw.get("timeout_seconds", 30.0)),
-            "max_retries": int(raw.get("max_retries", 1)),
-            "fallback_to_local": bool(raw.get("fallback_to_local", True)),
-            "local": _as_dict(raw.get("local")),
-            "cloud": _as_dict(raw.get("cloud")),
+    stt_raw = _as_dict(raw.get("stt"))
+    tts_raw = _as_dict(raw.get("tts"))
+
+    if _is_modality_block(stt_raw) or _is_modality_block(tts_raw):
+        return _normalize_modality_shape(raw)
+
+    if _is_is_local_shape(raw):
+        return _migrate_is_local_shape(raw)
+
+    return _migrate_legacy_flat(raw, legacy_cloud_root)
+
+
+def _normalize_modality_shape(raw: dict[str, Any]) -> dict[str, Any]:
+    language = str(raw.get("language") or "ru")
+    stt = _as_dict(raw.get("stt"))
+    tts = _as_dict(raw.get("tts"))
+
+    def _lane(mod: dict[str, Any], *, default_cloud_enable: bool) -> dict[str, Any]:
+        loc = _as_dict(mod.get("local"))
+        cld = _as_dict(mod.get("cloud"))
+        return {
+            "prefer": _norm_prefer(mod.get("prefer"), "cloud"),
+            "local": {**loc, "enable": _truthy_enable(loc, default=False)},
+            "cloud": {**cld, "enable": _truthy_enable(cld, default=default_cloud_enable)},
         }
-        voice["local"].setdefault("stt", {})
-        voice["local"].setdefault("tts", {})
-        voice["cloud"].setdefault("stt", {})
-        voice["cloud"].setdefault("tts", {})
-        if not isinstance(voice["local"]["stt"], dict):
-            voice["local"]["stt"] = {}
-        if not isinstance(voice["local"]["tts"], dict):
-            voice["local"]["tts"] = {}
-        if not isinstance(voice["cloud"]["stt"], dict):
-            voice["cloud"]["stt"] = {}
-        if not isinstance(voice["cloud"]["tts"], dict):
-            voice["cloud"]["tts"] = {}
-        return voice
 
-    # Legacy: voice.stt + voice_cloud
+    # If only one modality present, keep the other disabled-safe.
+    if not stt and not tts:
+        stt_out = _empty_modality()
+        tts_out = _empty_modality()
+    else:
+        stt_out = _lane(stt, default_cloud_enable=bool(stt))
+        tts_out = _lane(tts, default_cloud_enable=bool(tts))
+
+    return {
+        "language": language,
+        "stt": stt_out,
+        "tts": tts_out,
+    }
+
+
+def _migrate_is_local_shape(raw: dict[str, Any]) -> dict[str, Any]:
+    is_local = bool(raw.get("is_local", False))
+    loc = _as_dict(raw.get("local"))
+    cld = _as_dict(raw.get("cloud"))
+    loc_stt = _as_dict(loc.get("stt"))
+    cld_stt = _as_dict(cld.get("stt"))
+    loc_tts = _as_dict(loc.get("tts"))
+    cld_tts = _as_dict(cld.get("tts"))
+    language = str(raw.get("language") or "ru")
+    prefer = "local" if is_local else "cloud"
+    timeout = float(raw.get("timeout_seconds", 30.0))
+    max_retries = int(raw.get("max_retries", 1))
+    fallback = bool(raw.get("fallback_to_local", True))
+
+    cloud_stt = {
+        **cld_stt,
+        "enable": (not is_local) or fallback,
+        "timeout_seconds": cld_stt.get("timeout_seconds", timeout),
+        "max_retries": cld_stt.get("max_retries", max_retries),
+    }
+    local_stt = {
+        **loc_stt,
+        "enable": is_local or fallback,
+    }
+    return {
+        "language": language,
+        "stt": {
+            "prefer": prefer,
+            "local": local_stt,
+            "cloud": cloud_stt,
+        },
+        "tts": {
+            "prefer": prefer,
+            "local": {**loc_tts, "enable": bool(loc_tts.get("provider")) and is_local},
+            "cloud": {**cld_tts, "enable": (not is_local) or bool(cld_tts.get("provider"))},
+        },
+    }
+
+
+def _migrate_legacy_flat(raw: dict[str, Any], legacy_cloud_root: dict[str, Any]) -> dict[str, Any]:
     old_stt = _as_dict(raw.get("stt"))
-    lc_stt = _as_dict(legacy_cloud.get("stt"))
-    lc_tts = _as_dict(legacy_cloud.get("tts"))
+    lc_stt = _as_dict(legacy_cloud_root.get("stt"))
+    lc_tts = _as_dict(legacy_cloud_root.get("tts"))
 
     engine = str(old_stt.get("engine") or lc_stt.get("provider") or "faster-whisper").strip().lower()
     is_local = engine in ("faster-whisper", "local", "whisper")
+    provider = "deepgram" if is_local else engine
+    if provider in ("faster-whisper", "local", "whisper"):
+        provider = "deepgram"
 
-    cloud_stt: dict[str, Any] = {
-        "provider": "deepgram" if is_local else engine,
-        "openrouter": _as_dict(old_stt.get("openrouter")),
-        "deepgram": _as_dict(old_stt.get("deepgram")),
-        "groq": _as_dict(old_stt.get("groq")),
-    }
-    if not cloud_stt["deepgram"] and lc_stt:
-        cloud_stt["deepgram"] = {
+    deepgram = _as_dict(old_stt.get("deepgram"))
+    if not deepgram and lc_stt:
+        deepgram = {
             "model": lc_stt.get("model", "nova-3"),
             "base_url": lc_stt.get("base_url", "https://api.deepgram.com/v1"),
             "api_key": lc_stt.get("deepgram_api_key") or lc_stt.get("api_key"),
         }
-        if not is_local and engine == "deepgram":
-            cloud_stt["provider"] = "deepgram"
 
     return {
-        "is_local": is_local,
         "language": str(old_stt.get("language") or lc_stt.get("language") or "ru"),
-        "timeout_seconds": float(old_stt.get("timeout_seconds") or lc_stt.get("timeout_seconds") or 30.0),
-        "max_retries": int(old_stt.get("max_retries", 1)),
-        "fallback_to_local": bool(old_stt.get("fallback_to_local", True)),
-        "local": {
-            "stt": {
+        "stt": {
+            "prefer": "local" if is_local else "cloud",
+            "local": {
+                "enable": is_local or bool(old_stt.get("fallback_to_local", True)),
                 "model": old_stt.get("model", "small"),
                 "device": old_stt.get("device", "cpu"),
             },
-            "tts": {},
+            "cloud": {
+                "enable": (not is_local) or bool(old_stt.get("fallback_to_local", True)),
+                "provider": provider,
+                "timeout_seconds": float(old_stt.get("timeout_seconds") or lc_stt.get("timeout_seconds") or 30.0),
+                "max_retries": int(old_stt.get("max_retries", 1)),
+                "openrouter": _as_dict(old_stt.get("openrouter")),
+                "deepgram": deepgram,
+                "groq": _as_dict(old_stt.get("groq")),
+            },
         },
-        "cloud": {
-            "stt": cloud_stt,
-            "tts": lc_tts,
+        "tts": {
+            "prefer": "cloud" if lc_tts else "local",
+            "local": {"enable": False, "provider": ""},
+            "cloud": {**lc_tts, "enable": bool(lc_tts)},
         },
     }
 
 
+def _pick_lane(modality: dict[str, Any]) -> tuple[Optional[str], Optional[str], list[str]]:
+    """
+    Returns (primary_lane, fallback_lane, soft_errors).
+    Lanes are ``local`` | ``cloud`` | None.
+    """
+    loc = _as_dict(modality.get("local"))
+    cld = _as_dict(modality.get("cloud"))
+    local_on = _truthy_enable(loc, default=False)
+    cloud_on = _truthy_enable(cld, default=False)
+    prefer = _norm_prefer(modality.get("prefer"), "cloud")
+    errs: list[str] = []
+
+    if local_on and cloud_on:
+        primary = prefer
+        fallback = "local" if prefer == "cloud" else "cloud"
+        return primary, fallback, errs
+    if cloud_on:
+        return "cloud", None, errs
+    if local_on:
+        return "local", None, errs
+    errs.append("both local.enable and cloud.enable are false")
+    return None, None, errs
+
+
 def resolve_stt_runtime(config: dict[str, Any]) -> dict[str, Any]:
-    """
-    Flatten voice config for STTEngine.
-
-    Returns keys used by STTEngine:
-    is_local, engine, language, timeout_seconds, max_retries, fallback_to_local,
-    local_stt, cloud_stt, openrouter, deepgram, groq.
-    """
+    """Flatten STT settings for STTEngine. Soft-errors listed in ``soft_errors``."""
     voice = normalize_voice_config(config)
-    local_stt = _as_dict(voice["local"].get("stt"))
-    cloud_stt = _as_dict(voice["cloud"].get("stt"))
+    stt = _as_dict(voice.get("stt"))
+    local_stt = _as_dict(stt.get("local"))
+    cloud_stt = _as_dict(stt.get("cloud"))
+    primary, fallback, errs = _pick_lane(stt)
 
-    if voice["is_local"]:
+    if primary == "local":
         engine = "faster-whisper"
-    else:
-        engine = str(
-            cloud_stt.get("provider") or cloud_stt.get("engine") or "deepgram"
-        ).strip().lower()
-        if engine in ("faster-whisper", "local", "whisper"):
+    elif primary == "cloud":
+        engine = str(cloud_stt.get("provider") or cloud_stt.get("engine") or "deepgram").strip().lower()
+        if engine in ("faster-whisper", "local", "whisper", ""):
             engine = "deepgram"
+    else:
+        engine = "none"
 
     return {
-        "is_local": voice["is_local"],
+        "language": voice.get("language") or "ru",
+        "prefer": _norm_prefer(stt.get("prefer"), "cloud"),
+        "primary_lane": primary,
+        "fallback_lane": fallback,
         "engine": engine,
-        "language": voice["language"],
-        "timeout_seconds": voice["timeout_seconds"],
-        "max_retries": voice["max_retries"],
-        "fallback_to_local": voice["fallback_to_local"],
+        "timeout_seconds": float(cloud_stt.get("timeout_seconds", 30.0)),
+        "max_retries": int(cloud_stt.get("max_retries", 1)),
+        "fallback_to_local": fallback == "local" or (
+            primary == "cloud" and _truthy_enable(local_stt, default=False)
+        ),
         "local_stt": local_stt,
         "cloud_stt": cloud_stt,
         "openrouter": _as_dict(cloud_stt.get("openrouter")),
         "deepgram": _as_dict(cloud_stt.get("deepgram")),
         "groq": _as_dict(cloud_stt.get("groq")),
+        "available": primary is not None,
+        "soft_errors": errs,
     }
 
 
 def resolve_tts_runtime(config: dict[str, Any]) -> dict[str, Any]:
-    """Return active TTS block (local or cloud) plus is_local flag."""
+    """Active TTS lane settings. Soft-errors listed in ``soft_errors``."""
     voice = normalize_voice_config(config)
-    branch = "local" if voice["is_local"] else "cloud"
-    tts = _as_dict(voice[branch].get("tts"))
+    tts = _as_dict(voice.get("tts"))
+    primary, fallback, errs = _pick_lane(tts)
+    loc = _as_dict(tts.get("local"))
+    cld = _as_dict(tts.get("cloud"))
+    active = loc if primary == "local" else cld if primary == "cloud" else {}
     return {
-        "is_local": voice["is_local"],
-        "tts": tts,
-        "language": voice["language"],
+        "language": voice.get("language") or "ru",
+        "prefer": _norm_prefer(tts.get("prefer"), "cloud"),
+        "primary_lane": primary,
+        "fallback_lane": fallback,
+        "tts": active,
+        "local_tts": loc,
+        "cloud_tts": cld,
+        "available": primary is not None,
+        "soft_errors": errs,
     }
+
+
+def collect_voice_soft_errors(config: dict[str, Any]) -> list[str]:
+    """Human-readable soft errors for STT/TTS (never raises)."""
+    out: list[str] = []
+    stt = resolve_stt_runtime(config)
+    tts = resolve_tts_runtime(config)
+    for e in stt.get("soft_errors") or []:
+        out.append(f"STT: {e} — распознавание речи работать не будет, поднастройте voice.stt")
+    for e in tts.get("soft_errors") or []:
+        out.append(f"TTS: {e} — озвучка работать не будет, поднастройте voice.tts")
+
+    # Cloud enabled but obviously missing provider/key hints (soft only)
+    if stt.get("primary_lane") == "cloud":
+        prov = str(stt.get("engine") or "")
+        if prov == "deepgram" and not (
+            (_as_dict(stt.get("deepgram")).get("api_key")) 
+        ):
+            # key may still come from env at runtime — only hint if empty after secrets
+            import os
+            if not (os.environ.get("DEEPGRAM_API_KEY") or "").strip():
+                out.append(
+                    "STT(cloud/deepgram): нет DEEPGRAM_API_KEY — cloud STT не заработает, "
+                    "пока не зададите ключ или не включите local"
+                )
+        if prov == "groq" and not (_as_dict(stt.get("groq")).get("api_key")):
+            import os
+            if not (os.environ.get("GROQ_API_KEY") or "").strip():
+                out.append(
+                    "STT(cloud/groq): нет GROQ_API_KEY — cloud STT не заработает"
+                )
+        if prov == "openrouter":
+            import os
+            from_cfg = str((_as_dict(config.get("openrouter")).get("api_key") or "")).strip()
+            if not from_cfg and not (os.environ.get("OPENROUTER_API_KEY") or "").strip():
+                out.append(
+                    "STT(cloud/openrouter): нет OPENROUTER_API_KEY — cloud STT не заработает"
+                )
+
+    if tts.get("primary_lane") == "cloud":
+        tblock = _as_dict(tts.get("tts"))
+        import os
+        if str(tblock.get("provider") or "").lower() == "yandex":
+            if not (tblock.get("api_key") or (os.environ.get("YANDEX_API_KEY") or "").strip()):
+                out.append(
+                    "TTS(cloud/yandex): нет YANDEX_API_KEY — озвучка не заработает"
+                )
+
+    return out
+
+
+def log_voice_soft_errors(config: dict[str, Any], *, log: Optional[logging.Logger] = None) -> list[str]:
+    """
+    Log soft ERROR lines for misconfigured STT/TTS. Never raises / never aborts core.
+    """
+    lg = log or logger
+    msgs = collect_voice_soft_errors(config)
+    for m in msgs:
+        lg.error("%s", m)
+    if not msgs:
+        stt = resolve_stt_runtime(config)
+        tts = resolve_tts_runtime(config)
+        lg.info(
+            "Voice lanes | STT primary=%s fallback=%s engine=%s | TTS primary=%s fallback=%s",
+            stt.get("primary_lane"),
+            stt.get("fallback_lane"),
+            stt.get("engine"),
+            tts.get("primary_lane"),
+            tts.get("fallback_lane"),
+        )
+    return msgs
+
+
+def print_voice_preflight(config: Optional[dict[str, Any]] = None) -> int:
+    """
+    CLI helper for launchers. Always returns 0 (soft-only).
+    """
+    if config is None:
+        from pathlib import Path
+        import yaml
+        from core.runtime.secrets import apply_env_secrets, load_dotenv_file
+
+        root = Path(__file__).resolve().parents[2]
+        load_dotenv_file(root)
+        cfg_path = root / "config.yaml"
+        if not cfg_path.is_file():
+            cfg_path = root / "config.example.yaml"
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.is_file() else {}
+        if not isinstance(data, dict):
+            data = {}
+        apply_env_secrets(data)
+        config = data
+
+    stt = resolve_stt_runtime(config)
+    tts = resolve_tts_runtime(config)
+    print(
+        f"[voice] STT: primary={stt.get('primary_lane')} "
+        f"fallback={stt.get('fallback_lane')} engine={stt.get('engine')} "
+        f"| prefer={stt.get('prefer')}"
+    )
+    print(
+        f"[voice] TTS: primary={tts.get('primary_lane')} "
+        f"fallback={tts.get('fallback_lane')} "
+        f"| prefer={tts.get('prefer')}"
+    )
+    errs = collect_voice_soft_errors(config)
+    if errs:
+        print("[voice] ERROR (soft — ядро не падает, STT/TTS нужно поднастроить):")
+        for e in errs:
+            print(f"  - {e}")
+    else:
+        print("[voice] OK — выбранные полосы STT/TTS выглядят настроенными")
+    return 0
