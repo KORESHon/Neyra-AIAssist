@@ -20,6 +20,7 @@
 ## Изоляция памяти
 - Хронологический `recall_chat` / `POST /v1/memory/chat/recall` **требуют** `user_id` и/или `channel_id`.
 - Семантический `search_memory` / `POST /v1/memory/search` **требуют** `user_id` (диалоги и `session_archive_digest` — только owner; общий shared — лишь `type=knowledge`). Аргумент `user_id` у tool игнорируется в пользу turn-scope (`ContextVar`).
+- `session_archive` LTM digest строится только из **user-scoped `chat_log`**, не из process-global STM (иначе чужие реплики могли бы присвоиться текущему uid).
 - RAG в `prepare_turn` идёт через тот же user-scoped поиск.
 
 ## Плагины

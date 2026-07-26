@@ -135,8 +135,9 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 | **2A** | Persona pack (`persona.md` / `appearance.md`) | ✅ код | Осталось: smoke Discord/MCP на обычный чат |
 | **2B** | Pre-context (diary + user-scoped WM) | ✅ код | `memory.pre_context.enabled` default **false**; semantic source — позже |
 | **Voice cfg** | Канон `voice.stt`/`voice.tts` × prefer/enable + soft ERROR | ✅ | Фундамент для 2F; Auto Review majors закрыты |
-| **2C** | Session archive (overflow / `/reset`) | ✅ код | `memory.session_archive.*`; event `memory.session_archived`; default off |
-| **2D** | Security pass | ✅ код+доки | Scoped RAG; MCP redact; security-model; `:free` warning |
+| **2C** | Session archive (overflow / `/reset`) | ✅ код | digest из user-scoped `chat_log` (не process STM); diary heuristic; default off |
+| **2D** | Security pass | ✅ код+доки | Scoped RAG; ContextVar turn-scope; MCP redact; security-model |
+
 | **2E** | Fast-Path умного дома | ✅ код | Allowlist → `home.*`; «ещё раз» из chat_log с `user_id`; default off |
 | **2F** | OpenRouter Whisper STT (код провайдера) | ✅ | `STTEngine` → `/audio/transcriptions`; live clip OK |
 
@@ -144,8 +145,8 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 
 **Осталось сделать (порядок рекомендуемый):**
 
-1. **Smoke** — Discord/MCP + Fast-Path / session_archive при необходимости.
-2. **Регрессия этапа 2** — полный чеклист ниже перед merge/закрытием.
+1. **Smoke** — Discord/MCP + Fast-Path / `/reset` archive (нужно живое ядро).
+2. **Регрессия этапа 2** — чеклист ниже; offline security: `scripts/test_stage2_security_offline.py`.
 
 ### Карта фаз
 
@@ -232,6 +233,7 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 - [x] Код: `archive_session` + hooks overflow / `/reset` / optional STM threshold; config example+local.
 - [x] Событие `memory.session_archived` публикуется при успешном прогоне политики.
 - [x] Default `enabled: false` — поведение как раньше; LTM только digest (`remember_knowledge`), не raw chat.
+- [x] LTM digest / contentful diary — только из user-scoped `chat_log` (не process-global STM).
 - [ ] Live smoke: включить флаги → `/reset` пишет diary note; overflow path логирует archive.
 
 ---
@@ -368,6 +370,7 @@ Legacy `voice.is_local` / flat `voice.stt` / `voice_cloud` ещё нормали
 - [ ] 429 на `memory_model` — backoff в логе, ядро не падает.
 - [ ] Discord text stream + MCP `/v1/chat` без регрессий после merge фаз.
 - [x] STT: openrouter turbo на тестовом клипе (ключ есть); остальные engines path сохранены.
+- [x] Offline security: `scripts/test_stage2_security_offline.py` (scoped archive, ContextVar, diary filter).
 
 ### Вне scope этапа 2
 

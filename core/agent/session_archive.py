@@ -73,11 +73,12 @@ def format_diary_digest(
     *,
     reason: str,
     max_chars: int,
+    include_assistant_tail: bool = True,
 ) -> str:
     """
     Short diary note without verbatim user lines (global diary → PRE-CONTEXT).
 
-    Counts roles; may keep truncated assistant-only snippets from the STM tail.
+    Counts roles; may keep truncated assistant-only snippets from a *scoped* window.
     """
     n_user = 0
     n_asst = 0
@@ -91,13 +92,12 @@ def format_diary_digest(
             n_user += 1
         elif role == "assistant":
             n_asst += 1
-            if len(asst_bits) < 3:
+            if include_assistant_tail and len(asst_bits) < 3:
                 asst_bits.append(content[:120])
     head = f"[session_archive/{reason}] msgs={len(history or [])} U={n_user} A={n_asst}"
     if not asst_bits:
         return head
     body = " | ".join(asst_bits)
-    # Prefer newest assistant bits if over budget
     note = f"{head}. A-tail: {body}"
     if max_chars > 0 and len(note) > max_chars:
         budget = max(40, max_chars - len(head) - 12)
@@ -106,6 +106,58 @@ def format_diary_digest(
         if len(note) > max_chars:
             note = note[: max_chars - 1].rstrip() + "…"
     return note
+
+
+def chat_rows_to_history(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map chat_log rows → ``{role, content}`` oldest→newest."""
+    out: list[dict[str, Any]] = []
+    for r in rows or []:
+        role = str(r.get("role") or "").strip().lower()
+        text = str(r.get("text") or r.get("content") or "").strip()
+        if not role or not text:
+            continue
+        if role not in ("user", "assistant", "system"):
+            continue
+        out.append({"role": role, "content": text})
+    return out
+
+
+def resolve_scoped_archive_history(
+    agent: Any,
+    *,
+    user_id: str,
+    channel_id: Optional[str],
+    limit: int = 40,
+) -> tuple[list[dict[str, Any]], str]:
+    """
+    User/channel-scoped window for archive digests.
+
+    Process STM is shared — never use it as LTM digest source.
+    Prefer Hub ``list_chat`` filtered by ``user_id`` (and optional ``channel_id``).
+    Returns ``(history, source)`` where source is ``chat_log`` or empty string.
+    """
+    uid = str(user_id or "").strip()
+    if not uid:
+        return [], ""
+    hub = getattr(agent, "memory_hub", None)
+    if hub is None:
+        return [], ""
+    try:
+        lim = max(2, min(int(limit or 40), 200))
+        rows = hub.list_chat(
+            user_id=uid,
+            channel_id=str(channel_id).strip() if channel_id else None,
+            limit=lim,
+            offset=0,
+            newest_first=True,
+        )
+        # SQL returns newest-first → chronological for formatting
+        history = chat_rows_to_history(list(reversed(rows or [])))
+        if history:
+            return history, "chat_log"
+    except Exception as e:
+        logger.warning("session_archive: scoped chat_log read failed: %s", e)
+    return [], ""
 
 
 def _reason_allowed(cfg: dict[str, Any], reason: str) -> bool:
@@ -151,31 +203,54 @@ async def archive_session(
         "diary_written": False,
         "ltm_digest_written": False,
         "stm_cleared": False,
+        "history_source": "",
     }
     try:
         cfg = session_archive_cfg(agent.config)
         if not _reason_allowed(cfg, reason):
             return result
 
-        history = list(agent.short_memory.get_history())
-        if not history:
-            logger.debug("session_archive(%s): STM пуста — пропуск", reason)
+        stm_history = list(agent.short_memory.get_history())
+        uid = str(user_id or "").strip()
+        ch = str(channel_id).strip() if channel_id is not None else None
+        if ch == "":
+            ch = None
+
+        # Contentful digests: user-scoped chat_log only (process STM is shared).
+        scoped_history, scoped_src = resolve_scoped_archive_history(
+            agent, user_id=uid, channel_id=ch, limit=40
+        )
+        if not stm_history and not scoped_history:
+            logger.debug("session_archive(%s): нет STM и scoped chat_log — пропуск", reason)
             return result
 
         max_win = int(cfg.get("max_window_chars") or _DEFAULTS["max_window_chars"])
-        window = format_stm_window(history, max_chars=max_win)
+        digest_history = scoped_history
+        window = format_stm_window(digest_history, max_chars=max_win) if digest_history else ""
         result["ran"] = True
         result["chars"] = len(window)
-        result["messages"] = len(history)
-        uid = str(user_id or "").strip()
-        ch = str(channel_id) if channel_id is not None else None
+        result["messages"] = len(digest_history) if digest_history else len(stm_history)
+        result["history_source"] = scoped_src or ("stm_meta" if stm_history else "")
 
         hub = getattr(agent, "memory_hub", None)
 
-        if bool(cfg.get("write_diary")) and hub is not None and window:
+        if bool(cfg.get("write_diary")) and hub is not None:
             max_diary = int(cfg.get("max_diary_chars") or _DEFAULTS["max_diary_chars"])
-            # Heuristic digest only — never raw U:/A: STM into global diary (cross-user PRE-CONTEXT).
-            note = format_diary_digest(history, reason=reason, max_chars=max_diary)
+            if digest_history:
+                note = format_diary_digest(
+                    digest_history,
+                    reason=reason,
+                    max_chars=max_diary,
+                    include_assistant_tail=True,
+                )
+            else:
+                # No scoped window — meta counts only (never A-tail from shared STM).
+                note = format_diary_digest(
+                    stm_history,
+                    reason=reason,
+                    max_chars=max_diary,
+                    include_assistant_tail=False,
+                )
             try:
                 hub.add_diary_note(
                     note,
@@ -184,18 +259,24 @@ async def archive_session(
                         "reason": reason,
                         "user_id": uid or None,
                         "channel_id": ch,
-                        "messages": len(history),
-                        "chars": len(window),
+                        "messages": result["messages"],
+                        "chars": result["chars"],
+                        "history_source": result["history_source"],
                     },
                 )
                 result["diary_written"] = True
             except Exception as e:
                 logger.warning("session_archive: diary write failed: %s", e)
 
-        if bool(cfg.get("write_ltm_digest")) and hub is not None and window:
+        if bool(cfg.get("write_ltm_digest")) and hub is not None:
             if not uid:
                 logger.warning(
                     "session_archive: LTM digest skipped — empty user_id (owner-scoped only)"
+                )
+            elif not digest_history or not window:
+                logger.warning(
+                    "session_archive: LTM digest skipped — нет user-scoped chat_log "
+                    "(process STM не используем)"
                 )
             else:
                 try:
@@ -209,7 +290,8 @@ async def archive_session(
                                 "reason": reason,
                                 "user_id": uid,
                                 "channel_id": ch or "",
-                                "messages": len(history),
+                                "messages": len(digest_history),
+                                "history_source": "chat_log",
                             },
                         )
                         result["ltm_digest_written"] = bool(ok)
