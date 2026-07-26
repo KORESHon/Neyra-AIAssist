@@ -367,7 +367,7 @@ Legacy `voice.is_local` / flat `voice.stt` / `voice_cloud` ещё нормали
 - [ ] Запрос на код / плагин — brain вызывает `delegate_to_deep_logic`.
 - [ ] 429 на `memory_model` — backoff в логе, ядро не падает.
 - [ ] Discord text stream + MCP `/v1/chat` без регрессий после merge фаз.
-- [ ] STT: openrouter turbo на тестовом клипе (если ключ есть); остальные engines не сломаны.
+- [x] STT: openrouter turbo на тестовом клипе (ключ есть); остальные engines path сохранены.
 
 ### Вне scope этапа 2
 
