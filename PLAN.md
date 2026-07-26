@@ -44,7 +44,7 @@
 | **Канон импорта** | `from core.neyra import NeyraAgent` (lazy re-export: `from core.agent import NeyraAgent`) |
 | **Интерфейсы** | Discord resident + Internal API (`:8787`) + dashboard; MCP debug-server |
 | **ADR** | [0001](docs/adr/0001-memory-hub-v2.md) Hub · [0002](docs/adr/0002-core-layout-1b.md) layout · [0003](docs/adr/0003-core-refactor-1r.md) refactor |
-| **Активный фокус** | **Этап 2** — 2A–2E + voice cfg; дальше 2F (OpenRouter STT) · [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) |
+| **Активный фокус** | **Этап 2** — код 2A–2F в [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10); дальше smoke/регрессия + merge |
 
 **Windows runtime:** `.venv_win` + `run_neyra.bat` → `scripts/neyra_win_launcher.ps1`.  
 **Linux/WSL:** `run_neyra.sh` (`*.sh` → LF via `.gitattributes`); venv `.venv` или `~/neyra-venv` на `/mnt`.
@@ -138,14 +138,13 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 | **2C** | Session archive (overflow / `/reset`) | ✅ код | `memory.session_archive.*`; event `memory.session_archived`; default off |
 | **2D** | Security pass | ✅ код+доки | Scoped RAG; MCP redact; security-model; `:free` warning |
 | **2E** | Fast-Path умного дома | ✅ код | Allowlist → `home.*`; «ещё раз» из chat_log с `user_id`; default off |
-| **2F** | OpenRouter Whisper STT (код провайдера) | 🟡 частич. | Конфиг/резолвер готовы; **нет** реального `STTEngine` OpenRouter + smoke |
+| **2F** | OpenRouter Whisper STT (код провайдера) | ✅ код | `STTEngine` → `/audio/transcriptions`; live smoke клипом — по желанию |
 | **Reg** | Регрессия этапа 2 (vision / Discord / MCP) | ⬜ todo | Прогон перед закрытием этапа |
 
 **Осталось сделать (порядок рекомендуемый):**
 
-1. **2F** — дописать провайдер OpenRouter в `STTEngine` + smoke на клипе.
-2. **Smoke** — Discord/MCP + Fast-Path/`session_archive` при необходимости.
-3. **Регрессия этапа 2** — полный чеклист ниже перед merge/закрытием.
+1. **Smoke** — Discord/MCP + Fast-Path / OpenRouter STT клип при наличии ключа.
+2. **Регрессия этапа 2** — полный чеклист ниже перед merge/закрытием.
 
 ### Карта фаз
 
@@ -156,7 +155,7 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 | **2C — Session archive** | политика при overflow STM/контекста | ✅ код | dump в Hub + trim/clean start; событие на шине |
 | **2D — Security pass** | сверка секретов и границ людей | ✅ | scoped semantic search; MCP redact; security-model |
 | **2E — Fast-Path home** | короткие команды дома без полного brain+RAG | ✅ код | intent → `home.*`; fallback brain; repeat user-scoped |
-| **2F — Voice STT OpenRouter** | провайдер STT через OpenRouter Whisper | 🟡 cfg ✅ / код ⬜ | turbo clip smoke; soft ERROR; deepgram/groq/local OK |
+| **2F — Voice STT OpenRouter** | провайдер STT через OpenRouter Whisper | ✅ код | turbo via `/audio/transcriptions`; soft ERROR; fallback local |
 
 **Отложено:** live mic-stream (realtime WebSocket ASR). Nemotron Omni на chat/completions — file/clip audio для «послушай и ответь», не выделенный STT endpoint; для транскрипта в этапе 2 берём **OpenRouter `/audio/transcriptions`** (фаза 2F). Live колонка / Deepgram live → этап 4.
 
@@ -344,17 +343,18 @@ Legacy `voice.is_local` / flat `voice.stt` / `voice_cloud` ещё нормали
 | `.env.example` / `.env` | Комментарии под modality + `stt.cloud.provider`; секреты сохранить. | ✅ |
 | `core/runtime/secrets.py` | Deepgram/Groq → `voice.stt.cloud.*.api_key` (только если modality уже в YAML); Yandex → `voice.tts.cloud`; OpenRouter → `openrouter.api_key`. Не создавать пустой `voice.cloud`. | ✅ |
 | `core/voice/config.py` | Резолвер + soft ERROR + legacy normalize. | ✅ |
-| `STTEngine` OpenRouter provider | Реальный вызов `/audio/transcriptions` + fallback local | ⬜ |
+| `STTEngine` OpenRouter provider | Реальный вызов `/audio/transcriptions` + fallback local | ✅ |
 
 **Приёмка:**
 
-- [ ] `stt.cloud.enable` + `provider=openrouter` + turbo → короткий клип; лог `STT(OpenRouter): …`.
-- [ ] Ключ только из `OPENROUTER_API_KEY` / `openrouter.api_key`.
-- [ ] `provider=deepgram|groq` и `stt.local.enable` (faster-whisper) без регрессий.
+- [x] Код: `_openrouter_transcribe_file` (multipart/json) + лог `STT(OpenRouter): …` без ключа.
+- [x] Ключ только из `OPENROUTER_API_KEY` / `openrouter.api_key`.
+- [ ] Live: `provider=openrouter` + turbo → короткий клип (нужен ключ/сеть).
+- [x] `provider=deepgram|groq` и local path сохранены; soft ERROR при misconfig.
 - [x] Оба `enable=false` / нет ключей → soft ERROR, ядро стартует.
 - [x] Нет отдельного `voice_cloud` в example/local; `STTEngine` читает через `resolve_stt_runtime`.
 - [x] `.env*` структурированы; в логах нет API key.
-- [ ] Дока: https://openrouter.ai/docs/guides/overview/multimodal/stt (+ краткая заметка в config-reference).
+- [x] Дока: https://openrouter.ai/docs/guides/overview/multimodal/stt
 
 ---
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import re
@@ -10,7 +11,6 @@ import wave
 import asyncio
 from pathlib import Path
 from typing import Any, Optional
-import mimetypes
 
 import httpx
 
@@ -159,17 +159,27 @@ def _deepgram_body_from_wav_path(path: Path, upload: str) -> tuple[bytes, str, d
     return pcm, "application/octet-stream", extra
 
 
+def _audio_mime_for_suffix(path: Path) -> str:
+    """Extension → MIME without OS registry (Windows-safe)."""
+    suf = path.suffix.lower().lstrip(".")
+    if suf == "mpeg":
+        suf = "mp3"
+    return {
+        "wav": "audio/wav",
+        "mp3": "audio/mpeg",
+        "flac": "audio/flac",
+        "m4a": "audio/mp4",
+        "ogg": "audio/ogg",
+        "oga": "audio/ogg",
+        "opus": "audio/ogg",
+        "webm": "audio/webm",
+        "aac": "audio/aac",
+    }.get(suf, "application/octet-stream")
+
+
 def _deepgram_upload_content_type(path: Path) -> str:
     """Content-Type для тела POST (сырые байты, не multipart)."""
-    suf = path.suffix.lower()
-    if suf == ".wav":
-        return "audio/wav"
-    if suf in (".ogg", ".oga", ".opus"):
-        return "audio/ogg"
-    if suf == ".mp3":
-        return "audio/mpeg"
-    g, _ = mimetypes.guess_type(str(path))
-    return g or "application/octet-stream"
+    return _audio_mime_for_suffix(path)
 
 
 def _save_deepgram_debug_payload(
@@ -285,8 +295,23 @@ class STTEngine:
                 self._primary_lane,
             )
 
-        # OpenRouter block reserved for Stage 2F implementation (settings already resolved).
-        self._openrouter_stt = rt["openrouter"]
+        # OpenRouter STT (Stage 2F): same OPENROUTER_API_KEY as LLM
+        or_stt = rt["openrouter"]
+        self._openrouter_stt = or_stt
+        or_root = config.get("openrouter") if isinstance(config.get("openrouter"), dict) else {}
+        env_or = _normalize_api_key(os.environ.get("OPENROUTER_API_KEY", ""))
+        cfg_or = _normalize_api_key(str(or_root.get("api_key") or ""))
+        self.or_api_key = env_or or cfg_or
+        cfg_base = str(or_stt.get("base_url") or or_root.get("base_url") or "").strip().rstrip("/")
+        self.or_base_url = cfg_base or "https://openrouter.ai/api/v1"
+        self.or_model = str(
+            or_stt.get("model") or "openai/whisper-large-v3-turbo"
+        ).strip()
+        self.or_temperature = float(or_stt.get("temperature", 0.0))
+        # multipart = OpenAI-compatible; json = input_audio base64 (OpenRouter native)
+        self.or_upload_mode = str(or_stt.get("upload_mode") or "multipart").strip().lower()
+        if self.or_upload_mode not in ("multipart", "json"):
+            self.or_upload_mode = "multipart"
 
         if self.engine == "faster-whisper":
             logger.info(
@@ -298,8 +323,11 @@ class STTEngine:
 
         if self.engine == "openrouter":
             logger.info(
-                "STT(OpenRouter): model=%s | lane=%s (provider wired in Stage 2F code)",
-                str(self._openrouter_stt.get("model") or "openai/whisper-large-v3-turbo"),
+                "STT(OpenRouter): model=%s | upload=%s | key_source=%s | key_len=%s | lane=%s",
+                self.or_model,
+                self.or_upload_mode,
+                "env" if env_or else ("config" if cfg_or else "none"),
+                len(self.or_api_key),
                 self._primary_lane,
             )
 
@@ -466,7 +494,9 @@ class STTEngine:
         p = Path(path)
         if not p.exists():
             return "", True
-        mime = mimetypes.guess_type(str(p))[0] or "audio/wav"
+        mime = _audio_mime_for_suffix(p)
+        if mime == "application/octet-stream":
+            mime = "audio/wav"
         url = (
             self.groq_transcriptions_url
             if self.groq_transcriptions_url
@@ -521,6 +551,108 @@ class STTEngine:
                 logger.warning("STT(Groq) retry %s/%s: %s", attempt, self.max_retries + 1, e)
         return "", True
 
+    def _audio_format_from_path(self, path: Path) -> str:
+        suf = path.suffix.lower().lstrip(".")
+        if suf in ("wav", "mp3", "flac", "m4a", "ogg", "webm", "aac", "mpeg"):
+            return "mp3" if suf == "mpeg" else suf
+        # Avoid mimetypes.guess_type on Windows — registry read can raise PermissionError.
+        return suf or "wav"
+
+    def _audio_mime_from_path(self, path: Path) -> str:
+        mime = _audio_mime_for_suffix(path)
+        if mime == "application/octet-stream":
+            return f"audio/{self._audio_format_from_path(path)}"
+        return mime
+
+    def _openrouter_transcribe_file(self, path: str | Path) -> tuple[str, bool]:
+        """(text, need_local_fallback). Soft errors — never raise to callers."""
+        if not self.or_api_key:
+            logger.error(
+                "STT(OpenRouter): нет OPENROUTER_API_KEY — cloud STT не заработает"
+            )
+            return "", True
+
+        p = Path(path)
+        if not p.exists():
+            return "", True
+        if p.stat().st_size <= 0:
+            return "", False
+
+        url = f"{self.or_base_url.rstrip('/')}/audio/transcriptions"
+        headers = {
+            "Authorization": f"Bearer {self.or_api_key}",
+            "User-Agent": "Neyra/1.0",
+            "HTTP-Referer": "https://github.com/KORESHon/Neyra-AIAssist",
+            "X-Title": "Neyra",
+        }
+        fmt = self._audio_format_from_path(p)
+        mime = self._audio_mime_from_path(p)
+
+        for attempt in range(1, self.max_retries + 2):
+            try:
+                with httpx.Client(timeout=self.timeout_seconds) as client:
+                    if self.or_upload_mode == "json":
+                        raw = p.read_bytes()
+                        # OpenRouter: raw base64 bytes, not data-URI
+                        b64 = base64.b64encode(raw).decode("ascii")
+                        body: dict[str, Any] = {
+                            "model": self.or_model,
+                            "input_audio": {"data": b64, "format": fmt},
+                            "language": self.language or "ru",
+                            "temperature": self.or_temperature,
+                            "response_format": "json",
+                        }
+                        resp = client.post(
+                            url,
+                            headers={**headers, "Content-Type": "application/json"},
+                            json=body,
+                        )
+                    else:
+                        with p.open("rb") as f:
+                            files = {"file": (p.name, f, mime)}
+                            data = {
+                                "model": self.or_model,
+                                "language": self.language or "ru",
+                                "response_format": "json",
+                                "temperature": str(self.or_temperature),
+                            }
+                            resp = client.post(
+                                url, headers=headers, files=files, data=data
+                            )
+
+                if resp.status_code == 401:
+                    raise RuntimeError(
+                        "HTTP 401 — проверь OPENROUTER_API_KEY (тот же, что для LLM)"
+                    )
+                if resp.status_code == 429:
+                    raise RuntimeError(f"HTTP 429 rate limit: {resp.text[:200]}")
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+
+                payload = resp.json()
+                text = str(payload.get("text") or "").strip()
+                usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+                if usage:
+                    logger.debug(
+                        "STT(OpenRouter) usage seconds=%s cost=%s",
+                        usage.get("seconds"),
+                        usage.get("cost"),
+                    )
+                if not text:
+                    return "", False
+                return text, False
+            except Exception as e:
+                if attempt >= self.max_retries + 1:
+                    logger.error("STT(OpenRouter) ошибка: %s", e)
+                    return "", True
+                logger.warning(
+                    "STT(OpenRouter) retry %s/%s: %s",
+                    attempt,
+                    self.max_retries + 1,
+                    e,
+                )
+        return "", True
+
     def transcribe_file(self, path: str | Path) -> str:
         path = str(path)
         if not getattr(self, "_stt_available", True) or self.engine in ("", "none"):
@@ -553,14 +685,17 @@ class STTEngine:
             logger.warning("STT: fallback на local faster-whisper после ошибки Groq")
 
         elif self.engine == "openrouter":
-            # Provider implementation lands in Stage 2F — soft fail, never crash core.
-            logger.error(
-                "STT(OpenRouter): провайдер ещё не реализован (фаза 2F) — "
-                "распознавание пропущено, ядро продолжает работу"
-            )
+            text, need_fallback = self._openrouter_transcribe_file(path)
+            if text:
+                self._cloud_fail_count = 0
+                return text
+            if not need_fallback:
+                self._cloud_fail_count = 0
+                return ""
+            self._cloud_fail_count += 1
             if not self.cloud_fallback_to_local:
                 return ""
-            logger.warning("STT: fallback на local faster-whisper (OpenRouter stub)")
+            logger.warning("STT: fallback на local faster-whisper после ошибки OpenRouter")
 
         if not self._load() or not self._model:
             return ""

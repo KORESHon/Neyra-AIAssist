@@ -470,9 +470,13 @@ voice:
       openrouter:
         # EN: ~$0.04/hour audio. Same OPENROUTER_API_KEY as LLM.
         # RU: ~$0.04/час. Тот же OPENROUTER_API_KEY, что у LLM.
+        # Docs: https://openrouter.ai/docs/guides/overview/multimodal/stt
         model: "openai/whisper-large-v3-turbo"
         base_url: ""
         temperature: 0.0
+        # EN: multipart = OpenAI-compatible file upload; json = input_audio base64.
+        # RU: multipart = как OpenAI file; json = input_audio base64.
+        upload_mode: "multipart"
 
       deepgram:
         model: "nova-3"
