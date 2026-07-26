@@ -19,7 +19,7 @@
 
 ## Memory isolation
 - Chronological `recall_chat` / `POST /v1/memory/chat/recall` **require** `user_id` and/or `channel_id`.
-- Semantic `search_memory` / `POST /v1/memory/search` **require** `user_id` (dialogs scoped; shared `type=knowledge` still allowed).
+- Semantic `search_memory` / `POST /v1/memory/search` **require** `user_id` (dialogs and `session_archive_digest` are owner-only; shared is `type=knowledge` only). Tool `user_id` args are ignored in favor of turn-scope (`ContextVar`).
 - Prompt RAG in `prepare_turn` uses the same user-scoped search.
 
 ## Plugins

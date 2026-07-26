@@ -20,6 +20,7 @@ LLM может вызывать эти функции сама через Functi
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import platform
 import subprocess
@@ -39,19 +40,31 @@ _people_db: "PeopleDB | None" = None
 _assistant_cfg: dict | None = None
 _neyra_config: dict | None = None
 _memory_hub = None
-# Per-turn scope for RAG tools (set from chat/stream before brain/tools)
-_turn_memory_scope: dict[str, str] = {"user_id": "", "channel_id": ""}
+# Per-turn scope (ContextVar — safe under asyncio.create_task / parallel Discord chats)
+_turn_memory_uid: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "neyra_turn_memory_uid", default=""
+)
+_turn_memory_channel: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "neyra_turn_memory_channel", default=""
+)
 
 
 def set_turn_memory_scope(*, user_id: str = "", channel_id: str = "") -> None:
     """Bind current turn user/channel for scoped semantic search."""
-    _turn_memory_scope["user_id"] = str(user_id or "").strip()
-    _turn_memory_scope["channel_id"] = str(channel_id or "").strip()
+    _turn_memory_uid.set(str(user_id or "").strip())
+    _turn_memory_channel.set(str(channel_id or "").strip())
 
 
 def clear_turn_memory_scope() -> None:
-    _turn_memory_scope["user_id"] = ""
-    _turn_memory_scope["channel_id"] = ""
+    _turn_memory_uid.set("")
+    _turn_memory_channel.set("")
+
+
+def get_turn_memory_scope() -> dict[str, str]:
+    return {
+        "user_id": _turn_memory_uid.get() or "",
+        "channel_id": _turn_memory_channel.get() or "",
+    }
 
 
 def init_tools(
@@ -193,10 +206,18 @@ def search_memory(query: str, user_id: str = "") -> str:
     Ищет в долгосрочной памяти по смыслу: прошлые фрагменты диалогов и сохранённые знания (RAG).
     Используй, когда нужно вспомнить факты, о чём договаривались, что сохраняли через remember_knowledge.
     query — суть того, что нужно найти.
-    user_id — внутренний id текущего собеседника (если пусто — берётся из контекста хода).
+    user_id — игнорируется (scope только из текущего хода; нельзя запросить чужой id).
     Для хронологии («что было N сообщений назад») используй recall_chat, не search_memory.
     """
-    uid = (user_id or "").strip() or _turn_memory_scope.get("user_id") or ""
+    # Never trust LLM-supplied user_id — always turn ContextVar scope.
+    uid = (_turn_memory_uid.get() or "").strip()
+    arg_uid = (user_id or "").strip()
+    if arg_uid and arg_uid != uid:
+        logger.warning(
+            "search_memory: tool user_id=%r ignored (turn scope=%r)",
+            arg_uid[:64],
+            uid[:64],
+        )
     if not uid:
         return (
             "Нужен user_id текущего собеседника для семантического поиска "
@@ -234,8 +255,19 @@ def recall_chat(
     """
     if _memory_hub is None:
         return "Memory Hub не инициализирован."
-    uid = (user_id or "").strip() or None
-    cid = (channel_id or "").strip() or None
+    # Prefer turn scope; ignore LLM user_id that differs (same policy as search_memory).
+    scope_uid = (_turn_memory_uid.get() or "").strip()
+    scope_cid = (_turn_memory_channel.get() or "").strip()
+    arg_uid = (user_id or "").strip()
+    arg_cid = (channel_id or "").strip()
+    if arg_uid and scope_uid and arg_uid != scope_uid:
+        logger.warning(
+            "recall_chat: tool user_id=%r ignored (turn scope=%r)",
+            arg_uid[:64],
+            scope_uid[:64],
+        )
+    uid = scope_uid or None
+    cid = scope_cid or arg_cid or None
     if not uid and not cid:
         return (
             "Нужен фильтр: укажи user_id и/или channel_id. "

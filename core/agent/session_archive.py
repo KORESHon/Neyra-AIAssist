@@ -39,6 +39,18 @@ def session_archive_enabled(config: dict[str, Any]) -> bool:
     return bool(session_archive_cfg(config).get("enabled"))
 
 
+def _tail_chars(text: str, max_chars: int) -> str:
+    """Keep the end of ``text`` (newest STM), cut on a newline when possible."""
+    text = (text or "").strip()
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    chunk = text[-max_chars:]
+    cut = chunk.find("\n")
+    if 0 < cut < 400:
+        chunk = chunk[cut + 1 :]
+    return chunk.strip()
+
+
 def format_stm_window(history: list[dict[str, Any]], *, max_chars: int) -> str:
     """Compact role-tagged STM window for digest (not raw Chroma dump)."""
     lines: list[str] = []
@@ -51,12 +63,49 @@ def format_stm_window(history: list[dict[str, Any]], *, max_chars: int) -> str:
         lines.append(f"{tag}: {content}")
     text = "\n".join(lines).strip()
     if max_chars > 0 and len(text) > max_chars:
-        text = text[-max_chars:]
-        cut = text.find("\n")
-        if 0 < cut < 400:
-            text = text[cut + 1 :]
-        text = "[…хвост STM…]\n" + text.strip()
+        text = _tail_chars(text, max_chars)
+        text = "[…хвост STM…]\n" + text
     return text
+
+
+def format_diary_digest(
+    history: list[dict[str, Any]],
+    *,
+    reason: str,
+    max_chars: int,
+) -> str:
+    """
+    Short diary note without verbatim user lines (global diary → PRE-CONTEXT).
+
+    Counts roles; may keep truncated assistant-only snippets from the STM tail.
+    """
+    n_user = 0
+    n_asst = 0
+    asst_bits: list[str] = []
+    for msg in history or []:
+        role = str(msg.get("role") or "").strip().lower()
+        content = str(msg.get("content") or "").strip().replace("\n", " ")
+        if not content:
+            continue
+        if role == "user":
+            n_user += 1
+        elif role == "assistant":
+            n_asst += 1
+            if len(asst_bits) < 3:
+                asst_bits.append(content[:120])
+    head = f"[session_archive/{reason}] msgs={len(history or [])} U={n_user} A={n_asst}"
+    if not asst_bits:
+        return head
+    body = " | ".join(asst_bits)
+    # Prefer newest assistant bits if over budget
+    note = f"{head}. A-tail: {body}"
+    if max_chars > 0 and len(note) > max_chars:
+        budget = max(40, max_chars - len(head) - 12)
+        body = _tail_chars(body, budget)
+        note = f"{head}. A-tail: {body}"
+        if len(note) > max_chars:
+            note = note[: max_chars - 1].rstrip() + "…"
+    return note
 
 
 def _reason_allowed(cfg: dict[str, Any], reason: str) -> bool:
@@ -125,8 +174,8 @@ async def archive_session(
 
         if bool(cfg.get("write_diary")) and hub is not None and window:
             max_diary = int(cfg.get("max_diary_chars") or _DEFAULTS["max_diary_chars"])
-            body = window if len(window) <= max_diary else (window[: max_diary - 1].rstrip() + "…")
-            note = f"[session_archive/{reason}] снимок STM ({len(history)} msg):\n{body}"
+            # Heuristic digest only — never raw U:/A: STM into global diary (cross-user PRE-CONTEXT).
+            note = format_diary_digest(history, reason=reason, max_chars=max_diary)
             try:
                 hub.add_diary_note(
                     note,
@@ -144,25 +193,30 @@ async def archive_session(
                 logger.warning("session_archive: diary write failed: %s", e)
 
         if bool(cfg.get("write_ltm_digest")) and hub is not None and window:
-            try:
-                digest = await agent.summarize_ltm_corpus(window, consolidation=False)
-                digest = (digest or "").strip()
-                if digest:
-                    ok, info = hub.remember_knowledge(
-                        digest,
-                        {
-                            "type": "session_archive_digest",
-                            "reason": reason,
-                            "user_id": uid or "",
-                            "channel_id": ch or "",
-                            "messages": len(history),
-                        },
-                    )
-                    result["ltm_digest_written"] = bool(ok)
-                    if not ok:
-                        logger.warning("session_archive: LTM digest not stored: %s", info)
-            except Exception as e:
-                logger.warning("session_archive: LTM digest failed: %s", e)
+            if not uid:
+                logger.warning(
+                    "session_archive: LTM digest skipped — empty user_id (owner-scoped only)"
+                )
+            else:
+                try:
+                    digest = await agent.summarize_ltm_corpus(window, consolidation=False)
+                    digest = (digest or "").strip()
+                    if digest:
+                        ok, info = hub.remember_knowledge(
+                            digest,
+                            {
+                                "type": "session_archive_digest",
+                                "reason": reason,
+                                "user_id": uid,
+                                "channel_id": ch or "",
+                                "messages": len(history),
+                            },
+                        )
+                        result["ltm_digest_written"] = bool(ok)
+                        if not ok:
+                            logger.warning("session_archive: LTM digest not stored: %s", info)
+                except Exception as e:
+                    logger.warning("session_archive: LTM digest failed: %s", e)
 
         if apply_stm_policy and reason in ("overflow", "stm_threshold") and bool(
             cfg.get("clear_stm_after")

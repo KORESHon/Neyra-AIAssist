@@ -328,11 +328,11 @@ class LongTermMemory:
             used_where = False
             if uid:
                 try:
+                    # Shared = knowledge only. session_archive_digest is owner-scoped.
                     q_kwargs["where"] = {
                         "$or": [
                             {"user_id": uid},
                             {"type": "knowledge"},
-                            {"type": "session_archive_digest"},
                         ]
                     }
                     used_where = True
@@ -357,7 +357,8 @@ class LongTermMemory:
                 m = meta if isinstance(meta, dict) else {}
                 typ = str(m.get("type") or "").strip().lower()
                 owner = str(m.get("user_id") or "").strip()
-                if owner == uid or typ in ("knowledge", "session_archive_digest"):
+                # Shared knowledge only; digests/dialogs require matching owner.
+                if owner == uid or typ == "knowledge":
                     out.append(doc)
                 elif not used_where and not owner and typ in ("", "dialog", "chat"):
                     # Ambiguous legacy dialog without user_id — skip when scoping
