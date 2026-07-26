@@ -138,12 +138,13 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 | **2C** | Session archive (overflow / `/reset`) | ✅ код | `memory.session_archive.*`; event `memory.session_archived`; default off |
 | **2D** | Security pass | ✅ код+доки | Scoped RAG; MCP redact; security-model; `:free` warning |
 | **2E** | Fast-Path умного дома | ✅ код | Allowlist → `home.*`; «ещё раз» из chat_log с `user_id`; default off |
-| **2F** | OpenRouter Whisper STT (код провайдера) | ✅ код | `STTEngine` → `/audio/transcriptions`; live smoke клипом — по желанию |
+| **2F** | OpenRouter Whisper STT (код провайдера) | ✅ | `STTEngine` → `/audio/transcriptions`; live clip OK |
+
 | **Reg** | Регрессия этапа 2 (vision / Discord / MCP) | ⬜ todo | Прогон перед закрытием этапа |
 
 **Осталось сделать (порядок рекомендуемый):**
 
-1. **Smoke** — Discord/MCP + Fast-Path / OpenRouter STT клип при наличии ключа.
+1. **Smoke** — Discord/MCP + Fast-Path / session_archive при необходимости.
 2. **Регрессия этапа 2** — полный чеклист ниже перед merge/закрытием.
 
 ### Карта фаз
@@ -155,7 +156,8 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 | **2C — Session archive** | политика при overflow STM/контекста | ✅ код | dump в Hub + trim/clean start; событие на шине |
 | **2D — Security pass** | сверка секретов и границ людей | ✅ | scoped semantic search; MCP redact; security-model |
 | **2E — Fast-Path home** | короткие команды дома без полного brain+RAG | ✅ код | intent → `home.*`; fallback brain; repeat user-scoped |
-| **2F — Voice STT OpenRouter** | провайдер STT через OpenRouter Whisper | ✅ код | turbo via `/audio/transcriptions`; soft ERROR; fallback local |
+| **2F — Voice STT OpenRouter** | провайдер STT через OpenRouter Whisper | ✅ | turbo via `/audio/transcriptions`; live clip; soft ERROR; fallback local |
+
 
 **Отложено:** live mic-stream (realtime WebSocket ASR). Nemotron Omni на chat/completions — file/clip audio для «послушай и ответь», не выделенный STT endpoint; для транскрипта в этапе 2 берём **OpenRouter `/audio/transcriptions`** (фаза 2F). Live колонка / Deepgram live → этап 4.
 
@@ -349,7 +351,7 @@ Legacy `voice.is_local` / flat `voice.stt` / `voice_cloud` ещё нормали
 
 - [x] Код: `_openrouter_transcribe_file` (multipart/json) + лог `STT(OpenRouter): …` без ключа.
 - [x] Ключ только из `OPENROUTER_API_KEY` / `openrouter.api_key`.
-- [ ] Live: `provider=openrouter` + turbo → короткий клип (нужен ключ/сеть).
+- [x] Live: `provider=openrouter` + turbo → короткий wav клип (HTTP OK, текст получен).
 - [x] `provider=deepgram|groq` и local path сохранены; soft ERROR при misconfig.
 - [x] Оба `enable=false` / нет ключей → soft ERROR, ядро стартует.
 - [x] Нет отдельного `voice_cloud` в example/local; `STTEngine` читает через `resolve_stt_runtime`.
