@@ -44,7 +44,7 @@
 | **Канон импорта** | `from core.neyra import NeyraAgent` (lazy re-export: `from core.agent import NeyraAgent`) |
 | **Интерфейсы** | Discord resident + Internal API (`:8787`) + dashboard; MCP debug-server |
 | **ADR** | [0001](docs/adr/0001-memory-hub-v2.md) Hub · [0002](docs/adr/0002-core-layout-1b.md) layout · [0003](docs/adr/0003-core-refactor-1r.md) refactor |
-| **Активный фокус** | **Этап 2** — MCP smoke 2A/2C/2D/2E ✅ в [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10); дальше Discord UI + vision/delegate |
+| **Активный фокус** | **Этап 2** — Discord+MCP smoke ✅ в [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10); дальше vision/delegate/429 + merge |
 
 **Windows runtime:** `.venv_win` + `run_neyra.bat` → `scripts/neyra_win_launcher.ps1`.  
 **Linux/WSL:** `run_neyra.sh` (`*.sh` → LF via `.gitattributes`); venv `.venv` или `~/neyra-venv` на `/mnt`.
@@ -132,29 +132,29 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 
 | ID | Задача | Статус | Комментарий |
 |----|--------|--------|-------------|
-| **2A** | Persona pack (`persona.md` / `appearance.md`) | ✅ MCP | Live `/v1/chat` OK; Discord UI — по желанию |
+| **2A** | Persona pack (`persona.md` / `appearance.md`) | ✅ | MCP + Discord UI OK |
 | **2B** | Pre-context (diary + user-scoped WM) | ✅ код | `memory.pre_context.enabled` default **false**; semantic source — позже |
 | **Voice cfg** | Канон `voice.stt`/`voice.tts` × prefer/enable + soft ERROR | ✅ | Фундамент для 2F; Auto Review majors закрыты |
-| **2C** | Session archive (overflow / `/reset`) | ✅ MCP | `POST /v1/debug/reset_context` → diary `history_source=chat_log` |
+| **2C** | Session archive (overflow / `/reset`) | ✅ | MCP reset_context + Discord `/reset` OK |
 | **2D** | Security pass | ✅ MCP | search/recall без uid → 400; redact; log без ключей |
-| **2E** | Fast-Path умного дома | ✅ MCP | `включи свет` + `ещё раз` scoped; чужой uid → brain |
+| **2E** | Fast-Path умного дома | ✅ | серверный контур + Discord; multi-client / колонка → **этап 4** |
 | **2F** | OpenRouter Whisper STT (код провайдера) | ✅ | `STTEngine` → `/audio/transcriptions`; live clip OK |
-| **Reg** | Регрессия этапа 2 (vision / Discord / MCP) | 🟡 | MCP/offline ✅; Discord UI + vision/delegate — остаток |
+| **Reg** | Регрессия этапа 2 (vision / Discord / MCP) | 🟡 | Discord+MCP ✅; vision / delegate / 429 — остаток |
 
 **Осталось сделать (порядок рекомендуемый):**
 
-1. **Discord UI smoke** — обычный чат + `/reset` (инструкции ниже в чате агента).
-2. **Регрессия** — vision / `delegate_to_deep_logic` / 429.
+1. **Регрессия** — vision (`use_brain_model_for_vision` true/false) / `delegate_to_deep_logic` / 429.
+2. **Merge** PR #10 после Auto Review clean.
 
 ### Карта фаз
 
 | Фаза | Фокус | Статус | Done when |
 |------|--------|--------|-----------|
-| **2A — Persona pack** | база личности + визуал как отдельные редактируемые артефакты | ✅ MCP | два файла/ключа; live chat OK |
+| **2A — Persona pack** | база личности + визуал как отдельные редактируемые артефакты | ✅ | два файла/ключа; MCP + Discord |
 | **2B — Pre-context thoughts** | короткий «мысль/намёк» из Hub перед talk | ✅ | блок в system/context; выкл. флагом; WM только с `user_id` |
-| **2C — Session archive** | политика при overflow STM/контекста | ✅ MCP | scoped chat_log digest; reset_context smoke |
-| **2D — Security pass** | сверка секретов и границ людей | ✅ MCP | scoped search; redact; no keys in log |
-| **2E — Fast-Path home** | короткие команды дома без полного brain+RAG | ✅ MCP | intent → `home.*`; repeat user-scoped |
+| **2C — Session archive** | политика при overflow STM/контекста | ✅ | scoped chat_log; MCP + Discord `/reset` |
+| **2D — Security pass** | сверка секретов и границ людей | ✅ | scoped search; redact; no keys in log |
+| **2E — Fast-Path home** | короткие команды дома без полного brain+RAG | ✅ | сервер OK; multi-user/колонка → этап 4 |
 | **2F — Voice STT OpenRouter** | провайдер STT через OpenRouter Whisper | ✅ | turbo via `/audio/transcriptions`; live clip; soft ERROR; fallback local |
 
 
@@ -233,7 +233,7 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 - [x] Default `enabled: false` — поведение как раньше; LTM только digest (`remember_knowledge`), не raw chat.
 - [x] LTM digest / contentful diary — только из user-scoped `chat_log` (не process-global STM).
 - [x] Live smoke MCP: `session_archive.enabled` + `POST /v1/debug/reset_context` → diary note (`history_source=chat_log`).
-- [ ] Discord UI: `/reset` slash → «Память сброшена» (опционально).
+- [x] Discord UI: `/reset` → «Память сброшена.» (скрин 2026-07-26).
 
 ---
 
@@ -270,15 +270,17 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 3. При низкой уверенности — полный brain как сейчас.
 4. Hub: для «ещё раз / то же» — STM и/или `list_chat` / `recall_chat` **всегда** с фильтром `user_id` и/или `channel_id` (тот же контракт, что в 2D); semantic RAG **не** обязателен.
 5. Логировать bypass (`fast_path.hit` / reason) для отладки ложных срабатываний.
-6. Edge Fast-Path на колонке — **не** в этапе 2 (этап 4); здесь только серверный контур.
+6. Edge Fast-Path на колонке / телефоне / home-клиенте — **этап 4** (нет второго аккаунта и железа для e2e сейчас).
+7. Consumer `home.*` (реальный умный дом) — этап 4 / отдельный плагин.
 
-**Приёмка:**
+**Приёмка (этап 2 — серверный контур):**
 
 - [x] Код: `core/agent/fast_path.py` + hooks до brain в chat/stream; `agent.fast_path` в example/local.
 - [x] Allowlist hit → `fast_path.hit` лог + `home.*` event; miss/ambiguous → brain.
 - [x] «Ещё раз» только через `list_chat(user_id=…)` (не общий STM).
-- [x] Live smoke MCP: `включи свет` + `ещё раз` (тот же uid) + чужой uid → brain; consumer `home.*` — этап 4.
-- [ ] Discord UI (опционально): те же фразы в активном канале.
+- [x] Live MCP: `включи свет` + `ещё раз` (тот же uid); чужой uid → brain (MCP).
+- [x] Discord UI: persona + `включи свет` / `ещё раз` быстро (скрин 2026-07-26).
+- [ ] **→ этап 4:** multi-client isolation + колонка/телефон home UI + consumer `home.*`.
 
 ---
 
@@ -369,7 +371,7 @@ Legacy `voice.is_local` / flat `voice.stt` / `voice_cloud` ещё нормали
 - [ ] Запрос на код / плагин — brain вызывает `delegate_to_deep_logic`.
 - [ ] 429 на `memory_model` — backoff в логе, ядро не падает.
 - [x] MCP `/v1/chat` без регрессий (persona + fast_path + reset_context).
-- [ ] Discord text stream UI (скрин от пользователя).
+- [x] Discord text stream UI (persona + light + repeat + `/reset`, скрин 2026-07-26).
 - [x] STT: openrouter turbo на тестовом клипе (ключ есть); остальные engines path сохранены.
 - [x] Offline security: `scripts/test_stage2_security_offline.py` (scoped archive, ContextVar, diary filter).
 
@@ -377,6 +379,7 @@ Legacy `voice.is_local` / flat `voice.stt` / `voice_cloud` ещё нормали
 
 - Полный Web UI WS-мост (этап 3).
 - Live mic ASR / колонка / полный self-host voice stack (этап 4) — **file/clip** OpenRouter STT как раз в 2F.
+- Multi-client Fast-Path / реальный consumer `home.*` (этап 4).
 - sqlite-vss, Obsidian export, desktop/mobile клиенты.
 - Nemotron Omni как live микрофонный STT.
 
@@ -433,6 +436,14 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 
 - Hub + Chroma только на сервере.
 - Опционально: sqlite-vss через адаптер `search_semantic` (без ломки агента).
+
+### Fast-Path / умный дом (продолжение 2E)
+
+Серверный allowlist + `home.*` уже в этапе 2. Здесь — e2e с реальными клиентами:
+
+- [ ] Колонка / телефон / desktop home-клиент шлёт короткие команды → Fast-Path без полного brain.
+- [ ] Изоляция «ещё раз» между разными клиентами/аккаунтами (не только MCP uid).
+- [ ] Consumer `home.*` (свет/сцены) подключён к железу или mock-плагину.
 
 ### Критерии приёмки (черновик)
 
