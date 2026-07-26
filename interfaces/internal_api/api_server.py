@@ -278,6 +278,13 @@ class LifecycleDebugRequest(BaseModel):
     action: Literal["stop", "restart"]
 
 
+class ResetContextDebugRequest(BaseModel):
+    """POST /v1/debug/reset_context — archive STM (session_archive) then clear short memory."""
+
+    user_id: str = Field(default="", max_length=120)
+    channel_id: Optional[str] = Field(default=None, max_length=120)
+
+
 class ConfigUpdateRequest(BaseModel):
     updates: dict[str, Any] = Field(default_factory=dict)
 
@@ -832,6 +839,36 @@ def build_app(
         )
         _schedule_exit_after_response()
         return {"ok": True, "trace_id": trace_id, "data": {"action": body.action, "note": note}}
+
+    @app.post("/v1/debug/reset_context")
+    async def v1_debug_reset_context(
+        body: ResetContextDebugRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Stage 2C smoke / ops: run session_archive(manual_reset) then clear STM."""
+        trace_id = _trace_id(request)
+        uid = (body.user_id or "").strip()
+        cid = (body.channel_id or "").strip() or None
+        before = len(agent.short_memory)
+        await agent.reset_context_async(cid, user_id=uid)
+        after = len(agent.short_memory)
+        _audit(
+            "debug_reset_context",
+            trace_id,
+            api_role,
+            {"user_id": uid, "channel_id": cid, "stm_before": before, "stm_after": after},
+        )
+        return {
+            "ok": True,
+            "trace_id": trace_id,
+            "data": {
+                "stm_before": before,
+                "stm_after": after,
+                "user_id": uid,
+                "channel_id": cid,
+            },
+        }
 
     @app.get("/v1/debug/memory")
     async def v1_debug_memory(request: Request, _: None = Depends(dep_viewer)):
