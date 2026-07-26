@@ -1,5 +1,8 @@
 .env
 config.yaml
+# Private persona/appearance (examples live in prompts/*.example.md)
+prompts/persona.md
+prompts/appearance.md
 # Локальные overrides плагинов (в репо — только config.example.yaml в каждой папке)
 interfaces/**/config.yaml
 Gemini.md

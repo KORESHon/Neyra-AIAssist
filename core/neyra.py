@@ -174,12 +174,20 @@ class NeyraAgent:
         brain_router_context: str = "",
         attached_image_caption: str = "",
         working_memory_context: str = "",
+        include_appearance: bool = False,
+        pre_context: str = "",
     ) -> str:
         """Собирает системный промпт. Порядок (B2): роль → активный → упомянутые → правила → RAG → остальное."""
+        from core.agent.persona import build_talk_base_prompt
         from core.agent.prompts import build_talk_system_prompt
 
+        base_prompt = build_talk_base_prompt(
+            self.config,
+            self._project_root,
+            include_appearance=include_appearance,
+        )
         return build_talk_system_prompt(
-            base_prompt=self.config["assistant"]["system_prompt"],
+            base_prompt=base_prompt,
             backend=self.backend,
             micro_plan=self._micro_plan_settings(),
             extra_memories=extra_memories,
@@ -196,6 +204,7 @@ class NeyraAgent:
             brain_router_context=brain_router_context,
             attached_image_caption=attached_image_caption,
             working_memory_context=working_memory_context,
+            pre_context=pre_context,
         )
 
     def _build_brain_system_prompt(
@@ -211,11 +220,14 @@ class NeyraAgent:
         mcp_tools_catalog: str = "",
         last_image_context: Optional[str] = None,
         working_memory_context: str = "",
+        pre_context: str = "",
     ) -> str:
-        """Компактный системный промпт для brain: инструменты и факты, без личности talk-модели."""
+        """Компактный системный промпт для brain: инструменты/факты + короткий identity snippet."""
+        from core.agent.persona import persona_brain_snippet
         from core.agent.prompts import build_brain_system_prompt
 
         return build_brain_system_prompt(
+            identity_snippet=persona_brain_snippet(self.config, self._project_root),
             extra_memories=extra_memories,
             people_context_active=people_context_active,
             people_context_mentioned=people_context_mentioned,
@@ -226,6 +238,7 @@ class NeyraAgent:
             mcp_tools_catalog=mcp_tools_catalog,
             last_image_context=last_image_context,
             working_memory_context=working_memory_context,
+            pre_context=pre_context,
         )
 
     async def _caption_vision_images(
@@ -796,13 +809,48 @@ class NeyraAgent:
         )
 
     def reset_context(self, channel_id: Optional[str] = None):
-        """Сбрасывает краткую память; для Discord — ещё заметку последнего скрина в этом канале."""
+        """Синхронный сброс STM (без archive). Предпочитай ``reset_context_async``."""
         self.short_memory.clear()
         if channel_id is not None:
             self._last_vision_note_by_channel.pop(str(channel_id), None)
         else:
             self._last_vision_note_by_channel.clear()
         logger.info("Краткосрочная память сброшена")
+
+    async def reset_context_async(
+        self,
+        channel_id: Optional[str] = None,
+        *,
+        user_id: str = "",
+    ) -> dict:
+        """Archive STM (если session_archive.on_manual_reset) затем очистить память.
+
+        Returns the ``archive_session`` result dict (always a dict; soft-fails inside).
+        """
+        from core.agent.session_archive import archive_session
+
+        arch: dict = {
+            "ran": False,
+            "reason": "manual_reset",
+            "chars": 0,
+            "messages": 0,
+            "diary_written": False,
+            "ltm_digest_written": False,
+            "stm_cleared": False,
+            "history_source": "",
+        }
+        try:
+            arch = await archive_session(
+                self,
+                reason="manual_reset",
+                user_id=user_id,
+                channel_id=channel_id,
+                apply_stm_policy=False,
+            )
+        except Exception as e:
+            logger.warning("session_archive on reset failed (soft): %s", e)
+        self.reset_context(channel_id)
+        return arch if isinstance(arch, dict) else {}
 
     def get_stats(self) -> dict:
         """Возвращает статистику агента."""

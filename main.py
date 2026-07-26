@@ -104,6 +104,14 @@ logging.getLogger("huggingface_hub.utils._http").setLevel(logging.ERROR)
 logging.getLogger("torch").setLevel(logging.WARNING)
 logging.getLogger("torch._subclasses").setLevel(logging.WARNING)
 
+# Voice STT/TTS misconfig → soft ERROR only (core must keep running)
+try:
+    from core.voice.config import log_voice_soft_errors
+
+    log_voice_soft_errors(config)
+except Exception:
+    logger.exception("Voice preflight soft-check failed (ignored — ядро продолжает)")
+
 # Диагностика: падения в фоновых потоках и нативные SIGABRT/SIGSEGV в stderr
 def _thread_excepthook(args: threading.ExceptHookArgs) -> None:
     logging.getLogger("neyra.threading").critical(
@@ -295,7 +303,7 @@ async def run_console() -> None:
             break
 
         if user_input == "/reset":
-            agent.reset_context()
+            await agent.reset_context_async()
             console.print("[dim]── Память сброшена. Новый диалог. ──[/dim]")
             continue
 

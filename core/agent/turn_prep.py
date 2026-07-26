@@ -30,6 +30,8 @@ class TurnPrep:
     attached_caption: str
     talk_vm: Optional[list[tuple[str, str]]]
     has_vis_prompt: bool
+    include_appearance: bool
+    pre_context: str
     brain_sys: str
 
 
@@ -49,7 +51,18 @@ async def prepare_turn(
     internal_uid = agent._resolve_internal_user_id(discord_user_id, username)
     await agent._ensure_mcp()
 
-    memories = agent.long_memory.search(user_message)
+    try:
+        from core.tools.builtins import set_turn_memory_scope
+
+        set_turn_memory_scope(user_id=internal_uid, channel_id=channel_id or "")
+    except Exception:
+        pass
+
+    # User-scoped RAG (shared knowledge types still included inside search)
+    if getattr(agent, "memory_hub", None) is not None:
+        memories = agent.memory_hub.search_semantic(user_message, user_id=internal_uid)
+    else:
+        memories = agent.long_memory.search(user_message, user_id=internal_uid)
     mentioned = agent._detect_mentioned_names(user_message)
     if username:
         person = agent.memory_hub.find_person(username, discord_id=discord_user_id)
@@ -100,6 +113,27 @@ async def prepare_turn(
         talk_vm = None if (vision_images and agent.llm_vision) else vision_images
         has_vis_prompt = bool(vision_images) and not caption_ok and agent.llm_vision is None
 
+    from core.agent.persona import should_inject_appearance
+    from core.agent.pre_context import build_pre_context, lane_wants_pre_context
+
+    include_appearance = should_inject_appearance(
+        agent.config,
+        user_message=user_message,
+        has_vision_images=bool(vision_images),
+    )
+
+    pre_context = build_pre_context(
+        agent,
+        internal_user_id=internal_uid,
+        user_message=user_message,
+    )
+    if pre_context:
+        logger.debug(
+            "PRE-CONTEXT собран (%s chars) lane=%s",
+            len(pre_context),
+            "on",
+        )
+
     brain_sys = agent._build_brain_system_prompt(
         extra_memories=memories,
         people_context_active=people_active,
@@ -111,6 +145,7 @@ async def prepare_turn(
         mcp_tools_catalog=mcp_catalog,
         last_image_context=last_img_ctx,
         working_memory_context=wm_snip,
+        pre_context=pre_context if lane_wants_pre_context(agent.config, "brain") else "",
     )
 
     return TurnPrep(
@@ -133,5 +168,7 @@ async def prepare_turn(
         attached_caption=attached_caption,
         talk_vm=talk_vm,
         has_vis_prompt=has_vis_prompt,
+        include_appearance=include_appearance,
+        pre_context=pre_context if lane_wants_pre_context(agent.config, "talk") else "",
         brain_sys=brain_sys,
     )

@@ -112,9 +112,10 @@ def load_plugin_settings() -> dict:
 
 def run_plugin(ctx: PluginContext) -> None:
     local = load_plugin_settings()
-    global_voice = (ctx.config.get("voice_cloud") or {}).get("stt") or {}
+    voice = ctx.config.get("voice") or {}
+    cloud_stt = ((voice.get("cloud") or {}).get("stt") or {})
     # Example: plugin override for a custom STT endpoint
-    endpoint = local.get("custom_stt_url") or global_voice.get("base_url")
+    endpoint = local.get("custom_stt_url") or (cloud_stt.get("deepgram") or {}).get("base_url")
     ...
 ```
 

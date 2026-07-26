@@ -20,8 +20,16 @@ from mcp.server.fastmcp import FastMCP
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_API_BASE = "http://127.0.0.1:8787"
 
+# Key leaf names that must never appear in MCP config dumps
+_SECRET_KEY_RE = re.compile(
+    r"(?i)^(api[_-]?key|.*_api_key|token|.*_token|secret|.*_secret|password|"
+    r"authorization|api_hash|private_key|credentials?|client_secret|access_key)$"
+)
 _SECRET_LINE = re.compile(
-    r"(?i)^([\s#>-]*[\"']?(?:[\w]+\.)*(?:api_key|token|secret|password|authorization)[\"']?\s*:)(.+)$"
+    r"(?i)^([\s#>-]*[\"']?(?:[\w]+\.)*"
+    r"(?:api_key|.*_api_key|token|.*_token|secret|.*_secret|password|authorization|"
+    r"api_hash|private_key|credentials?|client_secret|access_key|hf_token)"
+    r"[\"']?\s*:)(.+)$"
 )
 
 
@@ -96,11 +104,19 @@ def _tail_lines(path: Path, lines: int) -> str:
 def _redact_config_yaml(text: str) -> str:
     out_lines: list[str] = []
     for line in text.splitlines():
-        m = _SECRET_LINE.match(line.rstrip("\n"))
+        raw = line.rstrip("\n")
+        m = _SECRET_LINE.match(raw)
         if m:
             out_lines.append(f"{m.group(1)} <redacted>")
-        else:
-            out_lines.append(line)
+            continue
+        # Fallback: key: value where key leaf looks secret
+        km = re.match(r"^(\s*[\"']?([\w.\-]+)[\"']?\s*:)(.*)$", raw)
+        if km:
+            leaf = km.group(2).split(".")[-1]
+            if _SECRET_KEY_RE.match(leaf) and km.group(3).strip():
+                out_lines.append(f"{km.group(1)} <redacted>")
+                continue
+        out_lines.append(line)
     return "\n".join(out_lines)
 
 

@@ -24,6 +24,7 @@ async def finalize_successful_turn(
     saved_facts: list[str],
     source: str = "chat",
     stm_trimmed: bool = False,
+    extra_meta: Optional[dict] = None,
 ) -> dict:
     """Update STM, Hub chat_log, LTM, diaries/jobs, and Event Bus. Returns metadata dict."""
     spoken_user = agent._format_spoken_user_message(user_message, speaker_label)
@@ -35,6 +36,8 @@ async def finalize_successful_turn(
         "discord_id": discord_user_id or "",
         "user_id": internal_uid,
     }
+    if isinstance(extra_meta, dict) and extra_meta:
+        metadata.update(extra_meta)
     await agent._append_turn_to_chat_log(
         user_text=spoken_user,
         assistant_text=clean_text,

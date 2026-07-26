@@ -148,7 +148,7 @@ docker compose up --build
 
 - `README.md` — публичный обзор (EN).
 - `README-RU.md` — публичный обзор (RU).
-- `PLAN.md` — дорожная карта (если ведёте в репозитории).
+- `PLAN.md` — дорожная карта: закрыты Hub/core + точечные улучшения агента/голоса; активный фокус — Web UI WS-мост, затем автономный сервер/колонка.
 - `docs/en/README.md` / `docs/ru/README.md` — индекс документации (архитектура, настройка, API, эксплуатация, плагины, MCP, Web UI).
 - **Как писать плагины** — [HELP-RU.md](interfaces/000EXAMPLE/HELP-RU.md), [HELP.md](interfaces/000EXAMPLE/HELP.md).
 

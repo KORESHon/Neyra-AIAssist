@@ -177,10 +177,16 @@ class MemoryHub:
             newest_first=newest_first,
         )
 
-    def search_semantic(self, query: str, n_results: Optional[int] = None) -> list[str]:
+    def search_semantic(
+        self,
+        query: str,
+        n_results: Optional[int] = None,
+        *,
+        user_id: Optional[str] = None,
+    ) -> list[str]:
         if not getattr(self.semantic, "rag_enabled", True):
             return []
-        return self.semantic.search(query, n_results=n_results)
+        return self.semantic.search(query, n_results=n_results, user_id=user_id)
 
     def remember_knowledge(
         self, text: str, metadata: Optional[dict[str, Any]] = None
@@ -476,14 +482,18 @@ class MemoryHub:
     def diary_recent_text(self, limit: int = 10) -> str:
         """Diary for prompt: formatted directly from SQLite rows (Hub is the sole diary store)."""
         lim = max(1, int(limit))
-        rows = self.list_diary_notes(limit=lim, newest_first=True)
+        # Fetch extra so filtering session_archive (cross-user / ops) still fills the prompt budget.
+        rows = self.list_diary_notes(limit=max(lim * 3, lim), newest_first=True)
         if not rows:
             return ""
         rows = list(reversed(rows))
         lines: list[str] = []
         for e in rows:
             ts = e.get("ts") or ""
-            src = e.get("source") or "manual"
+            src = str(e.get("source") or "manual").strip()
+            # session_archive notes are process-global; keep out of PRE-CONTEXT / brain diary block.
+            if src == "session_archive":
+                continue
             txt = str(e.get("text") or "").strip()
             if not txt:
                 continue
@@ -492,6 +502,8 @@ class MemoryHub:
                 emo = str(e["meta"].get("emotion") or e["meta"].get("assistant_mood") or "").strip()
             suf = f" | настр.: {emo}" if emo else ""
             lines.append(f"[{ts} | {src}{suf}] {txt}")
+            if len(lines) >= lim:
+                break
         return "\n".join(lines)
 
     def working_memory_for_prompt(

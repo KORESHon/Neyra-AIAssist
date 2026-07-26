@@ -10,10 +10,11 @@
 `config.yaml` содержит только базовый runtime-конфиг ядра.
 
 ## Key sections
-- `assistant`
+- `assistant` — `name`, `persona_path` / `appearance_path` (persona pack), `system_prompt` fallback
+- `agent.fast_path` — regex allowlist for home commands (off by default; publishes `home.*`; multi-client e2e → plan stage 2)
 - `BACKEND`, `openrouter`, `llm` — per-role nested blocks: **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** (VL + vision pipeline; no top-level **`vision:`**).
-- `memory`
-- `voice_cloud`
+- `memory` — Hub/RAG; optional `pre_context`; optional `session_archive` (STM archive on overflow/reset; off by default)
+- `voice` — per modality: `stt` / `tts` each with `prefer` + `local`/`cloud`.`enable` (soft ERROR if unset; legacy `voice_cloud` / `is_local` still normalized). Cloud STT: `provider` = `deepgram` | `groq` | `openrouter` (Whisper via `POST …/audio/transcriptions`, same `OPENROUTER_API_KEY`, optional `upload_mode`: `multipart`|`json`).
 - `health_monitor`
 - `backup`, `external_storage`
 - `logging`

@@ -29,7 +29,7 @@
 | **Гиппокамп** | `memory_model` → `nvidia/nemotron-3-super-120b-a12b:free` | LTM / WM / рефлексия / emotional layer |
 | **Talk** | `talk_model` → `qwen/qwen3-235b-a22b-2507` | Финальный ответ пользователю |
 
-**Зрение:** `use_brain_model_for_vision: true` — картинки в brain (Nemotron); `false` — VL-caption через `vision_model`.  
+**Зрение:** `use_brain_model_for_vision: true` — картинки в brain (Nemotron); `false` — VL-caption через `vision_model`. Live-проверка картинки — smoke при работе над UI/клиентами (не блокер закрытия прошлых этапов).  
 **Rate limit:** `memory_model` — retry с backoff на 429/timeout.
 
 ---
@@ -38,16 +38,25 @@
 
 | Область | Состояние |
 |---------|-----------|
-| **Этап 1** (Memory Hub + layout + refactor) | ✅ в `main` — PR [#1](https://github.com/KORESHon/Neyra-AIAssist/pull/1), [#6](https://github.com/KORESHon/Neyra-AIAssist/pull/6), [#7](https://github.com/KORESHon/Neyra-AIAssist/pull/7) |
-| **Память** | Hub SQLite = source of truth; Chroma = semantic index; `rag_write_mode=important_only`; STM=10 |
-| **Ядро** | `core/neyra.py` (~700 строк) + пакеты `agent/` `memory/` `llm/` `plugins/` `reflection/` `runtime/` `tools/` `voice/`; flat shims сняты |
-| **Канон импорта** | `from core.neyra import NeyraAgent` (lazy re-export: `from core.agent import NeyraAgent`) |
+| **Закрытые этапы (архив)** | **ex-1** Memory Hub + layout/refactor · **ex-2** persona/pre_context/archive/security/fast_path/OpenRouter STT — в `main` после merge [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) (+ [#1](https://github.com/KORESHon/Neyra-AIAssist/pull/1), [#6](https://github.com/KORESHon/Neyra-AIAssist/pull/6), [#7](https://github.com/KORESHon/Neyra-AIAssist/pull/7)) |
+| **Память** | Hub SQLite = source of truth; Chroma = semantic index; `rag_write_mode=important_only`; STM=10; scoped RAG; session_archive |
+| **Ядро** | `core/neyra.py` + пакеты `agent/` `memory/` `llm/` `plugins/` `reflection/` `runtime/` `tools/` `voice/` |
+| **Голос** | `voice.stt`/`voice.tts` modality + soft ERROR; STT: local / Deepgram / Groq / **OpenRouter Whisper** |
+| **Агент** | persona/appearance packs; optional PRE-CONTEXT; Fast-Path `home.*` (сервер); security-model |
 | **Интерфейсы** | Discord resident + Internal API (`:8787`) + dashboard; MCP debug-server |
 | **ADR** | [0001](docs/adr/0001-memory-hub-v2.md) Hub · [0002](docs/adr/0002-core-layout-1b.md) layout · [0003](docs/adr/0003-core-refactor-1r.md) refactor |
-| **Активный фокус** | **Этап 2** — точечные улучшения |
+| **Активный фокус** | **Этап 1** — Web UI как WebSocket-мост к Event Bus |
 
 **Windows runtime:** `.venv_win` + `run_neyra.bat` → `scripts/neyra_win_launcher.ps1`.  
 **Linux/WSL:** `run_neyra.sh` (`*.sh` → LF via `.gitattributes`); venv `.venv` или `~/neyra-venv` на `/mnt`.
+
+### Архив: что уже сделано (кратко)
+
+**ex-Этап 1 — Memory Hub + реорганизация `core/`** ✅  
+Hub SQLite (chat_log / people / diary / journal / WM), Chroma как индекс, cutover без legacy-импорта; пакетная раскладка `core/`; оркестратор `core/neyra.py`. ADR-0001…0003. PR #1 / #6 / #7.
+
+**ex-Этап 2 — Точечные улучшения** ✅ (merge PR #10)  
+Persona/appearance; PRE-CONTEXT (user-scoped WM); session archive (scoped `chat_log`); security pass (scoped RAG, MCP redact, ContextVar turn-scope); voice modality + OpenRouter Whisper STT; Fast-Path allowlist → `home.*` (сервер; multi-client/колонка → текущий этап 2). Discord/MCP smokes закрыты. Vision live-картинка — optional smoke ниже.
 
 ---
 
@@ -55,114 +64,37 @@
 
 | # | Этап | Статус |
 |---|------|--------|
-| **1** | Memory Hub v2 + реорганизация `core/` (фазы 1A → 1B → 1R) | ✅ done |
-| **2** | Точечные улучшения (персона, pre-context, безопасность, Fast-Path, архив сессии) | ▶ **активный** |
-| **3** | Web UI как WebSocket-мост к Event Bus | очередь |
-| **4** | Автономный сервер + тонкие клиенты / колонка | дальнее будущее |
+| **ex-1 / ex-2** | Hub + core layout/refactor + точечные улучшения агента/голоса | ✅ done (архив выше) |
+| **1** | Web UI как WebSocket-мост к Event Bus | ▶ **активный** |
+| **2** | Автономный сервер + тонкие клиенты / колонка | очередь |
 
 ---
 
-## Этап 1 — Memory Hub + реорганизация `core/` ✅
-
-**Итог:** один Memory API (Hub), SQLite как истина, Chroma как индекс; `core/` читается по пакетам; оркестратор — `core/neyra.py`.
-
-### Фазы (архив)
-
-| Фаза | Фокус | Merge |
-|------|--------|-------|
-| **1A — Memory Hub** | SQLite Hub, chat_log, people/diary/journal/WM, cutover без legacy-импорта | [PR #1](https://github.com/KORESHon/Neyra-AIAssist/pull/1) · ADR-0001 |
-| **1B — Core layout** | пакеты `plugins` / `llm` / `runtime` / `voice` / `memory.stores` | [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6) · ADR-0002 |
-| **1R — Core refactor** | split монолитов, снятие shims, полки `core/agent/*` | [PR #7](https://github.com/KORESHon/Neyra-AIAssist/pull/7) · ADR-0003 · `1b873d0` |
-
-### Модель памяти (действующая)
-
-| Роль | Где |
-|------|-----|
-| Диалог (полный chat log) | SQLite |
-| People / diary / journal / WM | SQLite |
-| Semantic recall | Chroma (`metadata.type`, без raw full-chat embed) |
-| STM | RAM / окно из chat_log (`stm_max_messages`) |
-| Персона | `assistant.system_prompt` / файлы промпта — не в диалоговой памяти |
-
-**Правило:** каждый ход → SQLite `chat_log`; в Chroma — только осмысленное по `rag_write_mode`. Промпт talk/brain читает people / diary / WM **только через Hub**.
-
-### Раскладка `core/` (факт)
-
-```
-core/
-  __init__.py
-  neyra.py          # NeyraAgent
-  agent/            # shelves: chat, chat_stream, turn_*, reply_*, bootstrap, …
-  memory/ llm/ plugins/ reflection/ runtime/ tools/ voice/
-```
-
-### Конфиг памяти (ключи)
-
-`memory.sqlite_path`, `chroma_db_path`, `rag_enabled`, `rag_top_k`, `rag_write_mode` (`off` \| `digest` \| `important_only`), `chat_log_retention_days`, `stm_max_messages`, `working_memory.*`, `emotional_layer.*`.
-
-Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) **удалены** — см. ADR-0001.
-
-### Event Bus (память)
-
-| Событие | Когда |
-|---------|--------|
-| `memory.chat_log_append` | запись хода в chat_log |
-| `memory.short_term_update` | STM |
-| `memory.long_term_write` | semantic / digest (не путать с chat_log) |
-| `memory.journal_updated` / `memory.working_memory_updated` | после Hub write |
-
-### Приёмка этапа 1 (закрыта)
-
-- [x] Hub-only people/diary/journal/WM + chat_log; smoke + live MCP
-- [x] `/v1/memory/*`, `/v1/debug/memory`, MCP inspect
-- [x] Backup `.db` (+ wal/shm) + Chroma
-- [x] Layout + refactor; Discord UX + WS `chat_stream` 2026-07-25
-- [x] Fast-Path умного дома — **перенесён в этап 2** (не блокер 1)
-
----
-
-## Этап 2 — Дополнительные улучшения ▶
-
-Сделать по мере необходимости; можно распараллелить. После этапа 1 — следующий рабочий фокус.
-
-### Задачи
-
-- **Pre-context «мысли»:** короткий релевантный блок из дневника/Hub перед ответом (поверх semantic RAG + people).
-- **Персона в двух артефактах:** «база личности» и «внешность / визуал»; редактируемые файлы рядом с `assistant.system_prompt`.
-- **Контролируемое архивирование сессии:** при переполнении контекста — явная политика дампа в Hub (diary/LTM digest) и «чистый» старт.
-- **Сверка практик безопасности:** секреты, смешение данных между людьми — с `security-model.md` и доками деплоя.
-- **Fast-Path (умный дом):** лёгкий intent/regex до brain → `home.*` / tool; конфиг-ориентир `agent.fast_path_*` / `fast_path.*`; семантический RAG не обязателен. Edge-часть — с колонкой (этап 4).
-
-### Чек-лист регрессии (двухполушарный режим)
-
-- [ ] `use_brain_model_for_vision: true` — вложение в Nemotron (brain), talk на сводке.
-- [ ] `use_brain_model_for_vision: false` — caption через `vision_model`, затем brain/talk.
-- [ ] Запрос на код / плагин — brain вызывает `delegate_to_deep_logic`.
-- [ ] 429 на `memory_model` — backoff в логе, ядро не падает.
-
----
-
-## Этап 3 — Web UI как WebSocket-мост к Event Bus
+## Этап 1 — Web UI как WebSocket-мост к Event Bus ▶
 
 **Зачем до автономии:** UI тестируется на текущем сервере (Discord/API уже есть); колонки как железа пока нет.
 
-**Цель:** браузер = real-time клиент шины — тот же класс тонких клиентов, что позже у колонки (этап 4).
+**Цель:** браузер = real-time клиент шины — тот же класс тонких клиентов, что позже у колонки (этап 2).
 
 - Двусторонний WS-мост `Web UI ↔ Event Bus`.
 - Публикация событий (чат, музыка, плагины) + подписка на stream/статусы.
 - Задел под edge/desktop/mobile: тот же WSS-контракт (аудио / текст / события).
+- Дашборд (`frontend/`) — развивать как тонкий клиент, не дублируя оркестрацию ядра.
 
 **Критерии приёмки:**
 
 - [ ] CLI не обязателен для повседневной эксплуатации.
 - [ ] UI реагирует на операции и события в real-time.
-- [ ] Контракт WS задокументирован для переиспользования в этапе 4.
+- [ ] Контракт WS задокументирован для переиспользования в этапе 2.
+- [ ] (опц.) Vision smoke: картинка в Discord / UI при `use_brain_model_for_vision` true/false.
+
+**Правила:** не ломать Hub / Event Bus без ADR; не тащить self-host voice stack сюда (этап 2). После slice: `compileall` + healthcheck; при касании агента — MCP `/v1/chat` или Discord.
 
 ---
 
-## Этап 4 — Автономный сервер + тонкие клиенты
+## Этап 2 — Автономный сервер + тонкие клиенты
 
-**Ориентир:** после зелёного WS-моста (этап 3). Нет стабильного стенда колонки для приёмки.
+**Ориентир:** после зелёного WS-моста (этап 1). Нет стабильного стенда колонки для приёмки.
 
 Neyra = **один сервер**; колонка / телефон / Web UI = micro-client.
 
@@ -170,7 +102,7 @@ Neyra = **один сервер**; колонка / телефон / Web UI = mi
 |------|------|
 | **Neyra Server** | ядро, Hub, LLM, STT/TTS (local или cloud), tools, Event Bus |
 | **Колонка / edge** | mic/speaker, wake-word; Fast-Path света/сцен локально |
-| **Телефон / Web UI** | тонкий клиент по WSS (контракт этапа 3) |
+| **Телефон / Web UI** | тонкий клиент по WSS (контракт этапа 1) |
 
 ### LLM
 
@@ -180,13 +112,13 @@ Neyra = **один сервер**; колонка / телефон / Web UI = mi
 
 ### Voice (переключаемые STT / TTS)
 
-Один конфиг-переключатель на роль (`stt.provider` / `tts.provider` / `voice.*`):
+Один конфиг-переключатель на роль (`voice.stt` / `voice.tts` modality уже в ядре):
 
 | Режим | STT | TTS |
 |-------|-----|-----|
 | **Local** | Whisper / faster-whisper | CosyVoice / Silero / Piper |
-| **Cloud** | Deepgram, Yandex SpeechKit, … | те же экосистемы |
-| **Фундамент** | OpenRouter audio/ASR (напр. Nemotron) | по мере появления слота |
+| **Cloud** | Deepgram, Groq, Yandex SpeechKit, … | те же экосистемы |
+| **Фундамент** | OpenRouter `/audio/transcriptions` (Whisper turbo — уже в коде); live mic — отдельные live-провайдеры | слот провайдера без ломки агента |
 
 Cloud и local — равноправны. Колонка шлёт аудио на сервер; backend выбирается конфигом.
 
@@ -195,14 +127,23 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 - Hub + Chroma только на сервере.
 - Опционально: sqlite-vss через адаптер `search_semantic` (без ломки агента).
 
+### Fast-Path / умный дом (продолжение серверного allowlist)
+
+Серверный allowlist + `home.*` уже в коде. Здесь — e2e с реальными клиентами:
+
+- [ ] Колонка / телефон / desktop home-клиент шлёт короткие команды → Fast-Path без полного brain.
+- [ ] Изоляция «ещё раз» между разными клиентами/аккаунтами (не только MCP uid).
+- [ ] Consumer `home.*` (свет/сцены) подключён к железу или mock-плагину.
+
 ### Критерии приёмки (черновик)
 
 - [ ] STT/TTS: local ↔ cloud только конфигом.
-- [ ] Слот STT через OpenRouter задокументирован или работает.
+- [ ] Слот STT через OpenRouter задокументирован или работает (база уже есть).
 - [ ] Профиль LLM local/custom **или** полный прогон на OpenRouter — оба в example config.
 - [ ] Self-host: LLM + STT + TTS без внешних API (при наличии железа); слабый сервер — через cloud.
 - [ ] Edge «включи свет» без LLM; сложный запрос — WSS → сервер (когда появится клиент).
 - [ ] В колонку не требуется полный репозиторий Neyra.
+- [ ] (опц.) Vision smoke на клиенте/колонке.
 
 ### Docker / launcher
 
@@ -227,8 +168,9 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 
 - e2e Discord text (+ music при поднятом Lavalink)
 - Memory Hub: chat_log → recall; semantic by `type`; people/diary/journal
-- WS bridge pub/sub (этап 3)
+- WS bridge pub/sub (этап 1)
 - MCP debug + runtime MCP client
+- `scripts/test_stage2_security_offline.py` (scoped archive / ContextVar / 429)
 
 ---
 
@@ -236,6 +178,7 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 
 - `python -m compileall -q core interfaces scripts main.py` (из `.venv_win` на Windows)
 - `python scripts/test_memory_hub_smoke.py` + `test_memory_cutover_offline.py`
+- `python scripts/test_stage2_security_offline.py`
 - `python scripts/healthcheck.py --mode core --skip-http`
 - Frontend: `cd frontend && npm run build` (если трогали UI)
 - Lavalink JAR: `python scripts/fetch_lavalink.py` (если музыка)
@@ -250,13 +193,13 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 - **Fast-Path** ложно срабатывает → порог уверенности + fallback в brain; allowlist интентов.
 - **MCP** расширяет атакующую поверхность → allowlist серверов, sandbox, аудит.
 - **Hot-reload** оставляет грязные подписки → lifecycle hooks + очистка listeners.
-- **Hub / Event Bus** — контракты не ломать без ADR (этап 1 закрыт; регрессии ловить smokes).
+- **Hub / Event Bus** — контракты не ломать без ADR; регрессии ловить smokes.
 
 ---
 
 ## 7.5) Баг-трекер / известные дефекты
 
-*Исторический срез логов 2026-05; пути обновлены под раскладку 1R. Пересмотреть при следующем стресс-прогоне.*
+*Исторический срез логов 2026-05; пути обновлены под раскладку core. Пересмотреть при следующем стресс-прогоне.*
 
 | ID | Суть | Статус | Зона / направление |
 |----|------|--------|---------------------|
@@ -267,6 +210,7 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 | **BUG-005** | Discord Gateway reconnect | ⚠️ monitor | сеть / VPN / firewall |
 | **BUG-006** | `music.play` failed | ❌ open | санитизация query, Soundcloud; нужен Lavalink |
 | **BUG-007** | Частые перезапуски ядра | ❌ open | exit-код / Event Log / repro |
+| **BUG-008** | Legacy Chroma docs без `user_id` не попадают в scoped search | ⚠️ watch | переиндексация / backfill metadata; post-filter уже пропускает ambiguous dialog |
 
 **Не баг:** `davey is not installed` (voice Discord); periodic Health monitor OK.
 
@@ -294,8 +238,8 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 ## 8) Backlog (дальний горизонт)
 
 - Интеграция с Obsidian — экспорт из Hub в vault `.md` (MCP или CLI).
-- Повторная полировка репо / доков / fallback / логов после этапа 2+.
 - Клиенты desktop / mobile-lite — [Google Docs ТЗ](https://docs.google.com/document/d/10wjeJefCRuF1ujJ0bWCwKw2tB9BwjV2ejqqd1f-vMhg/edit?tab=t.0).
 - Standalone `.exe` / server-core + lightweight clients.
 - Настройка LLM из Web UI (модель, system prompt) — после hot-reload.
 - Device-mode (AI station), open-core расширения, публичный demo/BYOK.
+- Live mic ASR / realtime WebSocket STT (не file/clip OpenRouter).

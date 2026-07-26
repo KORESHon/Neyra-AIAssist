@@ -205,8 +205,11 @@ class ChatRequest(BaseModel):
 
 
 class MemorySearchRequest(BaseModel):
+    """Semantic RAG search. Requires user_id (dialogs scoped; shared knowledge still included)."""
+
     query: str = Field(min_length=1, max_length=1200)
     top_k: int = Field(default=3, ge=1, le=20)
+    user_id: Optional[str] = Field(default=None, max_length=120)
 
 
 class MemoryRecallRequest(BaseModel):
@@ -273,6 +276,13 @@ class LifecycleDebugRequest(BaseModel):
     """POST /v1/debug/lifecycle — завершение процесса (Docker/Orchestrator поднимает снова при restart policy)."""
 
     action: Literal["stop", "restart"]
+
+
+class ResetContextDebugRequest(BaseModel):
+    """POST /v1/debug/reset_context — archive STM (session_archive) then clear short memory."""
+
+    user_id: str = Field(..., min_length=1, max_length=120)
+    channel_id: Optional[str] = Field(default=None, max_length=120)
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -668,12 +678,19 @@ def build_app(
     @app.post("/v1/memory/search")
     async def v1_memory_search(body: MemorySearchRequest, request: Request, _: None = Depends(dep_viewer)):
         trace_id = _trace_id(request)
+        uid = (body.user_id or "").strip() or None
+        if not uid:
+            raise ApiError(
+                "memory_search_user_required",
+                "Provide user_id; unfiltered semantic search is not allowed",
+                400,
+            )
         hub = getattr(agent, "memory_hub", None)
         if hub is not None:
-            rows = hub.search_semantic(body.query, n_results=body.top_k)
+            rows = hub.search_semantic(body.query, n_results=body.top_k, user_id=uid)
         else:
-            rows = agent.long_memory.search(body.query, n_results=body.top_k)
-        return {"ok": True, "trace_id": trace_id, "data": {"results": rows}}
+            rows = agent.long_memory.search(body.query, n_results=body.top_k, user_id=uid)
+        return {"ok": True, "trace_id": trace_id, "data": {"results": rows, "user_id": uid}}
 
     @app.post("/v1/memory/chat/recall")
     async def v1_memory_chat_recall(body: MemoryRecallRequest, request: Request, _: None = Depends(dep_viewer)):
@@ -822,6 +839,43 @@ def build_app(
         )
         _schedule_exit_after_response()
         return {"ok": True, "trace_id": trace_id, "data": {"action": body.action, "note": note}}
+
+    @app.post("/v1/debug/reset_context")
+    async def v1_debug_reset_context(
+        body: ResetContextDebugRequest,
+        request: Request,
+        api_role: str = Depends(dep_admin),
+    ):
+        """Stage 2C smoke / ops: run session_archive(manual_reset) then clear STM."""
+        trace_id = _trace_id(request)
+        uid = (body.user_id or "").strip()
+        if not uid:
+            raise ApiError(
+                "reset_context_user_required",
+                "Provide non-empty user_id (scoped archive requires owner)",
+                400,
+            )
+        cid = (body.channel_id or "").strip() or None
+        before = len(agent.short_memory)
+        arch = await agent.reset_context_async(cid, user_id=uid)
+        if not isinstance(arch, dict):
+            arch = {}
+        after = len(agent.short_memory)
+        data = {
+            "stm_before": before,
+            "stm_after": after,
+            "user_id": uid,
+            "channel_id": cid,
+            "ran": bool(arch.get("ran")),
+            "history_source": str(arch.get("history_source") or ""),
+            "diary_written": bool(arch.get("diary_written")),
+            "ltm_digest_written": bool(arch.get("ltm_digest_written")),
+            "archive_reason": str(arch.get("reason") or "manual_reset"),
+            "archive_messages": int(arch.get("messages") or 0),
+            "archive_chars": int(arch.get("chars") or 0),
+        }
+        _audit("debug_reset_context", trace_id, api_role, data)
+        return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/debug/memory")
     async def v1_debug_memory(request: Request, _: None = Depends(dep_viewer)):

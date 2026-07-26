@@ -27,6 +27,7 @@ def build_talk_system_prompt(
     brain_router_context: str = "",
     attached_image_caption: str = "",
     working_memory_context: str = "",
+    pre_context: str = "",
 ) -> str:
     """Assemble talk-lane system prompt. Order: role → active → mentioned → rules → RAG → rest."""
     from core.llm.profile import is_local_openai_compatible_provider
@@ -43,6 +44,8 @@ def build_talk_system_prompt(
     )
 
     sections: list[str] = [base_prompt + hw_note + time_only]
+    if (pre_context or "").strip():
+        sections.append("\n" + pre_context.strip())
 
     active_lines: list[str] = []
     if username:
@@ -187,6 +190,7 @@ def build_talk_system_prompt(
 
 def build_brain_system_prompt(
     *,
+    identity_snippet: str = "",
     extra_memories: Optional[list[str]] = None,
     people_context_active: str = "",
     people_context_mentioned: str = "",
@@ -197,15 +201,20 @@ def build_brain_system_prompt(
     mcp_tools_catalog: str = "",
     last_image_context: Optional[str] = None,
     working_memory_context: str = "",
+    pre_context: str = "",
 ) -> str:
-    """Compact brain-lane system prompt: tools/facts, no talk personality."""
+    """Compact brain-lane system prompt: tools/facts + optional identity snippet."""
     lines: list[str] = [
         "Ты служебный маршрутизатор (brain) ассистента Нейра.",
-        "Не имитируй финальный ответ пользователю и не включай личность Нейры.",
+        "Не имитируй финальный ответ пользователю и не копируй разговорный стиль talk-модели.",
         "Если доступны инструменты — вызывай их через tool_calls, когда это нужно для фактов.",
         "Когда данных достаточно или инструменты не нужны — выдай сжатое резюме для следующей модели (talk): "
         "факты, результаты инструментов, намерение пользователя; по-русски; без приветствий и без тегов мышления.",
     ]
+    if (identity_snippet or "").strip():
+        lines.append(identity_snippet.strip())
+    if (pre_context or "").strip():
+        lines.append(pre_context.strip())
     if username:
         lines.append(f"Текущий собеседник в подписи сообщений: {username}.")
     if people_context_active:

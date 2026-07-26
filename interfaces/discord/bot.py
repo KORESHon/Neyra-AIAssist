@@ -515,7 +515,19 @@ class NeyraDiscordBot(discord.Client):
     async def setup_hook(self) -> None:
         @self.tree.command(name="reset", description="Сбросить краткую память диалога")
         async def slash_reset(interaction: discord.Interaction):
-            self.agent.reset_context(str(interaction.channel_id))
+            uid = ""
+            try:
+                uid = self.agent._resolve_internal_user_id(
+                    str(interaction.user.id),
+                    getattr(interaction.user, "display_name", None)
+                    or getattr(interaction.user, "name", None),
+                )
+            except Exception:
+                uid = str(interaction.user.id)
+            await self.agent.reset_context_async(
+                str(interaction.channel_id),
+                user_id=uid,
+            )
             await interaction.response.send_message("Память сброшена.", ephemeral=True)
 
         @self.tree.command(name="time", description="Текущие дата и время")
