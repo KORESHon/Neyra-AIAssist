@@ -281,7 +281,7 @@ class LifecycleDebugRequest(BaseModel):
 class ResetContextDebugRequest(BaseModel):
     """POST /v1/debug/reset_context — archive STM (session_archive) then clear short memory."""
 
-    user_id: str = Field(default="", max_length=120)
+    user_id: str = Field(..., min_length=1, max_length=120)
     channel_id: Optional[str] = Field(default=None, max_length=120)
 
 
@@ -849,26 +849,33 @@ def build_app(
         """Stage 2C smoke / ops: run session_archive(manual_reset) then clear STM."""
         trace_id = _trace_id(request)
         uid = (body.user_id or "").strip()
+        if not uid:
+            raise ApiError(
+                "reset_context_user_required",
+                "Provide non-empty user_id (scoped archive requires owner)",
+                400,
+            )
         cid = (body.channel_id or "").strip() or None
         before = len(agent.short_memory)
-        await agent.reset_context_async(cid, user_id=uid)
+        arch = await agent.reset_context_async(cid, user_id=uid)
+        if not isinstance(arch, dict):
+            arch = {}
         after = len(agent.short_memory)
-        _audit(
-            "debug_reset_context",
-            trace_id,
-            api_role,
-            {"user_id": uid, "channel_id": cid, "stm_before": before, "stm_after": after},
-        )
-        return {
-            "ok": True,
-            "trace_id": trace_id,
-            "data": {
-                "stm_before": before,
-                "stm_after": after,
-                "user_id": uid,
-                "channel_id": cid,
-            },
+        data = {
+            "stm_before": before,
+            "stm_after": after,
+            "user_id": uid,
+            "channel_id": cid,
+            "ran": bool(arch.get("ran")),
+            "history_source": str(arch.get("history_source") or ""),
+            "diary_written": bool(arch.get("diary_written")),
+            "ltm_digest_written": bool(arch.get("ltm_digest_written")),
+            "archive_reason": str(arch.get("reason") or "manual_reset"),
+            "archive_messages": int(arch.get("messages") or 0),
+            "archive_chars": int(arch.get("chars") or 0),
         }
+        _audit("debug_reset_context", trace_id, api_role, data)
+        return {"ok": True, "trace_id": trace_id, "data": data}
 
     @app.get("/v1/debug/memory")
     async def v1_debug_memory(request: Request, _: None = Depends(dep_viewer)):

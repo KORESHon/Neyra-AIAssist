@@ -208,12 +208,44 @@ def _test_diary_prompt_skips_session_archive() -> None:
     assert "ok note" in text
 
 
+def _test_memory_model_429_backoff() -> None:
+    from core.llm.retry import ainvoke_with_rate_limit_backoff, is_retryable_llm_error
+
+    assert is_retryable_llm_error(RuntimeError("HTTP 429 rate limit"))
+    assert not is_retryable_llm_error(RuntimeError("boom 500"))
+
+    class Flaky:
+        def __init__(self) -> None:
+            self.n = 0
+
+        async def ainvoke(self, messages):
+            self.n += 1
+            if self.n < 3:
+                raise RuntimeError("Error code: 429 - rate limit exceeded")
+            return "ok"
+
+    async def run() -> None:
+        llm = Flaky()
+        out = await ainvoke_with_rate_limit_backoff(
+            llm,
+            ["x"],
+            lane="memory_model",
+            max_attempts=5,
+            base_delay_seconds=0.01,
+            max_delay_seconds=0.05,
+        )
+        assert out == "ok" and llm.n == 3
+
+    asyncio.run(run())
+
+
 def main() -> int:
     _test_diary_digest_no_user_lines()
     _test_contextvar_isolation()
     _test_rag_postfilter_shared_only_knowledge()
     _test_scoped_archive_skips_foreign_stm()
     _test_diary_prompt_skips_session_archive()
+    _test_memory_model_429_backoff()
     print("stage2 security offline: OK")
     return 0
 

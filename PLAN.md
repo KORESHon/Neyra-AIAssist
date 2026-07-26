@@ -44,7 +44,7 @@
 | **Канон импорта** | `from core.neyra import NeyraAgent` (lazy re-export: `from core.agent import NeyraAgent`) |
 | **Интерфейсы** | Discord resident + Internal API (`:8787`) + dashboard; MCP debug-server |
 | **ADR** | [0001](docs/adr/0001-memory-hub-v2.md) Hub · [0002](docs/adr/0002-core-layout-1b.md) layout · [0003](docs/adr/0003-core-refactor-1r.md) refactor |
-| **Активный фокус** | **Этап 2** — Discord+MCP smoke ✅ в [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10); дальше vision/delegate/429 + merge |
+| **Активный фокус** | **Этап 2** — почти закрыт в [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10); осталось vision live + Auto Review clean → merge |
 
 **Windows runtime:** `.venv_win` + `run_neyra.bat` → `scripts/neyra_win_launcher.ps1`.  
 **Linux/WSL:** `run_neyra.sh` (`*.sh` → LF via `.gitattributes`); venv `.venv` или `~/neyra-venv` на `/mnt`.
@@ -139,11 +139,11 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 | **2D** | Security pass | ✅ MCP | search/recall без uid → 400; redact; log без ключей |
 | **2E** | Fast-Path умного дома | ✅ | серверный контур + Discord; multi-client / колонка → **этап 4** |
 | **2F** | OpenRouter Whisper STT (код провайдера) | ✅ | `STTEngine` → `/audio/transcriptions`; live clip OK |
-| **Reg** | Регрессия этапа 2 (vision / Discord / MCP) | 🟡 | Discord+MCP ✅; vision / delegate / 429 — остаток |
+| **Reg** | Регрессия этапа 2 (vision / Discord / MCP) | 🟡 | Discord+MCP+429 ✅; vision live (картинка) — остаток |
 
 **Осталось сделать (порядок рекомендуемый):**
 
-1. **Регрессия** — vision (`use_brain_model_for_vision` true/false) / `delegate_to_deep_logic` / 429.
+1. **Vision live** — вложение картинки Discord при `use_brain_model_for_vision` true/false.
 2. **Merge** PR #10 после Auto Review clean.
 
 ### Карта фаз
@@ -366,14 +366,15 @@ Legacy `voice.is_local` / flat `voice.stt` / `voice_cloud` ещё нормали
 
 ### Регрессия этапа 2 (прогон перед закрытием этапа)
 
-- [ ] `use_brain_model_for_vision: true` — вложение в Nemotron (brain), talk на сводке.
+- [ ] `use_brain_model_for_vision: true` — вложение в Nemotron (brain), talk на сводке (нужна картинка в Discord).
 - [ ] `use_brain_model_for_vision: false` — caption через `vision_model`, затем brain/talk.
-- [ ] Запрос на код / плагин — brain вызывает `delegate_to_deep_logic`.
-- [ ] 429 на `memory_model` — backoff в логе, ядро не падает.
-- [x] MCP `/v1/chat` без регрессий (persona + fast_path + reset_context).
+- [x] Запрос на код / плагин — brain tool-loop зовёт `create_or_edit_plugin` (live; coder model 404 внешний).
+- [x] 429 на `memory_model` — `ainvoke_with_rate_limit_backoff` unit (offline script); ядро не падает.
+- [x] MCP `/v1/chat` без регрессий (persona + fast_path + reset_context с archive fields).
 - [x] Discord text stream UI (persona + light + repeat + `/reset`, скрин 2026-07-26).
 - [x] STT: openrouter turbo на тестовом клипе (ключ есть); остальные engines path сохранены.
-- [x] Offline security: `scripts/test_stage2_security_offline.py` (scoped archive, ContextVar, diary filter).
+- [x] Offline security: `scripts/test_stage2_security_offline.py` (+ 429 backoff).
+- [x] `/v1/debug/reset_context` требует `user_id` и возвращает `ran` / `history_source` / diary/ltm flags.
 
 ### Вне scope этапа 2
 

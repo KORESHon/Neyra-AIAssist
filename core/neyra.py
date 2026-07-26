@@ -822,12 +822,25 @@ class NeyraAgent:
         channel_id: Optional[str] = None,
         *,
         user_id: str = "",
-    ) -> None:
-        """Archive STM (если session_archive.on_manual_reset) затем очистить память."""
+    ) -> dict:
+        """Archive STM (если session_archive.on_manual_reset) затем очистить память.
+
+        Returns the ``archive_session`` result dict (always a dict; soft-fails inside).
+        """
         from core.agent.session_archive import archive_session
 
+        arch: dict = {
+            "ran": False,
+            "reason": "manual_reset",
+            "chars": 0,
+            "messages": 0,
+            "diary_written": False,
+            "ltm_digest_written": False,
+            "stm_cleared": False,
+            "history_source": "",
+        }
         try:
-            await archive_session(
+            arch = await archive_session(
                 self,
                 reason="manual_reset",
                 user_id=user_id,
@@ -837,6 +850,7 @@ class NeyraAgent:
         except Exception as e:
             logger.warning("session_archive on reset failed (soft): %s", e)
         self.reset_context(channel_id)
+        return arch if isinstance(arch, dict) else {}
 
     def get_stats(self) -> dict:
         """Возвращает статистику агента."""
