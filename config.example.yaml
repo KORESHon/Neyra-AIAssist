@@ -65,6 +65,37 @@ assistant:
     Avoid harmful instructions.
 
 # ---------------------------
+# Agent runtime (Fast-Path, …) / Рантайм агента
+# ---------------------------
+agent:
+  # EN: Stage 2E — regex allowlist for unambiguous home commands (before brain). Off by default.
+  # RU: Этап 2E — allowlist однозначных команд умного дома до brain. Выкл. по умолчанию.
+  # EN: No consumer for home.* yet — event is published for future smart-home plugin.
+  # RU: Подписчика home.* пока нет — событие для будущего плагина умного дома.
+  fast_path:
+    enabled: false
+    min_confidence: 1.0
+    intents:
+      - name: light_off
+        patterns:
+          - '(?i)^\s*(выключи|погаси)\s+(свет|лампу)\s*[.!?]?\s*$'
+        event_type: home.light.turn_off
+        target: default_light
+        reply: "Выключаю свет."
+      - name: light_on
+        patterns:
+          - '(?i)^\s*(включи|зажги)\s+(свет|лампу)\s*[.!?]?\s*$'
+        event_type: home.light.turn_on
+        target: default_light
+        reply: "Включаю свет."
+      - name: repeat_last
+        patterns:
+          - '(?i)^\s*(ещ[её]\s+раз|то\s+же|повтори)\s*[.!?]?\s*$'
+        event_type: home.repeat_last
+        target: ""
+        reply: ""
+
+# ---------------------------
 # Model backend selector / Выбор модельного backend
 # ---------------------------
 # EN: LLM provider id (OpenAI-compatible). Same as llm.provider if the latter is omitted.

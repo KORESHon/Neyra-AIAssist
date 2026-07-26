@@ -29,6 +29,36 @@ async def iter_chat_stream(
     lyrics_marker: str,
 ) -> AsyncIterator[dict]:
     """Yield token/error/done chunks for streaming chat."""
+    try:
+        from core.agent.fast_path import try_handle_fast_path
+
+        fp = await try_handle_fast_path(
+            agent,
+            user_message=user_message,
+            username=username,
+            discord_user_id=discord_user_id,
+            channel_id=channel_id,
+            author_display_name=author_display_name,
+            vision_images=vision_images,
+            lyrics_marker=lyrics_marker,
+            source="chat_stream",
+        )
+        if fp is not None:
+            text = str(fp.get("text") or "")
+            if text:
+                yield {"type": "token", "text": text}
+            yield {
+                "type": "done",
+                "text": text,
+                "sounds": list(fp.get("sounds") or []),
+                "thoughts": "",
+                "raw": str(fp.get("raw") or text),
+                "fast_path": True,
+            }
+            return
+    except Exception as fp_e:
+        logger.warning("fast_path (stream) failed (soft, continue brain): %s", fp_e)
+
     prep = await prepare_turn(
         agent,
         user_message=user_message,

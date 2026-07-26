@@ -29,6 +29,25 @@ async def run_chat(
     lyrics_marker: str,
 ) -> dict:
     """Run one non-streaming chat turn; return text/sounds/thoughts/raw."""
+    try:
+        from core.agent.fast_path import try_handle_fast_path
+
+        fp = await try_handle_fast_path(
+            agent,
+            user_message=user_message,
+            username=username,
+            discord_user_id=discord_user_id,
+            channel_id=channel_id,
+            author_display_name=author_display_name,
+            vision_images=vision_images,
+            lyrics_marker=lyrics_marker,
+            source="chat",
+        )
+        if fp is not None:
+            return fp
+    except Exception as fp_e:
+        logger.warning("fast_path failed (soft, continue brain): %s", fp_e)
+
     prep = await prepare_turn(
         agent,
         user_message=user_message,

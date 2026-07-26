@@ -11,6 +11,7 @@
 
 ## Ключевые секции
 - `assistant` — `name`, `persona_path` / `appearance_path` (этап 2A), `system_prompt` как fallback
+- `agent.fast_path` — этап 2E allowlist команд умного дома (выкл. по умолчанию; публикует `home.*`)
 - `BACKEND`, `openrouter`, `llm` — модели и лимиты по ролям: вложенные **`talk_model`**, **`brain_model`**, **`memory_model`**, **`vision_model`** (VL и пайплайн зрения в одном блоке; корневого **`vision:`** больше нет).
 - `memory` — этап 2B `pre_context`; этап 2C `session_archive` (архив STM при overflow/reset; выкл. по умолчанию)
 - `voice` — по модальностям: `stt` / `tts` с `prefer` + `local`/`cloud`.`enable` (soft ERROR если не настроено; legacy `voice_cloud` / `is_local` ещё нормализуются)

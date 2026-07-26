@@ -44,7 +44,7 @@
 | **Канон импорта** | `from core.neyra import NeyraAgent` (lazy re-export: `from core.agent import NeyraAgent`) |
 | **Интерфейсы** | Discord resident + Internal API (`:8787`) + dashboard; MCP debug-server |
 | **ADR** | [0001](docs/adr/0001-memory-hub-v2.md) Hub · [0002](docs/adr/0002-core-layout-1b.md) layout · [0003](docs/adr/0003-core-refactor-1r.md) refactor |
-| **Активный фокус** | **Этап 2** — 2A–2D + voice cfg; дальше 2E→2F(код) · [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) |
+| **Активный фокус** | **Этап 2** — 2A–2E + voice cfg; дальше 2F (OpenRouter STT) · [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) |
 
 **Windows runtime:** `.venv_win` + `run_neyra.bat` → `scripts/neyra_win_launcher.ps1`.  
 **Linux/WSL:** `run_neyra.sh` (`*.sh` → LF via `.gitattributes`); venv `.venv` или `~/neyra-venv` на `/mnt`.
@@ -137,16 +137,15 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 | **Voice cfg** | Канон `voice.stt`/`voice.tts` × prefer/enable + soft ERROR | ✅ | Фундамент для 2F; Auto Review majors закрыты |
 | **2C** | Session archive (overflow / `/reset`) | ✅ код | `memory.session_archive.*`; event `memory.session_archived`; default off |
 | **2D** | Security pass | ✅ код+доки | Scoped RAG; MCP redact; security-model; `:free` warning |
-| **2E** | Fast-Path умного дома | ⬜ todo | Allowlist intents → `home.*`; user-scoped «ещё раз» |
+| **2E** | Fast-Path умного дома | ✅ код | Allowlist → `home.*`; «ещё раз» из chat_log с `user_id`; default off |
 | **2F** | OpenRouter Whisper STT (код провайдера) | 🟡 частич. | Конфиг/резолвер готовы; **нет** реального `STTEngine` OpenRouter + smoke |
 | **Reg** | Регрессия этапа 2 (vision / Discord / MCP) | ⬜ todo | Прогон перед закрытием этапа |
 
 **Осталось сделать (порядок рекомендуемый):**
 
-1. **2E** — Fast-Path home (серверный контур, не колонка).
-2. **2F** — дописать провайдер OpenRouter в `STTEngine` + smoke на клипе.
-3. **Smoke** — Discord/MCP + `/reset` с `session_archive.enabled` при необходимости.
-4. **Регрессия этапа 2** — полный чеклист ниже перед merge/закрытием.
+1. **2F** — дописать провайдер OpenRouter в `STTEngine` + smoke на клипе.
+2. **Smoke** — Discord/MCP + Fast-Path/`session_archive` при необходимости.
+3. **Регрессия этапа 2** — полный чеклист ниже перед merge/закрытием.
 
 ### Карта фаз
 
@@ -156,7 +155,7 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 | **2B — Pre-context thoughts** | короткий «мысль/намёк» из Hub перед talk | ✅ | блок в system/context; выкл. флагом; WM только с `user_id` |
 | **2C — Session archive** | политика при overflow STM/контекста | ✅ код | dump в Hub + trim/clean start; событие на шине |
 | **2D — Security pass** | сверка секретов и границ людей | ✅ | scoped semantic search; MCP redact; security-model |
-| **2E — Fast-Path home** | короткие команды дома без полного brain+RAG | ⬜ | intent → `home.*`; fallback brain; smoke 2 users |
+| **2E — Fast-Path home** | короткие команды дома без полного brain+RAG | ✅ код | intent → `home.*`; fallback brain; repeat user-scoped |
 | **2F — Voice STT OpenRouter** | провайдер STT через OpenRouter Whisper | 🟡 cfg ✅ / код ⬜ | turbo clip smoke; soft ERROR; deepgram/groq/local OK |
 
 **Отложено:** live mic-stream (realtime WebSocket ASR). Nemotron Omni на chat/completions — file/clip audio для «послушай и ответь», не выделенный STT endpoint; для транскрипта в этапе 2 берём **OpenRouter `/audio/transcriptions`** (фаза 2F). Live колонка / Deepgram live → этап 4.
@@ -273,10 +272,10 @@ Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) 
 
 **Приёмка:**
 
-- [ ] 2–3 типовые фразы из allowlist срабатывают без deep/RAG (видно в логе).
-- [ ] Неоднозначная фраза → brain, не ложный home-action.
-- [ ] Smoke: два пользователя — Fast-Path «ещё раз» видит только свой хвост chat_log.
-- [ ] example + local config sync; выкл. флагом = старое поведение.
+- [x] Код: `core/agent/fast_path.py` + hooks до brain в chat/stream; `agent.fast_path` в example/local.
+- [x] Allowlist hit → `fast_path.hit` лог + `home.*` event; miss/ambiguous → brain.
+- [x] «Ещё раз» только через `list_chat(user_id=…)` (не общий STM).
+- [ ] Live smoke: 2–3 фразы + два user_id на «ещё раз»; consumer `home.*` — этап 4 / отдельный плагин.
 
 ---
 
