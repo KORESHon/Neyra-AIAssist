@@ -44,7 +44,7 @@ Knowledge / important fragments still go through `remember_knowledge` (unless `o
 
 ## Vector backend seam
 
-`SemanticIndex` protocol + Chroma adapter. Future sqlite-vss (Stage 4) plugs in without changing agent call sites.
+`SemanticIndex` protocol + Chroma adapter. Future sqlite-vss (plan stage 2 / autonomy) plugs in without changing agent call sites.
 
 ## Cutover (done) — legacy import abandoned
 

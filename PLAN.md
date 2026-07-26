@@ -29,7 +29,7 @@
 | **Гиппокамп** | `memory_model` → `nvidia/nemotron-3-super-120b-a12b:free` | LTM / WM / рефлексия / emotional layer |
 | **Talk** | `talk_model` → `qwen/qwen3-235b-a22b-2507` | Финальный ответ пользователю |
 
-**Зрение:** `use_brain_model_for_vision: true` — картинки в brain (Nemotron); `false` — VL-caption через `vision_model`.  
+**Зрение:** `use_brain_model_for_vision: true` — картинки в brain (Nemotron); `false` — VL-caption через `vision_model`. Live-проверка картинки — smoke при работе над UI/клиентами (не блокер закрытия прошлых этапов).  
 **Rate limit:** `memory_model` — retry с backoff на 429/timeout.
 
 ---
@@ -38,16 +38,25 @@
 
 | Область | Состояние |
 |---------|-----------|
-| **Этап 1** (Memory Hub + layout + refactor) | ✅ в `main` — PR [#1](https://github.com/KORESHon/Neyra-AIAssist/pull/1), [#6](https://github.com/KORESHon/Neyra-AIAssist/pull/6), [#7](https://github.com/KORESHon/Neyra-AIAssist/pull/7) |
-| **Память** | Hub SQLite = source of truth; Chroma = semantic index; `rag_write_mode=important_only`; STM=10 |
-| **Ядро** | `core/neyra.py` (~700 строк) + пакеты `agent/` `memory/` `llm/` `plugins/` `reflection/` `runtime/` `tools/` `voice/`; flat shims сняты |
-| **Канон импорта** | `from core.neyra import NeyraAgent` (lazy re-export: `from core.agent import NeyraAgent`) |
+| **Закрытые этапы (архив)** | **ex-1** Memory Hub + layout/refactor · **ex-2** persona/pre_context/archive/security/fast_path/OpenRouter STT — в `main` после merge [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) (+ [#1](https://github.com/KORESHon/Neyra-AIAssist/pull/1), [#6](https://github.com/KORESHon/Neyra-AIAssist/pull/6), [#7](https://github.com/KORESHon/Neyra-AIAssist/pull/7)) |
+| **Память** | Hub SQLite = source of truth; Chroma = semantic index; `rag_write_mode=important_only`; STM=10; scoped RAG; session_archive |
+| **Ядро** | `core/neyra.py` + пакеты `agent/` `memory/` `llm/` `plugins/` `reflection/` `runtime/` `tools/` `voice/` |
+| **Голос** | `voice.stt`/`voice.tts` modality + soft ERROR; STT: local / Deepgram / Groq / **OpenRouter Whisper** |
+| **Агент** | persona/appearance packs; optional PRE-CONTEXT; Fast-Path `home.*` (сервер); security-model |
 | **Интерфейсы** | Discord resident + Internal API (`:8787`) + dashboard; MCP debug-server |
 | **ADR** | [0001](docs/adr/0001-memory-hub-v2.md) Hub · [0002](docs/adr/0002-core-layout-1b.md) layout · [0003](docs/adr/0003-core-refactor-1r.md) refactor |
-| **Активный фокус** | **Этап 2** — почти закрыт в [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10); осталось vision live + Auto Review clean → merge |
+| **Активный фокус** | **Этап 1** — Web UI как WebSocket-мост к Event Bus |
 
 **Windows runtime:** `.venv_win` + `run_neyra.bat` → `scripts/neyra_win_launcher.ps1`.  
 **Linux/WSL:** `run_neyra.sh` (`*.sh` → LF via `.gitattributes`); venv `.venv` или `~/neyra-venv` на `/mnt`.
+
+### Архив: что уже сделано (кратко)
+
+**ex-Этап 1 — Memory Hub + реорганизация `core/`** ✅  
+Hub SQLite (chat_log / people / diary / journal / WM), Chroma как индекс, cutover без legacy-импорта; пакетная раскладка `core/`; оркестратор `core/neyra.py`. ADR-0001…0003. PR #1 / #6 / #7.
+
+**ex-Этап 2 — Точечные улучшения** ✅ (merge PR #10)  
+Persona/appearance; PRE-CONTEXT (user-scoped WM); session archive (scoped `chat_log`); security pass (scoped RAG, MCP redact, ContextVar turn-scope); voice modality + OpenRouter Whisper STT; Fast-Path allowlist → `home.*` (сервер; multi-client/колонка → текущий этап 2). Discord/MCP smokes закрыты. Vision live-картинка — optional smoke ниже.
 
 ---
 
@@ -55,358 +64,37 @@
 
 | # | Этап | Статус |
 |---|------|--------|
-| **1** | Memory Hub v2 + реорганизация `core/` (фазы 1A → 1B → 1R) | ✅ done |
-| **2** | Точечные улучшения (фазы 2A–2F; см. ниже) | ▶ **активный** · трек [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) |
-| **3** | Web UI как WebSocket-мост к Event Bus | очередь |
-| **4** | Автономный сервер + тонкие клиенты / колонка | дальнее будущее |
+| **ex-1 / ex-2** | Hub + core layout/refactor + точечные улучшения агента/голоса | ✅ done (архив выше) |
+| **1** | Web UI как WebSocket-мост к Event Bus | ▶ **активный** |
+| **2** | Автономный сервер + тонкие клиенты / колонка | очередь |
 
 ---
 
-## Этап 1 — Memory Hub + реорганизация `core/` ✅
-
-**Итог:** один Memory API (Hub), SQLite как истина, Chroma как индекс; `core/` читается по пакетам; оркестратор — `core/neyra.py`.
-
-### Фазы (архив)
-
-| Фаза | Фокус | Merge |
-|------|--------|-------|
-| **1A — Memory Hub** | SQLite Hub, chat_log, people/diary/journal/WM, cutover без legacy-импорта | [PR #1](https://github.com/KORESHon/Neyra-AIAssist/pull/1) · ADR-0001 |
-| **1B — Core layout** | пакеты `plugins` / `llm` / `runtime` / `voice` / `memory.stores` | [PR #6](https://github.com/KORESHon/Neyra-AIAssist/pull/6) · ADR-0002 |
-| **1R — Core refactor** | split монолитов, снятие shims, полки `core/agent/*` | [PR #7](https://github.com/KORESHon/Neyra-AIAssist/pull/7) · ADR-0003 · `1b873d0` |
-
-### Модель памяти (действующая)
-
-| Роль | Где |
-|------|-----|
-| Диалог (полный chat log) | SQLite |
-| People / diary / journal / WM | SQLite |
-| Semantic recall | Chroma (`metadata.type`, без raw full-chat embed) |
-| STM | RAM / окно из chat_log (`stm_max_messages`) |
-| Персона | `assistant.system_prompt` / файлы промпта — не в диалоговой памяти |
-
-**Правило:** каждый ход → SQLite `chat_log`; в Chroma — только осмысленное по `rag_write_mode`. Промпт talk/brain читает people / diary / WM **только через Hub**.
-
-### Раскладка `core/` (факт)
-
-```
-core/
-  __init__.py
-  neyra.py          # NeyraAgent
-  agent/            # shelves: chat, chat_stream, turn_*, reply_*, bootstrap, …
-  memory/ llm/ plugins/ reflection/ runtime/ tools/ voice/
-```
-
-### Конфиг памяти (ключи)
-
-`memory.sqlite_path`, `chroma_db_path`, `rag_enabled`, `rag_top_k`, `rag_write_mode` (`off` \| `digest` \| `important_only`), `chat_log_retention_days`, `stm_max_messages`, `working_memory.*`, `emotional_layer.*`.
-
-Cutover-флаги и legacy-импорт (`import-legacy`, json/jsonl primary) **удалены** — см. ADR-0001.
-
-### Event Bus (память)
-
-| Событие | Когда |
-|---------|--------|
-| `memory.chat_log_append` | запись хода в chat_log |
-| `memory.short_term_update` | STM |
-| `memory.long_term_write` | semantic / digest (не путать с chat_log) |
-| `memory.journal_updated` / `memory.working_memory_updated` | после Hub write |
-
-### Приёмка этапа 1 (закрыта)
-
-- [x] Hub-only people/diary/journal/WM + chat_log; smoke + live MCP
-- [x] `/v1/memory/*`, `/v1/debug/memory`, MCP inspect
-- [x] Backup `.db` (+ wal/shm) + Chroma
-- [x] Layout + refactor; Discord UX + WS `chat_stream` 2026-07-25
-- [x] Fast-Path умного дома — **перенесён в этап 2** (не блокер 1)
-
----
-
-## Этап 2 — Дополнительные улучшения ▶
-
-**Трек:** ветка `docs/stage-2-plan` / [PR #10](https://github.com/KORESHon/Neyra-AIAssist/pull/10) (план + реализация slice’ами в том же PR или follow-up).  
-**Правила:** не ломать Hub / Event Bus без ADR; не раздувать scope до этапа 3 (полный WS UI) и этапа 4 (колонка / self-host voice stack). После каждого slice: `compileall` + memory smokes + healthcheck; при касании агента — Discord или MCP `/v1/chat`.
-
-Фазы **можно распараллелить** (разные PR), кроме случаев явной зависимости (отмечено ниже).
-
-### Статус задач (сводно)
-
-| ID | Задача | Статус | Комментарий |
-|----|--------|--------|-------------|
-| **2A** | Persona pack (`persona.md` / `appearance.md`) | ✅ | MCP + Discord UI OK |
-| **2B** | Pre-context (diary + user-scoped WM) | ✅ код | `memory.pre_context.enabled` default **false**; semantic source — позже |
-| **Voice cfg** | Канон `voice.stt`/`voice.tts` × prefer/enable + soft ERROR | ✅ | Фундамент для 2F; Auto Review majors закрыты |
-| **2C** | Session archive (overflow / `/reset`) | ✅ | MCP reset_context + Discord `/reset` OK |
-| **2D** | Security pass | ✅ MCP | search/recall без uid → 400; redact; log без ключей |
-| **2E** | Fast-Path умного дома | ✅ | серверный контур + Discord; multi-client / колонка → **этап 4** |
-| **2F** | OpenRouter Whisper STT (код провайдера) | ✅ | `STTEngine` → `/audio/transcriptions`; live clip OK |
-| **Reg** | Регрессия этапа 2 (vision / Discord / MCP) | 🟡 | Discord+MCP+429 ✅; vision live (картинка) — остаток |
-
-**Осталось сделать (порядок рекомендуемый):**
-
-1. **Vision live** — вложение картинки Discord при `use_brain_model_for_vision` true/false.
-2. **Merge** PR #10 после Auto Review clean.
-
-### Карта фаз
-
-| Фаза | Фокус | Статус | Done when |
-|------|--------|--------|-----------|
-| **2A — Persona pack** | база личности + визуал как отдельные редактируемые артефакты | ✅ | два файла/ключа; MCP + Discord |
-| **2B — Pre-context thoughts** | короткий «мысль/намёк» из Hub перед talk | ✅ | блок в system/context; выкл. флагом; WM только с `user_id` |
-| **2C — Session archive** | политика при overflow STM/контекста | ✅ | scoped chat_log; MCP + Discord `/reset` |
-| **2D — Security pass** | сверка секретов и границ людей | ✅ | scoped search; redact; no keys in log |
-| **2E — Fast-Path home** | короткие команды дома без полного brain+RAG | ✅ | сервер OK; multi-user/колонка → этап 4 |
-| **2F — Voice STT OpenRouter** | провайдер STT через OpenRouter Whisper | ✅ | turbo via `/audio/transcriptions`; live clip; soft ERROR; fallback local |
-
-
-**Отложено:** live mic-stream (realtime WebSocket ASR). Nemotron Omni на chat/completions — file/clip audio для «послушай и ответь», не выделенный STT endpoint; для транскрипта в этапе 2 берём **OpenRouter `/audio/transcriptions`** (фаза 2F). Live колонка / Deepgram live → этап 4.
-
----
-
-### Фаза 2A — Persona pack (личность + визуал)
-
-**Проблема сейчас:** характер и «как выглядеть / визуальный образ» свалены в один `assistant.system_prompt` — сложно править и опасно тащить визуал в каждый текстовый ход.
-
-**Сделать:**
-
-1. Разделить артефакты рядом с промптом (пути в конфиге, имена уточняемы):
-   - `assistant.persona_path` / `persona.md` — характер, тон, границы, лексика.
-   - `assistant.appearance_path` / `appearance.md` — внешность / визуальный канон (для vision/image-gen/описаний).
-2. В talk/brain: persona всегда; appearance — только когда релевантно (vision, «как ты выглядишь», image tools) или короткий кап в промпт по флагу.
-3. Сохранить обратную совместимость: если новых файлов нет — читать текущий `system_prompt` как сейчас.
-4. Синхронизировать `config.example.yaml` ↔ `config.yaml`; кратко в HELP/ADR (можно короткий раздел в PLAN, отдельный ADR — по желанию).
-
-**Не делать в 2A:** Web UI редактор персоны (этап 3); смена модели под визуал.
-
-**Приёмка:**
-
-- [x] Два артефакта на диске + ключи в example/local config (`prompts/*.example.md`, local `*.md` gitignored).
-- [x] Обычный текстовый чат не деградирует (smoke MCP `/v1/chat`).
-- [x] Запрос про внешность / картинка — appearance подмешивается в talk (`include_appearance`).
-
----
-
-### Фаза 2B — Pre-context «мысли»
-
-**Проблема:** semantic RAG + people есть, но нет короткого «о чём я думаю / что сейчас важно» из дневника/Hub перед ответом — персона звучит менее цельно.
-
-**Сделать:**
-
-1. Перед talk (и опц. до brain): собрать **короткий** блок (лимит символов, напр. 400–800) из Hub:
-   - diary (общий журнал ассистента) — global OK;
-   - WM — **только** `working_memory_for_prompt(internal_user_id)` / эквивалент с обязательным `user_id` (не `latest_wm_snapshot(user_id=None)`);
-   - semantic hits — с фильтром по `user_id` / person scope, где применимо; `type` diary/emotion/WM;
-   - не полный dump journal.
-2. Конфиг: `memory.pre_context.enabled`, `max_chars`, `sources` (diary/wm/semantic), `inject_lane` (talk | brain | both).
-3. Пометить секцию в промпте явно (`PRE-CONTEXT` / «внутренний намёк»), чтобы модель не цитировала её как «из базы» дословно, если так зашито в persona.
-4. Выключение одним флагом без поломки пайплайна.
-
-**Зависимости:** опирается на Hub API этапа 1 (уже в main). Можно параллельно с 2A.
-
-**Приёмка:**
-
-- [x] Флаг off → поведение как сейчас.
-- [x] Флаг on → блок `# PRE-CONTEXT` собирается (debug log); soft-fail при ошибках.
-- [x] Нет раздувания промпта сверх `max_chars`.
-- [x] WM только через `working_memory_for_prompt(internal_user_id)` — пустой uid → блок пропущен; semantic source пока skip (нет user metadata API).
-
----
-
-### Фаза 2C — Контролируемое архивирование сессии
-
-**Проблема:** при overflow контекста сейчас trim STM «вполсилы»; нет явной политики «запомнить важное → начать чище».
-
-**Сделать:**
-
-1. Политика при `context_length_exceeded` / ручном `/reset` / пороге STM:
-   - опциональный digest хода/окна → Hub (diary note и/или LTM digest через существующий summarize-контур);
-   - затем trim STM / «clean start» по флагу.
-2. Конфиг: `memory.session_archive.on_overflow`, `on_manual_reset`, `write_diary`, `write_ltm_digest`, `clear_stm_after`.
-3. Event Bus: например `memory.session_archived` (payload: reason, user_id, channel_id, chars) — для UI этапа 3.
-4. Не дублировать raw full-chat в Chroma (только digest / important — как `rag_write_mode`).
-
-**Зависимости:** желательно после или вместе с проверкой текущего overflow-retry в `chat_stream` (уже есть trim + shrink prompt).
-
-**Приёмка:**
-
-- [x] Код: `archive_session` + hooks overflow / `/reset` / optional STM threshold; config example+local.
-- [x] Событие `memory.session_archived` публикуется при успешном прогоне политики.
-- [x] Default `enabled: false` — поведение как раньше; LTM только digest (`remember_knowledge`), не raw chat.
-- [x] LTM digest / contentful diary — только из user-scoped `chat_log` (не process-global STM).
-- [x] Live smoke MCP: `session_archive.enabled` + `POST /v1/debug/reset_context` → diary note (`history_source=chat_log`).
-- [x] Discord UI: `/reset` → «Память сброшена.» (скрин 2026-07-26).
-
----
-
-### Фаза 2D — Security pass
-
-**Проблема:** после cutover/refactor нужно явно сверить границы, а не полагаться на «вроде ок».
-
-**Сделать (чеклист-проход + точечные фиксы):**
-
-1. Секреты: `.env` / `apply_env_secrets`; Internal API anon vs token; не светить ключи в логах, dashboard, MCP `read_config` (уже маскирует — проверить регрессии).
-2. Изоляция людей: prompt/tools не должны отдавать чужие facts по ошибке id; `recall_chat` всегда с `user_id` и/или `channel_id`.
-3. Plugin sandbox / path jail — smoke на попытку выхода из `interfaces/`.
-4. Документы: `security-model.md` + краткий ops-раздел «что не коммитить / что в backup».
-5. Free Omni endpoint: не слать PII/голоса/лица на `:free` NVIDIA trial без согласия (предупреждение в доке voice/vision).
-
-**Приёмка:**
-
-- [x] Semantic search / API требуют `user_id`; RAG в `prepare_turn` scoped.
-- [x] MCP `neyra_read_config` расширенное redact (`*_token`, `api_hash`, …).
-- [x] `docs/*/architecture/security-model.md` + warning `:free` в `config.example.yaml`.
-- [x] Plugin path jail — без изменений, уже OK (builder).
-- [x] Live: хвост `logs/system.log` после тестового чата — без API keys / Bearer.
-
----
-
-### Фаза 2E — Fast-Path (умный дом)
-
-**Проблема:** однозначные команды («выключи свет») не должны ждать полный brain+RAG.
-
-**Сделать:**
-
-1. До или параллельно с brain: лёгкий классификатор (regex + allowlist intent **или** tiny heuristic) → прямой tool / событие `home.*`.
-2. Конфиг: `agent.fast_path.enabled`, `intents` / `fast_path.*` (patterns → action).
-3. При низкой уверенности — полный brain как сейчас.
-4. Hub: для «ещё раз / то же» — STM и/или `list_chat` / `recall_chat` **всегда** с фильтром `user_id` и/или `channel_id` (тот же контракт, что в 2D); semantic RAG **не** обязателен.
-5. Логировать bypass (`fast_path.hit` / reason) для отладки ложных срабатываний.
-6. Edge Fast-Path на колонке / телефоне / home-клиенте — **этап 4** (нет второго аккаунта и железа для e2e сейчас).
-7. Consumer `home.*` (реальный умный дом) — этап 4 / отдельный плагин.
-
-**Приёмка (этап 2 — серверный контур):**
-
-- [x] Код: `core/agent/fast_path.py` + hooks до brain в chat/stream; `agent.fast_path` в example/local.
-- [x] Allowlist hit → `fast_path.hit` лог + `home.*` event; miss/ambiguous → brain.
-- [x] «Ещё раз» только через `list_chat(user_id=…)` (не общий STM).
-- [x] Live MCP: `включи свет` + `ещё раз` (тот же uid); чужой uid → brain (MCP).
-- [x] Discord UI: persona + `включи свет` / `ещё раз` быстро (скрин 2026-07-26).
-- [ ] **→ этап 4:** multi-client isolation + колонка/телефон home UI + consumer `home.*`.
-
----
-
-### Фаза 2F — Voice STT: OpenRouter Whisper
-
-**Проблема:** в `core/voice/stt.py` (`STTEngine`) уже есть local faster-whisper, Groq и Deepgram, но нет провайдера через тот же ключ OpenRouter, что и LLM. Нужен дешёвый облачный STT без отдельного Deepgram/Groq ключа.
-
-**Целевая модель:** `openai/whisper-large-v3-turbo` (~$0.04 / час аудио; duration-based).  
-**Дока:** [OpenRouter Speech-to-Text](https://openrouter.ai/docs/guides/overview/multimodal/stt) — `POST https://openrouter.ai/api/v1/audio/transcriptions`.
-
-**Канон конфига (важно):** единый корень `voice`; STT и TTS **независимо** (без глобального `is_local`):
-
-```yaml
-voice:
-  language: "ru"
-  stt:
-    prefer: cloud            # cloud | local — первый выбор, если оба enable
-    local:  { enable: false, model: small, device: cpu }
-    cloud:  { enable: true, provider: deepgram|groq|openrouter, ... }
-  tts:
-    prefer: cloud
-    local:  { enable: false, provider: "" }
-    cloud:  { enable: true, provider: yandex, ... }
-```
-
-Правила: один `enable` → его lane; оба → `prefer` затем fallback; оба выкл./не настроены → **soft ERROR** в логе (STT/TTS off), **ядро не падает**.  
-`STTEngine` / TTS читают через `core/voice/config.py` (`resolve_stt_runtime` / `resolve_tts_runtime`).  
-Legacy `voice.is_local` / flat `voice.stt` / `voice_cloud` ещё нормализуются в памяти, но в example/local больше не пишем.
-
-**Контракт API (зафиксировать в коде):**
-
-1. Auth: тот же Bearer, что LLM (`OPENROUTER_API_KEY` → `openrouter.api_key`).
-2. Два пути входа (оба поддерживать или явно выбрать один + fallback):
-   - **JSON:** `{ "model", "input_audio": { "data": "<raw base64>", "format": "wav|mp3|…" }, "language"? }` — base64 = сырые байты, не data-URI.
-   - **multipart** (OpenAI-compatible): `file` + `model` (+ `language`), лимит 25 MB.
-3. Ответ: `{ "text", "usage": { "seconds", "cost", … } }`; логировать `usage.seconds` / `usage.cost` на debug, не светить ключ.
-4. Опции: `language` (default `ru`), `temperature` по желанию; `response_format=json` (default). Upstream timeout ~60s — резать/чанкить длинные клипы.
-5. Форматы: как минимум `wav`, `mp3`, `webm`, `ogg` (Discord/браузер).
-
-**Сделать в коде:**
-
-1. Дописать провайдер OpenRouter в `STTEngine` (резолв уже через `voice.stt`):
-   - `voice.stt.cloud.enable: true` + `voice.stt.cloud.provider: openrouter` (+ `prefer: cloud` или единственный enable).
-   - `voice.stt.cloud.openrouter.model` default `openai/whisper-large-v3-turbo`.
-   - `base_url` из `openrouter.base_url` или `https://openrouter.ai/api/v1`.
-   - лог `STT(OpenRouter): model=… | key_source=…` (без ключа).
-2. Переиспользовать `transcribe(path|bytes)` — плагины не должны знать про OpenRouter.
-3. Ошибки: 401/429/timeout → soft ERROR + опц. fallback на `voice.stt.local` (если enable); ядро не крашить.
-4. Короткий smoke на тестовом wav → непустой `text` + cost в логе.
-5. Дока: ссылка на OpenRouter STT; цена ~4¢/час; это **file/clip**, не live mic.
-
-**Не делать в 2F:**
-
-- Live/streaming ASR (WebSocket mic) — этап 4.
-- TTS через OpenRouter (отдельный трек / этап 4).
-- Nemotron Omni chat+audio как замена Whisper.
-- Обязательный default стенда на openrouter (достаточно поддержки в коде + example; стенд можно переключить осознанно).
-
-**Конфиг + `.env` (структура, обязательно в том же slice):**
-
-Синхронизировать и привести к одной понятной схеме:
-
-| Файл | Что сделать | Статус |
-|------|-------------|--------|
-| `config.example.yaml` / `config.yaml` | **`voice.stt` / `voice.tts`**: `prefer` + `local/cloud.enable`; без `voice_cloud` / без `is_local`. | ✅ |
-| `.env.example` / `.env` | Комментарии под modality + `stt.cloud.provider`; секреты сохранить. | ✅ |
-| `core/runtime/secrets.py` | Deepgram/Groq → `voice.stt.cloud.*.api_key` (только если modality уже в YAML); Yandex → `voice.tts.cloud`; OpenRouter → `openrouter.api_key`. Не создавать пустой `voice.cloud`. | ✅ |
-| `core/voice/config.py` | Резолвер + soft ERROR + legacy normalize. | ✅ |
-| `STTEngine` OpenRouter provider | Реальный вызов `/audio/transcriptions` + fallback local | ✅ |
-
-**Приёмка:**
-
-- [x] Код: `_openrouter_transcribe_file` (multipart/json) + лог `STT(OpenRouter): …` без ключа.
-- [x] Ключ только из `OPENROUTER_API_KEY` / `openrouter.api_key`.
-- [x] Live: `provider=openrouter` + turbo → короткий wav клип (HTTP OK, текст получен).
-- [x] `provider=deepgram|groq` и local path сохранены; soft ERROR при misconfig.
-- [x] Оба `enable=false` / нет ключей → soft ERROR, ядро стартует.
-- [x] Нет отдельного `voice_cloud` в example/local; `STTEngine` читает через `resolve_stt_runtime`.
-- [x] `.env*` структурированы; в логах нет API key.
-- [x] Дока: https://openrouter.ai/docs/guides/overview/multimodal/stt
-
----
-
-### Регрессия этапа 2 (прогон перед закрытием этапа)
-
-- [ ] `use_brain_model_for_vision: true` — вложение в Nemotron (brain), talk на сводке (нужна картинка в Discord).
-- [ ] `use_brain_model_for_vision: false` — caption через `vision_model`, затем brain/talk.
-- [x] Запрос на код / плагин — brain tool-loop зовёт `create_or_edit_plugin` (live; coder model 404 внешний).
-- [x] 429 на `memory_model` — `ainvoke_with_rate_limit_backoff` unit (offline script); ядро не падает.
-- [x] MCP `/v1/chat` без регрессий (persona + fast_path + reset_context с archive fields).
-- [x] Discord text stream UI (persona + light + repeat + `/reset`, скрин 2026-07-26).
-- [x] STT: openrouter turbo на тестовом клипе (ключ есть); остальные engines path сохранены.
-- [x] Offline security: `scripts/test_stage2_security_offline.py` (+ 429 backoff).
-- [x] `/v1/debug/reset_context` требует `user_id` и возвращает `ran` / `history_source` / diary/ltm flags.
-
-### Вне scope этапа 2
-
-- Полный Web UI WS-мост (этап 3).
-- Live mic ASR / колонка / полный self-host voice stack (этап 4) — **file/clip** OpenRouter STT как раз в 2F.
-- Multi-client Fast-Path / реальный consumer `home.*` (этап 4).
-- sqlite-vss, Obsidian export, desktop/mobile клиенты.
-- Nemotron Omni как live микрофонный STT.
-
----
-
-## Этап 3 — Web UI как WebSocket-мост к Event Bus
+## Этап 1 — Web UI как WebSocket-мост к Event Bus ▶
 
 **Зачем до автономии:** UI тестируется на текущем сервере (Discord/API уже есть); колонки как железа пока нет.
 
-**Цель:** браузер = real-time клиент шины — тот же класс тонких клиентов, что позже у колонки (этап 4).
+**Цель:** браузер = real-time клиент шины — тот же класс тонких клиентов, что позже у колонки (этап 2).
 
 - Двусторонний WS-мост `Web UI ↔ Event Bus`.
 - Публикация событий (чат, музыка, плагины) + подписка на stream/статусы.
 - Задел под edge/desktop/mobile: тот же WSS-контракт (аудио / текст / события).
+- Дашборд (`frontend/`) — развивать как тонкий клиент, не дублируя оркестрацию ядра.
 
 **Критерии приёмки:**
 
 - [ ] CLI не обязателен для повседневной эксплуатации.
 - [ ] UI реагирует на операции и события в real-time.
-- [ ] Контракт WS задокументирован для переиспользования в этапе 4.
+- [ ] Контракт WS задокументирован для переиспользования в этапе 2.
+- [ ] (опц.) Vision smoke: картинка в Discord / UI при `use_brain_model_for_vision` true/false.
+
+**Правила:** не ломать Hub / Event Bus без ADR; не тащить self-host voice stack сюда (этап 2). После slice: `compileall` + healthcheck; при касании агента — MCP `/v1/chat` или Discord.
 
 ---
 
-## Этап 4 — Автономный сервер + тонкие клиенты
+## Этап 2 — Автономный сервер + тонкие клиенты
 
-**Ориентир:** после зелёного WS-моста (этап 3). Нет стабильного стенда колонки для приёмки.
+**Ориентир:** после зелёного WS-моста (этап 1). Нет стабильного стенда колонки для приёмки.
 
 Neyra = **один сервер**; колонка / телефон / Web UI = micro-client.
 
@@ -414,7 +102,7 @@ Neyra = **один сервер**; колонка / телефон / Web UI = mi
 |------|------|
 | **Neyra Server** | ядро, Hub, LLM, STT/TTS (local или cloud), tools, Event Bus |
 | **Колонка / edge** | mic/speaker, wake-word; Fast-Path света/сцен локально |
-| **Телефон / Web UI** | тонкий клиент по WSS (контракт этапа 3) |
+| **Телефон / Web UI** | тонкий клиент по WSS (контракт этапа 1) |
 
 ### LLM
 
@@ -424,13 +112,14 @@ Neyra = **один сервер**; колонка / телефон / Web UI = mi
 
 ### Voice (переключаемые STT / TTS)
 
-Один конфиг-переключатель на роль (`stt.provider` / `tts.provider` / `voice.*`):
+Один конфиг-переключатель на роль (`voice.stt` / `voice.tts` modality уже в ядре):
 
 | Режим | STT | TTS |
 |-------|-----|-----|
 | **Local** | Whisper / faster-whisper | CosyVoice / Silero / Piper |
-| **Cloud** | Deepgram, Yandex SpeechKit, … | те же экосистемы |
-| **Фундамент** | OpenRouter `/audio/transcriptions` (Whisper turbo — фаза **2F**); live mic — отдельные live-провайдеры | слот провайдера без ломки агента |
+| **Cloud** | Deepgram, Groq, Yandex SpeechKit, … | те же экосистемы |
+| **Фундамент** | OpenRouter `/audio/transcriptions` (Whisper turbo — уже в коде); live mic — отдельные live-провайдеры | слот провайдера без ломки агента |
+
 Cloud и local — равноправны. Колонка шлёт аудио на сервер; backend выбирается конфигом.
 
 ### Память / vision на сервере
@@ -438,9 +127,9 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 - Hub + Chroma только на сервере.
 - Опционально: sqlite-vss через адаптер `search_semantic` (без ломки агента).
 
-### Fast-Path / умный дом (продолжение 2E)
+### Fast-Path / умный дом (продолжение серверного allowlist)
 
-Серверный allowlist + `home.*` уже в этапе 2. Здесь — e2e с реальными клиентами:
+Серверный allowlist + `home.*` уже в коде. Здесь — e2e с реальными клиентами:
 
 - [ ] Колонка / телефон / desktop home-клиент шлёт короткие команды → Fast-Path без полного brain.
 - [ ] Изоляция «ещё раз» между разными клиентами/аккаунтами (не только MCP uid).
@@ -449,11 +138,12 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 ### Критерии приёмки (черновик)
 
 - [ ] STT/TTS: local ↔ cloud только конфигом.
-- [ ] Слот STT через OpenRouter задокументирован или работает.
+- [ ] Слот STT через OpenRouter задокументирован или работает (база уже есть).
 - [ ] Профиль LLM local/custom **или** полный прогон на OpenRouter — оба в example config.
 - [ ] Self-host: LLM + STT + TTS без внешних API (при наличии железа); слабый сервер — через cloud.
 - [ ] Edge «включи свет» без LLM; сложный запрос — WSS → сервер (когда появится клиент).
 - [ ] В колонку не требуется полный репозиторий Neyra.
+- [ ] (опц.) Vision smoke на клиенте/колонке.
 
 ### Docker / launcher
 
@@ -478,8 +168,9 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 
 - e2e Discord text (+ music при поднятом Lavalink)
 - Memory Hub: chat_log → recall; semantic by `type`; people/diary/journal
-- WS bridge pub/sub (этап 3)
+- WS bridge pub/sub (этап 1)
 - MCP debug + runtime MCP client
+- `scripts/test_stage2_security_offline.py` (scoped archive / ContextVar / 429)
 
 ---
 
@@ -487,6 +178,7 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 
 - `python -m compileall -q core interfaces scripts main.py` (из `.venv_win` на Windows)
 - `python scripts/test_memory_hub_smoke.py` + `test_memory_cutover_offline.py`
+- `python scripts/test_stage2_security_offline.py`
 - `python scripts/healthcheck.py --mode core --skip-http`
 - Frontend: `cd frontend && npm run build` (если трогали UI)
 - Lavalink JAR: `python scripts/fetch_lavalink.py` (если музыка)
@@ -501,13 +193,13 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 - **Fast-Path** ложно срабатывает → порог уверенности + fallback в brain; allowlist интентов.
 - **MCP** расширяет атакующую поверхность → allowlist серверов, sandbox, аудит.
 - **Hot-reload** оставляет грязные подписки → lifecycle hooks + очистка listeners.
-- **Hub / Event Bus** — контракты не ломать без ADR (этап 1 закрыт; регрессии ловить smokes).
+- **Hub / Event Bus** — контракты не ломать без ADR; регрессии ловить smokes.
 
 ---
 
 ## 7.5) Баг-трекер / известные дефекты
 
-*Исторический срез логов 2026-05; пути обновлены под раскладку 1R. Пересмотреть при следующем стресс-прогоне.*
+*Исторический срез логов 2026-05; пути обновлены под раскладку core. Пересмотреть при следующем стресс-прогоне.*
 
 | ID | Суть | Статус | Зона / направление |
 |----|------|--------|---------------------|
@@ -546,8 +238,8 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 ## 8) Backlog (дальний горизонт)
 
 - Интеграция с Obsidian — экспорт из Hub в vault `.md` (MCP или CLI).
-- Повторная полировка репо / доков / fallback / логов после этапа 2+.
 - Клиенты desktop / mobile-lite — [Google Docs ТЗ](https://docs.google.com/document/d/10wjeJefCRuF1ujJ0bWCwKw2tB9BwjV2ejqqd1f-vMhg/edit?tab=t.0).
 - Standalone `.exe` / server-core + lightweight clients.
 - Настройка LLM из Web UI (модель, system prompt) — после hot-reload.
 - Device-mode (AI station), open-core расширения, публичный demo/BYOK.
+- Live mic ASR / realtime WebSocket STT (не file/clip OpenRouter).

@@ -173,7 +173,7 @@ Recommendation:
 
 - `README.md` - public product/technical overview (English).
 - `README-RU.md` - public product/technical overview (Russian).
-- `PLAN.md` - roadmap (when tracked in the repo).
+- `PLAN.md` - roadmap: Hub/core + agent/voice improvements done; active focus — Web UI Event Bus bridge, then autonomous server/column.
 - `docs/en/README.md` / `docs/ru/README.md` - documentation index (architecture, setup, API, ops, usage, plugins, MCP, Web UI).
 - **Plugin SDK (tutorial & reference)** — [HELP.md (English)](interfaces/000EXAMPLE/HELP.md) · [HELP-RU.md (Русский)](interfaces/000EXAMPLE/HELP-RU.md).
 
