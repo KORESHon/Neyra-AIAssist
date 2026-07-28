@@ -1,6 +1,6 @@
 id: local_voice
 name: Local Voice Agent
-description: Заглушка локального голосового интерфейса (будущая реализация).
+description: Stub for local mic wake-word / STT→chat→TTS (plan stage 2). Keep disabled until implemented.
 version: 0.1.0
 enabled: false
 lifecycle: on_demand

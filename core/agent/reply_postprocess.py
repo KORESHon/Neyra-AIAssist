@@ -12,6 +12,9 @@ EMPTY_REPLY_PLACEHOLDER = "Затупила на секунду. Повтори 
 
 def extract_sound_tags(text: str, *, preserve_line_breaks: bool = False) -> tuple[str, list[str]]:
     """Cut ``[SOUND: tag]`` markers; return (clean text, tags)."""
+    if preserve_line_breaks:
+        # Models sometimes emit literal backslash-n when asked for "\\n" line breaks.
+        text = (text or "").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
     pattern = r"\[SOUND:\s*(\w+)\]"
     tags = re.findall(pattern, text)
     clean = re.sub(pattern, "", text).strip()

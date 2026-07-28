@@ -198,6 +198,13 @@ def _publish_home_event(
                 },
             )
         )
+        logger.info(
+            "fast_path.home_event published type=%s intent=%s target=%s "
+            "(no hardware consumer yet — mock/plugin is plan stage 2)",
+            hit.event_type,
+            hit.intent,
+            hit.target,
+        )
     except Exception as e:
         logger.debug("fast_path: event publish failed: %s", e)
 

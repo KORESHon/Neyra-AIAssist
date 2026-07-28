@@ -45,7 +45,7 @@
 | **Агент** | persona/appearance packs; optional PRE-CONTEXT; Fast-Path `home.*` (сервер); security-model |
 | **Интерфейсы** | Discord resident + Internal API (`:8787`) + dashboard; MCP debug-server |
 | **ADR** | [0001](docs/adr/0001-memory-hub-v2.md) Hub · [0002](docs/adr/0002-core-layout-1b.md) layout · [0003](docs/adr/0003-core-refactor-1r.md) refactor |
-| **Активный фокус** | **Этап 1** — Web UI как WebSocket-мост к Event Bus |
+| **Активный фокус** | **Foundation polish + soak** — Discord + music ~сутки на Windows, затем mini-PC. Этапы 1–2 (WS UI / автономия) — **позже** |
 
 **Windows runtime:** `.venv_win` + `run_neyra.bat` → `scripts/neyra_win_launcher.ps1`.  
 **Linux/WSL:** `run_neyra.sh` (`*.sh` → LF via `.gitattributes`); venv `.venv` или `~/neyra-venv` на `/mnt`.
@@ -56,7 +56,21 @@
 Hub SQLite (chat_log / people / diary / journal / WM), Chroma как индекс, cutover без legacy-импорта; пакетная раскладка `core/`; оркестратор `core/neyra.py`. ADR-0001…0003. PR #1 / #6 / #7.
 
 **ex-Этап 2 — Точечные улучшения** ✅ (merge PR #10)  
-Persona/appearance; PRE-CONTEXT (user-scoped WM); session archive (scoped `chat_log`); security pass (scoped RAG, MCP redact, ContextVar turn-scope); voice modality + OpenRouter Whisper STT; Fast-Path allowlist → `home.*` (сервер; multi-client/колонка → текущий этап 2). Discord/MCP smokes закрыты. Vision live-картинка — optional smoke ниже.
+Persona/appearance; PRE-CONTEXT (user-scoped WM); session archive (scoped `chat_log`); security pass (scoped RAG, MCP redact, ContextVar turn-scope); voice modality + OpenRouter Whisper STT; Fast-Path allowlist → `home.*` (сервер; multi-client/колонка → этап 2, позже). Discord/MCP smokes закрыты. Vision live-картинка — optional smoke ниже.
+
+---
+
+## 3.1) Сейчас (после merge ex-2): polish + soak, без этапов 1–2
+
+Этапы **1** (WS UI) и **2** (автономия / колонка) **отложены** — сначала стабильный стенд.
+
+**Порядок сейчас:**
+
+1. Sync docs / prompts / stubs (пути Event Bus, примеры persona, `local_voice` stub).
+2. Полировка известного Discord UX (lyrics newlines — BUG-001).
+3. Финальный PR → `main`.
+4. Soak: ядро + Discord + Lavalink/music ~сутки на Windows → потом локальный mini-PC.
+5. Только после soak — возвращаться к этапам 1–2.
 
 ---
 
@@ -65,12 +79,15 @@ Persona/appearance; PRE-CONTEXT (user-scoped WM); session archive (scoped `chat_
 | # | Этап | Статус |
 |---|------|--------|
 | **ex-1 / ex-2** | Hub + core layout/refactor + точечные улучшения агента/голоса | ✅ done (архив выше) |
-| **1** | Web UI как WebSocket-мост к Event Bus | ▶ **активный** |
-| **2** | Автономный сервер + тонкие клиенты / колонка | очередь |
+| **polish + soak** | Docs/prompts sync, Discord+music soak (Win → mini-PC) | ▶ **активный** |
+| **1** | Web UI как WebSocket-мост к Event Bus | очередь (**позже**, после soak) |
+| **2** | Автономный сервер + тонкие клиенты / колонка | очередь (**позже**) |
 
 ---
 
-## Этап 1 — Web UI как WebSocket-мост к Event Bus ▶
+## Этап 1 — Web UI как WebSocket-мост к Event Bus (позже)
+
+**Статус:** отложен до завершения soak Discord+music.
 
 **Зачем до автономии:** UI тестируется на текущем сервере (Discord/API уже есть); колонки как железа пока нет.
 
@@ -203,12 +220,12 @@ Cloud и local — равноправны. Колонка шлёт аудио н
 
 | ID | Суть | Статус | Зона / направление |
 |----|------|--------|---------------------|
-| **BUG-001** | Discord lyrics: ломаются переносы строк | ❌ open | `interfaces/discord/bot.py` + постобработка стрима (`core/agent/reply_*`, `chat_stream`) |
+| **BUG-001** | Discord lyrics: ломаются переносы строк | ⚠️ watch (fix: instruction + unescape `\\n`) | `interfaces/discord/bot.py` + `reply_postprocess` — проверить на soak |
 | **BUG-002** | VL Alibaba `DataInspectionFailed` | ❌ open | fallback VL / другой провайдер / смягчение промпта |
 | **BUG-003** | Vision free: HTTP 429 | ❌ open | BYOK / другая модель / backoff |
 | **BUG-004** | LLM first-token timeout 6s | ⚠️ watch | `primary_first_token_timeout_seconds` |
 | **BUG-005** | Discord Gateway reconnect | ⚠️ monitor | сеть / VPN / firewall |
-| **BUG-006** | `music.play` failed | ❌ open | санитизация query, Soundcloud; нужен Lavalink |
+| **BUG-006** | `music.play` failed | ❌ open | санитизация query, Soundcloud; нужен Lavalink на soak |
 | **BUG-007** | Частые перезапуски ядра | ❌ open | exit-код / Event Log / repro |
 | **BUG-008** | Legacy Chroma docs без `user_id` не попадают в scoped search | ⚠️ watch | переиндексация / backfill metadata; post-filter уже пропускает ambiguous dialog |
 
