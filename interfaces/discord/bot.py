@@ -57,7 +57,8 @@ EMBED_FIELD_SAFE = 1000
 LYRICS_HIDDEN_SUFFIX = (
     "\n\n[SYSTEM HIDDEN INSTRUCTION: User wants lyrics. You MUST use the web_search tool to find the exact lyrics. "
     "Do NOT generate lyrics from internal memory. CRITICAL: Output the FULL lyrics preserving original formatting. "
-    "You MUST use line breaks (\\n) for verses and choruses. Do NOT squash the text into a single paragraph. "
+    "Separate verses and choruses with real line breaks (press Enter / actual newlines), never the two characters backslash-n. "
+    "Do NOT squash the text into a single paragraph. "
     "Override any brevity rule: the reply must be the complete song text, not a summary.]"
 )
 
@@ -987,6 +988,10 @@ class NeyraDiscordBot(discord.Client):
                         return
 
                 final_text = done_data.get("text", full_raw).strip() or "*(пустой ответ)*"
+                if lyrics_mode:
+                    final_text = (
+                        final_text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+                    )
                 parts = chunk_message(final_text, limit=1900)
                 await response_msg.edit(content=parts[0])
                 sent_ids: list[int] = [response_msg.id]
@@ -1025,6 +1030,9 @@ class NeyraDiscordBot(discord.Client):
         )
         text = re.sub(r"<(?:redacted_thinking|think|thought)>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r"</?(?:redacted_thinking|think|thought)>", "", text, flags=re.IGNORECASE)
+        if lyrics_mode:
+            # Models sometimes emit the two-char sequence \n instead of real newlines.
+            text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
         if not lyrics_mode:
             text = re.sub(r"\[[^\]]*\]", "", text).strip()
         else:

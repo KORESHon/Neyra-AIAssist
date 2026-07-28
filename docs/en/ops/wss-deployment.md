@@ -32,6 +32,6 @@ Important:
 - forward the `Authorization` header (or use the `?token=` query)
 - enforce external HTTPS/WSS only (no plain WS on the public interface)
 
-## Roadmap (Stage C — Web UI bridge)
+## Roadmap (Stage 1 — Web UI bridge)
 
-Deploying `wss://` in production is required for external chat/audio clients. **Stage C** adds a **bidirectional bridge** between the React dashboard and the Event Bus (publish/subscribe over WebSocket), so the browser becomes a first-class real-time control plane — see `PLAN.md`, section «Этап C». Until then, the SPA relies mainly on REST `/v1` while `/v1/ws/chat` and `/v1/ws/audio` serve programmatic clients.
+Deploying `wss://` in production is required for external chat/audio clients. **Stage 1** adds a **bidirectional bridge** between the React dashboard and the Event Bus (publish/subscribe over WebSocket), so the browser becomes a first-class real-time control plane — see `PLAN.md`, section «Этап 1». Currently deferred (soak Discord+music first). Until then, the SPA relies mainly on REST `/v1` while `/v1/ws/chat` and `/v1/ws/audio` serve programmatic clients.

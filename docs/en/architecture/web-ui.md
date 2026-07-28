@@ -9,7 +9,7 @@
 
 The dashboard is a **React + Vite + Tailwind CSS** SPA served by the same FastAPI process as the core (`python main.py`). Source lives under `frontend/src/`; production assets are built into `frontend/dist`.
 
-Real-time parity with the Event Bus for every dashboard action is **planned** as Stage C (bidirectional WebSocket bridge — see `PLAN.md`). Today the UI primarily talks to the core over HTTP `/v1`.
+Real-time parity with the Event Bus for every dashboard action is **planned** as Stage 1 (bidirectional WebSocket bridge — see `PLAN.md`; deferred until after soak). Today the UI primarily talks to the core over HTTP `/v1`.
 
 ## UI sections
 
