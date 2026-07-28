@@ -31,12 +31,11 @@ python-dateutil>=2.9.0
 rich>=13.0.0
 Pillow>=10.0.0  # сжатие картинок для vision (до 1024×768 и т.п.)
 
-# ── Discord Text Bot ────────────────────────────────────────────────────────
-discord.py>=2.5.0,<3
+# ── Discord Text Bot (+ voice for music / Lavalink) ─────────────────────────
+discord.py[voice]>=2.5.0,<3
 wavelink>=3.4.1
-PyNaCl>=1.5.0
+# PyNaCl + davey come from discord.py[voice] (DAVE E2EE required since discord.py 2.7)
 
-# Голосовые пакеты вынесены из активного runtime.
 
 # ── Optional: Google Drive (external_storage.provider: google_drive) ──
 # pydrive2>=1.7.0
